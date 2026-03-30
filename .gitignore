@@ -1,0 +1,8 @@
+.DS_Store
+_build/
+.rebar3/
+__pycache__/
+*.pyc
+erl_crash.dump
+.venv/
+.vscode/

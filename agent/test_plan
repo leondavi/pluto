@@ -1,0 +1,526 @@
+# Pluto Test Plan
+
+This document describes the testing strategy for Pluto at two levels:
+
+1. **Scenario tests** — realistic multi-agent coordination tasks that exercise the
+   full stack end-to-end, run from the outside as real clients.
+2. **Pluto self-test** — a built-in `selftest` command that Pluto runs against itself
+   to verify the server and all client paths are functioning correctly.
+
+---
+
+## Part 1 — Scenario Tests
+
+Each scenario is a self-contained test program that launches N Python agents
+(using `pluto_client.py`) against a live Pluto server and asserts the expected
+coordination outcomes.
+
+Run all scenarios from the project root:
+
+```bash
+python3 tests/run_scenarios.py --host localhost --port 9000
+```
+
+Each scenario prints PASS or FAIL with a short reason. Exit code is 0 if all pass.
+
+---
+
+### Scenario 1 — Shared File Edit
+
+**Goal:** Verify that only one agent writes to a shared file at a time and that the
+final file content is coherent (no interleaved writes).
+
+**Setup:**
+- 3 agents: `writer-1`, `writer-2`, `writer-3`
+- Shared resource: `file:/tmp/pluto_test/shared.txt`
+
+**Steps:**
+1. All three agents connect and register concurrently.
+2. Each agent tries to acquire a `write` lock on `file:/tmp/pluto_test/shared.txt`.
+3. The agent that is granted the lock appends its agent ID and a line number to
+   the file, then releases the lock.
+4. The other two agents receive `lock_granted` events in FIFO order and do the same.
+5. After all three finish, the test runner reads the file and verifies:
+   - Exactly 3 lines, one per agent.
+   - Lines appear in the order the locks were granted (verified against event history).
+   - No interleaving (each line is a complete, unbroken string).
+
+**Pass condition:** File contains 3 clean lines; fencing tokens in event history are
+strictly increasing; no agent wrote without holding the lock.
+
+---
+
+### Scenario 2 — Port Reservation
+
+**Goal:** Verify that only one agent at a time is allowed to use a shared port, and
+that a crashed holder releases the port automatically via TTL expiry.
+
+**Setup:**
+- 2 agents: `server-agent`, `client-agent`
+- Shared resource: `port:8080`
+
+**Steps:**
+1. `server-agent` acquires `write` lock on `port:8080` with `ttl_ms=10000`.
+2. `client-agent` attempts to acquire the same lock and enters the wait queue.
+3. `server-agent` simulates a crash (disconnect without releasing the lock).
+4. Pluto's liveness sweeper detects the dead session; after the grace period,
+   the lock expires.
+5. `client-agent` receives a `lock_granted` event and proceeds.
+6. `client-agent` releases the lock cleanly.
+
+**Pass condition:**
+- `client-agent` eventually receives `lock_granted` without any manual intervention.
+- Time between crash and grant is within `heartbeat_timeout_ms + ttl_ms` + margin.
+- Event history shows `heartbeat_timeout`, `lock_expired`, `lock_granted` in order.
+
+---
+
+### Scenario 3 — Pipeline Handoff
+
+**Goal:** Verify that agents can coordinate a hand-off chain using messages and locks,
+simulating a build-test-review pipeline where each stage is an agent.
+
+**Setup:**
+- 3 pipeline agents: `builder`, `tester`, `reviewer`
+- Shared resources: `artifact:build/output.bin`, `workspace:review`
+
+**Steps:**
+1. `builder` acquires write lock on `artifact:build/output.bin`.
+2. `builder` performs work (writes a marker file), then releases the lock.
+3. `builder` sends a direct message to `tester`: `{"type":"artifact_ready","path":"build/output.bin"}`.
+4. `tester` acquires a read lock on `artifact:build/output.bin`.
+5. `tester` reads the artifact, performs checks, then releases the lock.
+6. `tester` sends a direct message to `reviewer`: `{"type":"test_passed","artifact":"build/output.bin"}`.
+7. `reviewer` acquires write lock on `workspace:review`, writes its review, releases the lock.
+8. `reviewer` broadcasts `{"type":"pipeline_complete","status":"ok"}` to all agents.
+
+**Pass condition:**
+- Each stage only starts after receiving the correct message.
+- No two agents hold a conflicting lock on the same resource concurrently.
+- Broadcast is received by `builder` and `tester` (verified by registered handlers).
+- Event history captures every lock acquisition and message in the correct order.
+
+---
+
+### Scenario 4 — Deadlock Recovery
+
+**Goal:** Verify that Pluto detects a deadlock, evicts a victim, and allows the
+surviving agent to complete its work.
+
+**Setup:**
+- 2 agents: `alpha`, `beta`
+- 2 resources: `file:/repo/a.txt`, `file:/repo/b.txt`
+
+**Steps:**
+1. `alpha` acquires write lock on `file:/repo/a.txt` (granted).
+2. `beta` acquires write lock on `file:/repo/b.txt` (granted).
+3. `alpha` requests write lock on `file:/repo/b.txt` (enters wait queue).
+4. `beta` requests write lock on `file:/repo/a.txt` (enters wait queue — cycle formed).
+5. Pluto detects the deadlock cycle; one of the two agents receives
+   `{"status":"error","reason":"deadlock","victim":true}`.
+6. The victim retries after a short backoff.
+7. The surviving agent completes its work (acquires both locks sequentially), then releases them.
+8. The victim retries and eventually acquires both locks successfully.
+
+**Pass condition:**
+- Deadlock is detected within one lock-request round trip.
+- Exactly one agent is chosen as victim per cycle.
+- Both agents eventually complete their work (no permanent starvation).
+- A `deadlock_detected` event is logged in event history.
+
+---
+
+### Scenario 5 — Broadcast Coordination (Fan-Out)
+
+**Goal:** Verify that a broadcast from one agent reaches all currently connected agents.
+
+**Setup:**
+- 1 coordinator agent: `coordinator`
+- 4 worker agents: `worker-1`, `worker-2`, `worker-3`, `worker-4`
+
+**Steps:**
+1. All 5 agents connect and register.
+2. `coordinator` calls `list_agents` and verifies all 4 workers are present.
+3. `coordinator` broadcasts `{"type":"start_work","batch":1}`.
+4. Each worker receives the broadcast and sends a direct acknowledgement back to
+   `coordinator`: `{"type":"ack","worker":"worker-N","batch":1}`.
+5. `coordinator` waits until it receives 4 acknowledgements, then broadcasts
+   `{"type":"batch_complete","batch":1}`.
+
+**Pass condition:**
+- All 4 workers receive the broadcast.
+- `coordinator` receives exactly 4 acknowledgements.
+- The final `batch_complete` broadcast is received by all workers.
+- Total round-trip time is within an acceptable latency bound (configurable, default 2s).
+
+---
+
+### Scenario 6 — Reconnect and Lock Recovery
+
+**Goal:** Verify that an agent that crashes and reconnects within the grace period
+reclaims its locks.
+
+**Setup:**
+- 2 agents: `holder`, `waiter`
+- 1 resource: `workspace:experiment`
+
+**Steps:**
+1. `holder` connects, registers, and acquires write lock on `workspace:experiment`
+   with `ttl_ms=60000`.
+2. `waiter` connects, registers, and requests the same lock (enters wait queue).
+3. `holder` simulates a crash (closes connection without releasing).
+4. `holder` reconnects and re-registers with the same `agent_id` within the
+   grace period.
+5. Pluto transfers the lock to the new session of `holder`.
+6. `holder` verifies it still holds the lock by successfully calling `renew`.
+7. `holder` releases the lock cleanly.
+8. `waiter` receives `lock_granted`.
+
+**Pass condition:**
+- `holder` successfully renews the lock after reconnecting.
+- `waiter` does not receive `lock_granted` during the reconnect window.
+- `waiter` receives `lock_granted` only after `holder` explicitly releases.
+
+---
+
+### Scenario 7 — Concurrent Readers
+
+**Goal:** Verify that multiple agents can hold read locks on the same resource
+simultaneously, but a write lock is blocked until all readers release.
+
+**Setup:**
+- 4 agents: `reader-1`, `reader-2`, `reader-3`, `writer`
+- 1 resource: `file:/repo/data.json`
+
+**Steps:**
+1. `reader-1`, `reader-2`, `reader-3` each acquire a `read` lock on
+   `file:/repo/data.json` concurrently (all should be granted).
+2. `writer` requests a `write` lock on the same file (enters wait queue;
+   write is blocked by active readers).
+3. Each reader holds the lock for a simulated read operation (100ms), then releases.
+4. When the last reader releases, `writer` receives `lock_granted`.
+5. `writer` performs its write and releases.
+
+**Pass condition:**
+- All 3 read locks are granted concurrently (no reader waits for another reader).
+- `writer` waits until all readers have released.
+- `writer` is the only lock holder when granted.
+- Event history shows all 3 read `lock_acquired` events with overlapping time windows.
+
+---
+
+### Scenario 8 — Fencing Token Enforcement
+
+**Goal:** Verify that the fencing token correctly identifies stale writers.
+
+**Setup:**
+- 2 agents: `current-writer`, `stale-writer`
+- 1 in-process token store (a dict shared between the test agents) that rejects
+  writes with a token lower than the last accepted one.
+
+**Steps:**
+1. `stale-writer` acquires the lock (token = N), then pauses.
+2. `stale-writer`'s lock expires (TTL runs out).
+3. `current-writer` acquires the lock (token = N+1).
+4. `current-writer` writes with token N+1 to the token store and releases.
+5. `stale-writer` resumes and attempts to write with its old token N.
+6. The token store rejects the write (N < N+1).
+
+**Pass condition:**
+- `current-writer` receives a strictly higher fencing token than `stale-writer`.
+- The token store rejects the stale write.
+- Event history shows lock_expired for `stale-writer` before `lock_acquired` for
+  `current-writer`.
+
+---
+
+### Scenario 9 — Max Wait Timeout
+
+**Goal:** Verify that an agent that has been waiting longer than `max_wait_ms` is
+cleanly rejected and can retry.
+
+**Setup:**
+- 2 agents: `holder`, `impatient`
+- 1 resource: `gpu:0`
+
+**Steps:**
+1. `holder` acquires write lock on `gpu:0` with `ttl_ms=60000` and holds it.
+2. `impatient` requests the same lock with `max_wait_ms=2000`.
+3. After ~2 seconds, `impatient` receives `{"status":"error","reason":"wait_timeout"}`.
+4. `impatient` logs the timeout, waits a moment, and retries (this time without
+   `max_wait_ms` to wait indefinitely).
+5. `holder` releases the lock.
+6. `impatient` receives `lock_granted` on the retry.
+
+**Pass condition:**
+- `impatient` receives wait_timeout within `max_wait_ms ± 500ms`.
+- `impatient` successfully acquires the lock on retry after `holder` releases.
+
+---
+
+### Scenario 10 — Five-Agent Stress Test
+
+**Goal:** Verify stability and correct ordering under concurrent load with 5 agents
+competing for 3 shared resources.
+
+**Setup:**
+- 5 agents: `stress-1` through `stress-5`
+- 3 resources: `file:/repo/x.txt`, `file:/repo/y.txt`, `file:/repo/z.txt`
+- Each agent performs 10 rounds of: pick a random resource, acquire write lock,
+  sleep 50–150ms, release.
+
+**Assertions (checked after all agents finish):**
+- Total lock acquisitions == 5 × 10 == 50.
+- Fencing tokens are strictly increasing across all 50 grants.
+- No two grants for the same resource overlap in time.
+- Event log contains exactly 50 `lock_acquired` and 50 `lock_released` events.
+- No deadlock events fired (each agent only holds one lock at a time).
+- All agents finished without error.
+
+**Pass condition:** All assertions hold. Run 3 times and all must pass.
+
+---
+
+## Part 2 — Pluto Self-Test Command
+
+Pluto provides a built-in self-test that operators and CI pipelines can run to verify
+the server is functioning correctly, without needing external test agents.
+
+### Invoking the self-test
+
+**From the Erlang shell:**
+```erlang
+pluto_selftest:run().
+```
+
+**From the command line (after the server is running):**
+```bash
+# Send a single JSON request over TCP
+echo '{"op":"selftest"}' | nc localhost 9000
+```
+
+**Via rebar3:**
+```bash
+rebar3 shell --eval "pluto_selftest:run(), halt(0)."
+```
+
+**Response when all checks pass:**
+```json
+{"status":"ok","checks":12,"failed":0,"duration_ms":340}
+```
+
+**Response when a check fails:**
+```json
+{
+  "status":"error",
+  "checks":12,
+  "failed":1,
+  "duration_ms":275,
+  "failures":[
+    {"check":"lock_release","reason":"lock_ref not found after acquire"}
+  ]
+}
+```
+
+---
+
+### Self-test checks (in order)
+
+The self-test runs a sequence of internal checks using a pool of synthetic test
+sessions that connect to Pluto on the loopback interface. All synthetic sessions
+are cleaned up after the test regardless of outcome.
+
+| # | Check | What it verifies |
+|---|---|---|
+| 1 | `register` | Two synthetic agents register; each receives a distinct `session_id`. |
+| 2 | `ping` | Each agent pings; receives `pong` with correct `heartbeat_interval_ms`. |
+| 3 | `list_agents` | `list_agents` returns both registered agent IDs and no others. |
+| 4 | `lock_acquire` | Agent A acquires a write lock; response contains `lock_ref` and a positive `fencing_token`. |
+| 5 | `lock_conflict` | Agent B requests the same lock; receives `wait` or `conflict` (not `ok`). |
+| 6 | `fencing_token_order` | Agent A acquires a second lock on a different resource; new token is strictly greater than the first. |
+| 7 | `lock_release` | Agent A releases the first lock; receives `ok`. |
+| 8 | `lock_granted_event` | If Agent B was queued, it receives a `lock_granted` push event within 1 second. |
+| 9 | `direct_message` | Agent A sends a message to Agent B; Agent B receives the `message` event with correct payload. |
+| 10 | `broadcast` | Agent A broadcasts; Agent B receives the `broadcast` event. |
+| 11 | `deadlock_detection` | Two synthetic agents acquire one lock each and then cross-request; Pluto issues a `deadlock` error to the victim within one request. |
+| 12 | `event_history` | `event_history` with `since_token=0` returns at least the lock events generated in checks 4–8. |
+
+---
+
+### Self-test Erlang module: `pluto_selftest`
+
+```erlang
+-module(pluto_selftest).
+-export([run/0, run/1]).
+
+%% Runs all checks against the local Pluto node.
+%% Returns: {ok, Results} | {error, Results}
+run() -> run(#{host => "127.0.0.1", port => 9000, timeout_ms => 5000}).
+run(Opts) -> ...
+```
+
+All checks are run sequentially. A failure in check N does not stop subsequent
+checks (best-effort reporting). The return value is a map with per-check results:
+
+```erlang
+#{
+  total   => 12,
+  passed  => 11,
+  failed  => 1,
+  results => [
+    #{check => register,       status => pass},
+    #{check => lock_acquire,   status => pass},
+    #{check => lock_conflict,  status => fail, reason => <<"timeout">>},
+    ...
+  ]
+}
+```
+
+---
+
+### `pluto_client.py` self-test
+
+The Python client includes a self-test entry point that verifies the client library
+itself against a live server:
+
+```bash
+python3 pluto_client.py selftest --host localhost --port 9000
+```
+
+Output:
+```
+[PASS] connect and register
+[PASS] ping / pong
+[PASS] acquire lock
+[PASS] lock conflict (waiter)
+[PASS] release lock
+[PASS] lock_granted event received
+[PASS] direct message
+[PASS] broadcast
+[PASS] list_agents
+[PASS] event_history query
+[PASS] deadlock detection
+[PASS] disconnect
+
+All 12 checks passed in 0.41s
+```
+
+The Python self-test uses two `PlutoClient` instances in separate threads to
+simulate two concurrent agents, just as the scenario tests do.
+
+---
+
+### CI integration
+
+Add to your CI pipeline:
+
+```yaml
+# GitHub Actions example
+- name: Start Pluto
+  run: rebar3 shell &
+       sleep 3   # wait for server to accept connections
+
+- name: Run Pluto self-test
+  run: echo '{"op":"selftest"}' | nc -q1 localhost 9000 | grep '"status":"ok"'
+
+- name: Run scenario tests
+  run: python3 tests/run_scenarios.py --host localhost --port 9000 --scenarios all
+```
+
+Exit code is non-zero on any failure so CI gates can block on test results.
+
+---
+
+## Part 3 — Unit Test Checklist
+
+The following unit tests should be implemented in Erlang (EUnit or Common Test)
+and run independently of a live server:
+
+### `pluto_lock_mgr` tests
+- Acquire a lock on a fresh resource: returns `{ok, LockRef, FencingToken}`.
+- Acquire a second lock on a different resource: fencing token is strictly greater.
+- Acquire when conflicting write lock exists: returns `{wait, WaitRef}`.
+- Release a lock: next waiting agent is notified.
+- Release a lock that does not exist: returns `{error, not_found}`.
+- Lease expiry sweep: expired lock is removed and next waiter notified.
+- Renew a lock before expiry: `expires_at` is extended.
+- Renew an expired lock: returns `{error, expired}`.
+- FIFO order: 3 waiters queued in order A, B, C; released in order A, B, C.
+- Batch read grants: 2 read waiters ahead of 1 write waiter are both granted on write-lock release.
+
+### `pluto_deadlock` tests
+- Two agents, no cycle: `check_cycle/1` returns `no_cycle`.
+- Two agents, A waits for B, B waits for A: returns `{cycle, [A, B]}`.
+- Three agents, chain A→B→C→A: returns `{cycle, [A, B, C]}`.
+- Three agents, chain A→B→C (no close): returns `no_cycle`.
+- Edge removal on release: after removing A→B, cycle A→B→A no longer detected.
+
+### `pluto_heartbeat` tests
+- Session with recent `last_seen_ms`: sweeper leaves it alive.
+- Session with stale `last_seen_ms` (> timeout): sweeper terminates the session process.
+- After termination, `agent_id` enters disconnected state.
+- After grace period without reconnect, locks are released.
+
+### `pluto_msg_hub` tests
+- Register two agents: both appear in `list_agents/0`.
+- Send message from A to B: B's session process receives the message.
+- Send to unknown agent: returns `{error, unknown_target}`.
+- Broadcast from A: all other sessions receive the event; A does not.
+- Unregister A: A disappears from `list_agents/0`; send to A returns `{error, unknown_target}`.
+
+### `pluto_event_log` tests
+- Write an event: entry appears in log file.
+- Query `since_token`: returns only events with fencing token > since_token.
+- Log rotation: after max entries, old file is archived and new file started.
+- Crash-safe: log file is a valid JSON-lines file even if the process was killed mid-write.
+
+### `pluto_policy` tests
+- Agent matching `coder-*` allowed write on `file:/repo/src/`: returns `allow`.
+- Agent matching `reviewer-*` denied write on `file:/repo/src/`: returns `deny`.
+- Agent with no matching rule: returns `deny` (default-deny posture).
+- Wildcard `*` rule for read on public artifact: returns `allow` for any agent.
+
+### `pluto_persistence` tests
+- Snapshot written: ETS tables serialized to disk file.
+- Snapshot loaded: ETS tables restored from disk, expired locks discarded.
+- Fencing counter survives restart: token after reload is >= token before shutdown.
+- Missing snapshot: server starts clean without error.
+
+---
+
+## Part 4 — Test Scenario Runner (`tests/run_scenarios.py`)
+
+The scenario runner is a standalone Python script that discovers and runs
+scenario modules in `tests/scenarios/`.
+
+```
+tests/
+├── run_scenarios.py          # discovery and runner
+└── scenarios/
+    ├── s01_shared_file.py
+    ├── s02_port_reservation.py
+    ├── s03_pipeline_handoff.py
+    ├── s04_deadlock_recovery.py
+    ├── s05_broadcast.py
+    ├── s06_reconnect.py
+    ├── s07_concurrent_readers.py
+    ├── s08_fencing_token.py
+    ├── s09_max_wait.py
+    └── s10_stress.py
+```
+
+Each scenario module exposes a single function:
+
+```python
+def run(host: str, port: int) -> tuple[bool, str]:
+    """Returns (passed, message)."""
+```
+
+The runner collects results and exits with code 0 if all pass, 1 otherwise:
+
+```bash
+python3 tests/run_scenarios.py --host localhost --port 9000
+python3 tests/run_scenarios.py --scenario s04_deadlock_recovery  # run one
+python3 tests/run_scenarios.py --scenarios s01,s02,s03            # run subset
+python3 tests/run_scenarios.py --verbose                          # show per-step output
+```

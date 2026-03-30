@@ -3,6 +3,9 @@ _build/
 .rebar3/
 __pycache__/
 *.pyc
+*.beam
 erl_crash.dump
+rebar.lock
 .venv/
 .vscode/
+/tmp/

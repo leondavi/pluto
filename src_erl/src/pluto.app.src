@@ -7,7 +7,9 @@
         pluto_msg_hub,
         pluto_heartbeat,
         pluto_persistence,
-        pluto_listener_sup
+        pluto_event_log,
+        pluto_listener_sup,
+        pluto_http_listener
     ]},
     {mod, {pluto_app, []}},
     {applications, [

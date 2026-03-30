@@ -1,0 +1,20 @@
+{
+  "name": "shared_file_edit",
+  "description": "Two agents coordinate editing a shared file via Pluto locks and messaging",
+  "work_dir": "${TEMP_DIR}/pluto_demo_shared_edit",
+  "agents": [
+    {"flow": "ag_editor2.json", "start_delay_s": 0},
+    {"flow": "ag_editor1.json", "start_delay_s": 0.5}
+  ],
+  "timeout_s": 30,
+  "assertions": [
+    {
+      "type": "file_contains",
+      "path": "${WORK_DIR}/shared.txt",
+      "expected": ["editor-1", "editor-2"]
+    },
+    {
+      "type": "all_agents_completed"
+    }
+  ]
+}

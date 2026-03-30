@@ -1,0 +1,30 @@
+{
+  "agent_id": "editor-1",
+  "description": "Acquire lock, write to shared file, release, signal editor-2, wait for confirmation",
+  "steps": [
+    {
+      "action": "acquire",
+      "resource": "file:/demo/shared.txt",
+      "mode": "write",
+      "ttl_ms": 30000
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/shared.txt",
+      "content": "Line 1: Written by editor-1\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "send",
+      "to": "editor-2",
+      "payload": {"type": "your_turn", "file": "shared.txt"}
+    },
+    {
+      "action": "wait_message",
+      "from": "editor-2",
+      "timeout": 15
+    }
+  ]
+}

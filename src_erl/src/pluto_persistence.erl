@@ -62,6 +62,12 @@ init([]) ->
     erlang:send_after(FlushMs, self(), periodic_flush),
     ?LOG_INFO("pluto_persistence started (dir=~s, interval=~wms, fencing_seq=~w)",
               [Dir, FlushMs, FSeq]),
+    %% We'll push fencing_seq to the lock manager once it starts.
+    %% Use a short timer so pluto_lock_mgr has time to init.
+    case FSeq > 0 of
+        true  -> erlang:send_after(100, self(), {restore_fencing_seq, FSeq});
+        false -> ok
+    end,
     {ok, #state{dir = Dir, flush_ms = FlushMs, fencing_seq = FSeq}}.
 
 handle_call(flush, _From, State) ->
@@ -79,7 +85,12 @@ handle_info(periodic_flush, #state{flush_ms = FlushMs} = State) ->
     do_flush(State),
     erlang:send_after(FlushMs, self(), periodic_flush),
     {noreply, State};
-
+%% ── Restore fencing_seq to lock manager after startup ───────────
+handle_info({restore_fencing_seq, FSeq}, State) ->
+    try pluto_lock_mgr:set_fencing_seq(FSeq)
+    catch _:_ -> ok
+    end,
+    {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -95,11 +106,16 @@ terminate(_Reason, State) ->
 
 %% @private Write a snapshot of all ETS tables to disk.
 do_flush(#state{dir = Dir}) ->
+    %% Get fencing_seq from the lock manager for durable persistence
+    FSeq = try pluto_lock_mgr:get_fencing_seq()
+           catch _:_ -> 0
+           end,
     Snapshot = #{
-        locks    => ets:tab2list(?ETS_LOCKS),
-        agents   => ets:tab2list(?ETS_AGENTS),
-        sessions => ets:tab2list(?ETS_SESSIONS),
-        waiters  => ets:tab2list(?ETS_WAITERS)
+        locks       => ets:tab2list(?ETS_LOCKS),
+        agents      => ets:tab2list(?ETS_AGENTS),
+        sessions    => ets:tab2list(?ETS_SESSIONS),
+        waiters     => ets:tab2list(?ETS_WAITERS),
+        fencing_seq => FSeq
     },
     Path = filename:join(Dir, ?SNAPSHOT_FILE),
     Data = term_to_binary(Snapshot),
@@ -119,8 +135,9 @@ load_snapshot(Dir) ->
             try
                 Snapshot = binary_to_term(Data),
                 restore_snapshot(Snapshot),
-                ?LOG_INFO("pluto_persistence: snapshot loaded from ~s", [Path]),
-                0  %% fencing_seq is managed by pluto_lock_mgr
+                FSeq = maps:get(fencing_seq, Snapshot, 0),
+                ?LOG_INFO("pluto_persistence: snapshot loaded from ~s (fencing_seq=~w)", [Path, FSeq]),
+                FSeq
             catch
                 _:Err ->
                     ?LOG_ERROR("pluto_persistence: corrupt snapshot — ~p", [Err]),

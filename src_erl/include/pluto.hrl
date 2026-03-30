@@ -20,6 +20,7 @@
 
 %% ── Default configuration values ────────────────────────────────────────────
 -define(DEFAULT_TCP_PORT,               9000).
+-define(DEFAULT_HTTP_PORT,              9001).
 -define(DEFAULT_TCP_BACKLOG,            128).
 -define(DEFAULT_HEARTBEAT_INTERVAL_MS,  15000).
 -define(DEFAULT_HEARTBEAT_SWEEP_MS,     5000).

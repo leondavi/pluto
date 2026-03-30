@@ -4,6 +4,7 @@
 %%% Supervision tree:
 %%%   pluto_sup
 %%%   ├── pluto_persistence   (started first — loads snapshots)
+%%%   ├── pluto_event_log     (durable event history writer)
 %%%   ├── pluto_lock_mgr      (lock management gen_server)
 %%%   ├── pluto_msg_hub       (messaging & registry gen_server)
 %%%   ├── pluto_heartbeat     (liveness sweeper gen_server)
@@ -60,7 +61,16 @@ init([]) ->
             type     => worker,
             modules  => [pluto_persistence]
         },
-        %% 2) Lock manager — coordinates resource locks
+        %% 2) Event log — durable event history (before lock/msg for logging)
+        #{
+            id       => pluto_event_log,
+            start    => {pluto_event_log, start_link, []},
+            restart  => permanent,
+            shutdown => 5000,
+            type     => worker,
+            modules  => [pluto_event_log]
+        },
+        %% 3) Lock manager — coordinates resource locks
         #{
             id       => pluto_lock_mgr,
             start    => {pluto_lock_mgr, start_link, []},
@@ -69,7 +79,7 @@ init([]) ->
             type     => worker,
             modules  => [pluto_lock_mgr]
         },
-        %% 3) Message hub — agent registration, messaging, broadcast
+        %% 4) Message hub — agent registration, messaging, broadcast
         #{
             id       => pluto_msg_hub,
             start    => {pluto_msg_hub, start_link, []},
@@ -78,7 +88,7 @@ init([]) ->
             type     => worker,
             modules  => [pluto_msg_hub]
         },
-        %% 4) Heartbeat sweeper — checks liveness on a timer
+        %% 5) Heartbeat sweeper — checks liveness on a timer
         #{
             id       => pluto_heartbeat,
             start    => {pluto_heartbeat, start_link, []},
@@ -87,7 +97,7 @@ init([]) ->
             type     => worker,
             modules  => [pluto_heartbeat]
         },
-        %% 5) Listener supervisor — manages TCP listener children
+        %% 6) Listener supervisor — manages TCP listener children
         #{
             id       => pluto_listener_sup,
             start    => {pluto_listener_sup, start_link, []},

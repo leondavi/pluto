@@ -26,7 +26,9 @@
     release/2,
     renew/2,
     list_locks/0,
-    locks_for_agent/1
+    locks_for_agent/1,
+    get_fencing_seq/0,
+    set_fencing_seq/1
 ]).
 
 %% gen_server callbacks
@@ -88,6 +90,16 @@ list_locks() ->
 locks_for_agent(AgentId) ->
     ets:match_object(?ETS_LOCKS, #lock{agent_id = AgentId, _ = '_'}).
 
+%% @doc Get the current fencing sequence number.
+-spec get_fencing_seq() -> non_neg_integer().
+get_fencing_seq() ->
+    gen_server:call(?MODULE, get_fencing_seq).
+
+%% @doc Set the fencing sequence (used during persistence restore).
+-spec set_fencing_seq(non_neg_integer()) -> ok.
+set_fencing_seq(Seq) ->
+    gen_server:call(?MODULE, {set_fencing_seq, Seq}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -127,8 +139,8 @@ handle_call({release, LockRef, AgentId}, _From, State) ->
         [#lock{agent_id = AgentId, resource = Resource}] ->
             ets:delete(?ETS_LOCKS, LockRef),
             %% Advance the wait queue for this resource
-            advance_queue(Resource, State),
-            {reply, ok, State};
+            NewState = advance_queue(Resource, State),
+            {reply, ok, NewState};
         [#lock{}] ->
             %% Lock exists but owned by a different agent
             {reply, {error, not_found}, State};
@@ -147,7 +159,12 @@ handle_call({renew, LockRef, Opts}, _From, State) ->
         [] ->
             {reply, {error, not_found}, State}
     end;
+%% ── fencing_seq accessors ───────────────────────────────────────
+handle_call(get_fencing_seq, _From, #state{fencing_seq = FSeq} = State) ->
+    {reply, FSeq, State};
 
+handle_call({set_fencing_seq, Seq}, _From, State) when is_integer(Seq), Seq >= 0 ->
+    {reply, ok, State#state{fencing_seq = max(Seq, State#state.fencing_seq)}};
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
@@ -156,10 +173,10 @@ handle_cast(_Msg, State) ->
 
 %% ── Periodic expiry sweep ───────────────────────────────────────────
 handle_info(sweep_expired, State) ->
-    sweep_expired_locks(State),
+    NewState = sweep_expired_locks(State),
     sweep_expired_waiters(),
     erlang:send_after(?SWEEP_INTERVAL_MS, self(), sweep_expired),
-    {noreply, State};
+    {noreply, NewState};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -215,6 +232,9 @@ grant_lock(Resource, Mode, AgentId, Opts, State) ->
     },
     ets:insert(?ETS_LOCKS, Lock),
     NewState = State#state{fencing_seq = NewFSeq, lock_counter = NewLC},
+    %% Log lock acquisition event
+    pluto_event_log:log(lock_acquired, #{agent_id => AgentId, resource => Resource,
+                                         lock_ref => LockRef, fencing_token => NewFSeq}),
     {LockRef, NewFSeq, NewState}.
 
 %% @private Add a request to the wait queue for a resource.
@@ -273,8 +293,8 @@ advance_queue(Resource, State) ->
     Waiters = ets:match_object(?ETS_WAITERS, Pattern),
     advance_waiters(Waiters, Resource, State).
 
-advance_waiters([], _Resource, _State) ->
-    ok;
+advance_waiters([], _Resource, State) ->
+    State;
 advance_waiters([{Key, Entry} | Rest], Resource, State) ->
     #wait_entry{mode = Mode, agent_id = AgentId} = Entry,
     case check_conflict(Resource, Mode, AgentId) of
@@ -282,33 +302,34 @@ advance_waiters([{Key, Entry} | Rest], Resource, State) ->
             %% Grant this waiter
             ets:delete(?ETS_WAITERS, Key),
             pluto_deadlock:remove_edge(AgentId),
-            notify_lock_granted(Entry, State),
+            NewState = notify_lock_granted(Entry, State),
             %% If this was a read lock, continue granting consecutive readers
             case Mode of
-                read  -> advance_waiters(Rest, Resource, State);
-                write -> ok  %% Write is exclusive, stop here
+                read  -> advance_waiters(Rest, Resource, NewState);
+                write -> NewState  %% Write is exclusive, stop here
             end;
         conflict ->
             %% Can't grant yet; stop advancing
-            ok
+            State
     end.
 
 %% @private Send a lock_granted event to the waiting session.
 notify_lock_granted(#wait_entry{session_pid = Pid, wait_ref = WaitRef,
-                                resource = Resource, agent_id = AgentId},
+                                resource = Resource, agent_id = AgentId,
+                                mode = WaitMode, session_id = WSessId},
                     State) when is_pid(Pid) ->
     #state{fencing_seq = FSeq, lock_counter = LC} = State,
     NewFSeq = FSeq + 1,
     NewLC   = LC + 1,
     LockRef = iolist_to_binary(io_lib:format("LOCK-~w", [NewLC])),
 
-    %% Create the lock
+    %% Create the lock using the mode from the wait entry
     Lock = #lock{
         lock_ref      = LockRef,
         resource      = Resource,
-        mode          = write,  %% TODO: use actual mode from wait_entry
+        mode          = WaitMode,
         agent_id      = AgentId,
-        session_id    = <<>>,
+        session_id    = WSessId,
         fencing_token = NewFSeq,
         expires_at    = pluto_lease:make_expires_at(30000),
         inserted_at   = pluto_lease:now_ms()
@@ -324,28 +345,30 @@ notify_lock_granted(#wait_entry{session_pid = Pid, wait_ref = WaitRef,
         <<"resource">>      => Resource
     },
     Pid ! {pluto_event, Event},
-    ok;
-notify_lock_granted(_, _State) ->
+    %% Log the event
+    pluto_event_log:log(lock_granted, #{agent_id => AgentId, resource => Resource,
+                                        lock_ref => LockRef, fencing_token => NewFSeq}),
+    State#state{fencing_seq = NewFSeq, lock_counter = NewLC};
+notify_lock_granted(_, State) ->
     %% No session PID — can't notify
-    ok.
+    State.
 
 %% @private Sweep and remove expired locks, advancing queues where needed.
 sweep_expired_locks(State) ->
     Now = pluto_lease:now_ms(),
     AllLocks = ets:tab2list(?ETS_LOCKS),
-    lists:foreach(fun(#lock{lock_ref = Ref, resource = Res,
-                            agent_id = AId, expires_at = Exp,
-                            session_id = _SId}) ->
+    lists:foldl(fun(#lock{lock_ref = Ref, resource = Res,
+                          agent_id = AId, expires_at = Exp}, AccState) ->
         case Now >= Exp of
             true ->
                 ?LOG_INFO("Lock ~s expired for agent ~s on ~s",
                           [Ref, AId, Res]),
                 ets:delete(?ETS_LOCKS, Ref),
-                advance_queue(Res, State);
+                advance_queue(Res, AccState);
             false ->
-                ok
+                AccState
         end
-    end, AllLocks).
+    end, State, AllLocks).
 
 %% @private Remove wait entries that have exceeded their max_wait_until deadline.
 sweep_expired_waiters() ->

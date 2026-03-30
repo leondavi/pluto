@@ -79,35 +79,46 @@ print_banner() ->
 %% how to reach this server.
 print_server_info() ->
     Port = pluto_config:get(tcp_port, ?DEFAULT_TCP_PORT),
+    HttpPort = pluto_config:get(http_port, ?DEFAULT_HTTP_PORT),
     Host = get_hostname(),
     IP   = get_local_ip(),
     HbMs = pluto_config:get(heartbeat_interval_ms, ?DEFAULT_HEARTBEAT_INTERVAL_MS),
 
+    HttpStr = case HttpPort of
+                  disabled -> "disabled";
+                  _        -> integer_to_list(HttpPort)
+              end,
+
     io:format(
         "  +--- Server Details ------------------------------------+~n"
         "  |                                                       |~n"
-        "  |  Hostname : ~-42s|~n"
-        "  |  IP       : ~-42s|~n"
-        "  |  Port     : ~-42w|~n"
-        "  |  Protocol : ~-42s|~n"
-        "  |  Version  : ~-42s|~n"
+        "  |  Hostname  : ~-41s|~n"
+        "  |  IP        : ~-41s|~n"
+        "  |  TCP Port  : ~-41w|~n"
+        "  |  HTTP Port : ~-41s|~n"
+        "  |  Protocol  : ~-41s|~n"
+        "  |  Version   : ~-41s|~n"
         "  |                                                       |~n"
         "  +--- How Agents Connect --------------------------------+~n"
         "  |                                                       |~n"
-        "  |  1. Open a TCP connection to ~s:~w~s|~n"
-        "  |  2. Send newline-delimited JSON requests              |~n"
-        "  |  3. First message must be:                            |~n"
+        "  |  TCP:  Connect to ~s:~w~s|~n"
+        "  |         Send newline-delimited JSON requests          |~n"
+        "  |  HTTP: REST API on port ~-29s|~n"
+        "  |                                                       |~n"
+        "  |  1. First TCP message must be:                        |~n"
         "  |     {\"op\":\"register\",\"agent_id\":\"<name>\"}           |~n"
-        "  |  4. Send ping every ~w ms to stay alive~s|~n"
-        "  |  5. Read the agent_guide.md for full protocol         |~n"
+        "  |  2. Send ping every ~w ms to stay alive~s|~n"
+        "  |  3. Read the agent_guide.md for full protocol         |~n"
         "  |                                                       |~n"
         "  +-------------------------------------------------------+~n~n",
-        [Host, IP, Port, "Newline-delimited JSON over TCP",
+        [Host, IP, Port, HttpStr,
+         "JSON over TCP + REST/HTTP",
          ?VERSION,
-         Host, Port, padding(Host, Port, 19),
+         Host, Port, padding(Host, Port, 28),
+         HttpStr,
          HbMs, padding_int(HbMs, 24)
         ]),
-    ?LOG_INFO("Pluto v~s listening on ~s:~w", [?VERSION, IP, Port]).
+    ?LOG_INFO("Pluto v~s listening on ~s:~w (TCP), HTTP: ~s", [?VERSION, IP, Port, HttpStr]).
 
 %% @private Get the system hostname as a string.
 get_hostname() ->

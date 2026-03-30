@@ -148,8 +148,10 @@ handle_request(#{<<"op">> := ?OP_REGISTER} = Msg, S) ->
     handle_register(Msg, S);
 handle_request(#{<<"op">> := ?OP_PING}, S) ->
     handle_ping(S);
+handle_request(#{<<"op">> := ?OP_SELFTEST}, S) ->
+    handle_selftest(S);
 handle_request(#{<<"op">> := _Op}, #sess{agent_id = undefined} = S) ->
-    %% All operations except register and ping require registration
+    %% All operations except register, ping, and selftest require registration
     send_error(S#sess.socket, ?ERR_NOT_REGISTERED),
     S;
 handle_request(#{<<"op">> := ?OP_ACQUIRE} = Msg, S) ->
@@ -164,6 +166,21 @@ handle_request(#{<<"op">> := ?OP_BROADCAST} = Msg, S) ->
     handle_broadcast(Msg, S);
 handle_request(#{<<"op">> := ?OP_LIST_AGENTS}, S) ->
     handle_list_agents(S);
+handle_request(#{<<"op">> := ?OP_EVENT_HISTORY} = Msg, S) ->
+    handle_event_history(Msg, S);
+%% ── Admin operations ────────────────────────────────────────────
+handle_request(#{<<"op">> := ?OP_ADMIN_LIST_LOCKS} = Msg, S) ->
+    handle_admin(Msg, S);
+handle_request(#{<<"op">> := ?OP_ADMIN_FORCE_RELEASE} = Msg, S) ->
+    handle_admin(Msg, S);
+handle_request(#{<<"op">> := ?OP_ADMIN_LIST_AGENTS} = Msg, S) ->
+    handle_admin(Msg, S);
+handle_request(#{<<"op">> := ?OP_ADMIN_DISCONNECT} = Msg, S) ->
+    handle_admin(Msg, S);
+handle_request(#{<<"op">> := ?OP_ADMIN_DEADLOCK_GRAPH} = Msg, S) ->
+    handle_admin(Msg, S);
+handle_request(#{<<"op">> := ?OP_ADMIN_FENCING_SEQ} = Msg, S) ->
+    handle_admin(Msg, S);
 handle_request(#{<<"op">> := _}, S) ->
     send_error(S#sess.socket, ?ERR_UNKNOWN_OP),
     S;
@@ -176,23 +193,36 @@ handle_request(_, S) ->
 %%====================================================================
 
 %% ── Register ────────────────────────────────────────────────────────
-handle_register(#{<<"agent_id">> := AgentId}, #sess{socket = Sock,
-                                                     session_id = SessId} = S)
+handle_register(#{<<"agent_id">> := AgentId} = Msg, #sess{socket = Sock,
+                                                           session_id = SessId} = S)
   when is_binary(AgentId), AgentId =/= <<>> ->
-    case pluto_msg_hub:register_agent(AgentId, SessId, self()) of
-        {ok, SessId} ->
-            HbMs = pluto_config:get(heartbeat_interval_ms,
-                                    ?DEFAULT_HEARTBEAT_INTERVAL_MS),
-            send_json(Sock, #{
-                <<"status">>               => ?STATUS_OK,
-                <<"session_id">>           => SessId,
-                <<"heartbeat_interval_ms">> => HbMs
-            }),
-            S#sess{agent_id = AgentId};
-        {error, already_registered} ->
+    Token = maps:get(<<"token">>, Msg, undefined),
+    case pluto_policy:check_auth(AgentId, Token) of
+        ok ->
+            case pluto_msg_hub:register_agent(AgentId, SessId, self()) of
+                {ok, SessId} ->
+                    HbMs = pluto_config:get(heartbeat_interval_ms,
+                                            ?DEFAULT_HEARTBEAT_INTERVAL_MS),
+                    send_json(Sock, #{
+                        <<"status">>               => ?STATUS_OK,
+                        <<"session_id">>           => SessId,
+                        <<"heartbeat_interval_ms">> => HbMs
+                    }),
+                    pluto_event_log:log(agent_registered, #{agent_id => AgentId,
+                                                            session_id => SessId}),
+                    S#sess{agent_id = AgentId};
+                {error, already_registered} ->
+                    send_json(Sock, #{
+                        <<"status">> => ?STATUS_ERROR,
+                        <<"reason">> => ?ERR_ALREADY_REGISTERED
+                    }),
+                    S
+            end;
+        {error, unauthorized} ->
+            pluto_event_log:log(auth_failure, #{agent_id => AgentId, reason => bad_token}),
             send_json(Sock, #{
                 <<"status">> => ?STATUS_ERROR,
-                <<"reason">> => ?ERR_ALREADY_REGISTERED
+                <<"reason">> => ?ERR_UNAUTHORIZED
             }),
             S
     end;
@@ -219,36 +249,49 @@ handle_acquire(Msg, #sess{socket = Sock, session_id = SessId,
             case pluto_resource:normalize(RawResource) of
                 {ok, Resource} ->
                     Mode   = parse_mode(maps:get(<<"mode">>, Msg, ?MODE_WRITE)),
-                    TtlMs  = maps:get(<<"ttl_ms">>, Msg, 30000),
-                    MaxWait = maps:get(<<"max_wait_ms">>, Msg, undefined),
-                    Opts = #{
-                        ttl_ms      => TtlMs,
-                        max_wait_ms => MaxWait,
-                        session_id  => SessId,
-                        session_pid => self()
-                    },
-                    case pluto_lock_mgr:acquire(Resource, Mode, AgentId, Opts) of
-                        {ok, LockRef, FToken} ->
-                            send_json(Sock, #{
-                                <<"status">>        => ?STATUS_OK,
-                                <<"lock_ref">>      => LockRef,
-                                <<"fencing_token">> => FToken
-                            });
-                        {wait, WaitRef} ->
-                            send_json(Sock, #{
-                                <<"status">>   => ?STATUS_WAIT,
-                                <<"wait_ref">> => WaitRef
-                            });
-                        {error, deadlock} ->
+                    %% ACL check
+                    case pluto_policy:check_acl(AgentId, Resource, Mode) of
+                        ok ->
+                            TtlMs  = maps:get(<<"ttl_ms">>, Msg, 30000),
+                            MaxWait = maps:get(<<"max_wait_ms">>, Msg, undefined),
+                            Opts = #{
+                                ttl_ms      => TtlMs,
+                                max_wait_ms => MaxWait,
+                                session_id  => SessId,
+                                session_pid => self()
+                            },
+                            case pluto_lock_mgr:acquire(Resource, Mode, AgentId, Opts) of
+                                {ok, LockRef, FToken} ->
+                                    send_json(Sock, #{
+                                        <<"status">>        => ?STATUS_OK,
+                                        <<"lock_ref">>      => LockRef,
+                                        <<"fencing_token">> => FToken
+                                    });
+                                {wait, WaitRef} ->
+                                    send_json(Sock, #{
+                                        <<"status">>   => ?STATUS_WAIT,
+                                        <<"wait_ref">> => WaitRef
+                                    });
+                                {error, deadlock} ->
+                                    send_json(Sock, #{
+                                        <<"status">> => ?STATUS_ERROR,
+                                        <<"reason">> => ?ERR_DEADLOCK,
+                                        <<"victim">> => true
+                                    });
+                                {error, Reason} ->
+                                    send_json(Sock, #{
+                                        <<"status">> => ?STATUS_ERROR,
+                                        <<"reason">> => to_bin(Reason)
+                                    })
+                            end;
+                        {error, unauthorized} ->
+                            pluto_event_log:log(acl_denied, #{agent_id => AgentId,
+                                                              resource => Resource,
+                                                              mode => Mode}),
                             send_json(Sock, #{
                                 <<"status">> => ?STATUS_ERROR,
-                                <<"reason">> => ?ERR_DEADLOCK,
-                                <<"victim">> => true
-                            });
-                        {error, Reason} ->
-                            send_json(Sock, #{
-                                <<"status">> => ?STATUS_ERROR,
-                                <<"reason">> => to_bin(Reason)
+                                <<"reason">> => ?ERR_UNAUTHORIZED,
+                                <<"detail">> => <<"resource not permitted">>
                             })
                     end;
                 {error, empty_resource} ->
@@ -331,6 +374,93 @@ handle_list_agents(#sess{socket = Sock} = S) ->
         <<"agents">> => Agents
     }),
     S.
+
+%% ── Event history ───────────────────────────────────────────────────
+handle_event_history(Msg, #sess{socket = Sock} = S) ->
+    SinceSeq = maps:get(<<"since_token">>, Msg, 0),
+    Limit    = maps:get(<<"limit">>, Msg, 100),
+    Events   = pluto_event_log:query(SinceSeq, Limit),
+    send_json(Sock, #{
+        <<"status">> => ?STATUS_OK,
+        <<"events">> => Events
+    }),
+    S.
+
+%% ── Self-test ───────────────────────────────────────────────────────
+handle_selftest(#sess{socket = Sock} = S) ->
+    Result = pluto_selftest:run(),
+    send_json(Sock, Result),
+    S.
+
+%% ── Admin operations ────────────────────────────────────────────────
+handle_admin(#{<<"op">> := Op} = Msg, #sess{socket = Sock} = S) ->
+    AdminToken = pluto_config:get(admin_token, undefined),
+    ProvidedToken = maps:get(<<"admin_token">>, Msg, undefined),
+    case AdminToken =:= undefined orelse ProvidedToken =:= AdminToken of
+        true ->
+            Result = execute_admin(Op, Msg),
+            send_json(Sock, Result),
+            pluto_event_log:log(admin_action, #{op => Op});
+        false ->
+            pluto_event_log:log(admin_auth_failure, #{op => Op}),
+            send_json(Sock, #{
+                <<"status">> => ?STATUS_ERROR,
+                <<"reason">> => ?ERR_UNAUTHORIZED
+            })
+    end,
+    S.
+
+%% @private Execute an admin operation.
+execute_admin(?OP_ADMIN_LIST_LOCKS, _Msg) ->
+    Locks = pluto_lock_mgr:list_locks(),
+    LockMaps = [#{<<"lock_ref">> => L#lock.lock_ref,
+                  <<"resource">> => L#lock.resource,
+                  <<"agent_id">> => L#lock.agent_id,
+                  <<"mode">> => atom_to_binary(L#lock.mode, utf8),
+                  <<"fencing_token">> => L#lock.fencing_token}
+                || L <- Locks],
+    #{<<"status">> => ?STATUS_OK, <<"locks">> => LockMaps};
+execute_admin(?OP_ADMIN_FORCE_RELEASE, #{<<"lock_ref">> := LockRef}) ->
+    %% Force-release ignores agent ownership
+    case ets:lookup(?ETS_LOCKS, LockRef) of
+        [#lock{agent_id = AId}] ->
+            pluto_lock_mgr:release(LockRef, AId),
+            #{<<"status">> => ?STATUS_OK};
+        [] ->
+            #{<<"status">> => ?STATUS_ERROR, <<"reason">> => ?ERR_NOT_FOUND}
+    end;
+execute_admin(?OP_ADMIN_FORCE_RELEASE, _) ->
+    #{<<"status">> => ?STATUS_ERROR, <<"reason">> => ?ERR_BAD_REQUEST};
+execute_admin(?OP_ADMIN_LIST_AGENTS, _Msg) ->
+    AllAgents = ets:tab2list(?ETS_AGENTS),
+    AgentMaps = [#{<<"agent_id">> => A#agent.agent_id,
+                   <<"status">> => atom_to_binary(A#agent.status, utf8),
+                   <<"session_id">> => case A#agent.session_id of
+                                           undefined -> null;
+                                           SId -> SId
+                                       end}
+                 || A <- AllAgents],
+    #{<<"status">> => ?STATUS_OK, <<"agents">> => AgentMaps};
+execute_admin(?OP_ADMIN_DISCONNECT, #{<<"agent_id">> := AgentId}) ->
+    case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{session_pid = Pid}] when is_pid(Pid) ->
+            exit(Pid, admin_disconnect),
+            pluto_msg_hub:unregister_agent(AgentId),
+            #{<<"status">> => ?STATUS_OK};
+        _ ->
+            #{<<"status">> => ?STATUS_ERROR, <<"reason">> => ?ERR_NOT_FOUND}
+    end;
+execute_admin(?OP_ADMIN_DISCONNECT, _) ->
+    #{<<"status">> => ?STATUS_ERROR, <<"reason">> => ?ERR_BAD_REQUEST};
+execute_admin(?OP_ADMIN_DEADLOCK_GRAPH, _Msg) ->
+    Edges = ets:tab2list(?ETS_WAIT_GRAPH),
+    EdgeMaps = [#{<<"waiter">> => W, <<"holder">> => H} || {W, H} <- Edges],
+    #{<<"status">> => ?STATUS_OK, <<"edges">> => EdgeMaps};
+execute_admin(?OP_ADMIN_FENCING_SEQ, _Msg) ->
+    FSeq = pluto_lock_mgr:get_fencing_seq(),
+    #{<<"status">> => ?STATUS_OK, <<"fencing_seq">> => FSeq};
+execute_admin(_, _) ->
+    #{<<"status">> => ?STATUS_ERROR, <<"reason">> => ?ERR_UNKNOWN_OP}.
 
 %%====================================================================
 %% Socket helpers

@@ -42,6 +42,14 @@ init([]) ->
             shutdown => 5000,
             type     => worker,
             modules  => [pluto_tcp_listener]
+        },
+        #{
+            id       => pluto_http_listener,
+            start    => {pluto_http_listener, start_link, []},
+            restart  => permanent,
+            shutdown => 5000,
+            type     => worker,
+            modules  => [pluto_http_listener]
         }
     ],
     {ok, {SupFlags, Children}}.

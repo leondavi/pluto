@@ -9,16 +9,22 @@
 -define(PLUTO_PROTOCOL_HRL, true).
 
 %% ── Operation names (the "op" field in client requests) ─────────────────────
--define(OP_REGISTER,      <<"register">>).
--define(OP_ACQUIRE,       <<"acquire">>).
--define(OP_RELEASE,       <<"release">>).
--define(OP_RENEW,         <<"renew">>).
--define(OP_SEND,          <<"send">>).
--define(OP_BROADCAST,     <<"broadcast">>).
--define(OP_LIST_AGENTS,   <<"list_agents">>).
--define(OP_PING,          <<"ping">>).
--define(OP_EVENT_HISTORY, <<"event_history">>).
--define(OP_SELFTEST,      <<"selftest">>).
+-define(OP_REGISTER,            <<"register">>).
+-define(OP_ACQUIRE,             <<"acquire">>).
+-define(OP_RELEASE,             <<"release">>).
+-define(OP_RENEW,               <<"renew">>).
+-define(OP_SEND,                <<"send">>).
+-define(OP_BROADCAST,           <<"broadcast">>).
+-define(OP_LIST_AGENTS,         <<"list_agents">>).
+-define(OP_PING,                <<"ping">>).
+-define(OP_EVENT_HISTORY,       <<"event_history">>).
+-define(OP_SELFTEST,            <<"selftest">>).
+-define(OP_ADMIN_LIST_LOCKS,    <<"admin_list_locks">>).
+-define(OP_ADMIN_FORCE_RELEASE, <<"admin_force_release">>).
+-define(OP_ADMIN_LIST_AGENTS,   <<"admin_list_agents">>).
+-define(OP_ADMIN_DISCONNECT,    <<"admin_disconnect_agent">>).
+-define(OP_ADMIN_DEADLOCK_GRAPH,<<"admin_deadlock_graph">>).
+-define(OP_ADMIN_FENCING_SEQ,   <<"admin_fencing_seq">>).
 
 %% ── Response status codes ───────────────────────────────────────────────────
 -define(STATUS_OK,    <<"ok">>).

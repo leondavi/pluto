@@ -116,10 +116,13 @@ handle_call({acquire, Resource, Mode, AgentId, Opts}, _From, State) ->
         no_conflict ->
             %% Grant the lock immediately
             {LockRef, FToken, NewState} = grant_lock(Resource, Mode, AgentId, Opts, State),
+            pluto_stats:inc(locks_acquired),
+            pluto_stats:inc_agent(AgentId, locks_acquired),
             {reply, {ok, LockRef, FToken}, NewState};
         conflict ->
             %% Enqueue the request in the wait queue
             {WaitRef, NewState} = enqueue_waiter(Resource, Mode, AgentId, Opts, State),
+            pluto_stats:inc(lock_waits),
             %% Check for deadlock after adding the wait edge
             case pluto_deadlock:check_cycle(AgentId) of
                 no_cycle ->
@@ -128,6 +131,9 @@ handle_call({acquire, Resource, Mode, AgentId, Opts}, _From, State) ->
                     %% This agent is the victim (youngest waiter)
                     remove_waiter(WaitRef),
                     pluto_deadlock:remove_edge(AgentId),
+                    pluto_stats:inc(deadlocks_detected),
+                    pluto_stats:inc(deadlock_victims),
+                    pluto_stats:inc_agent(AgentId, deadlock_victim),
                     notify_deadlock(Agents, AgentId),
                     {reply, {error, deadlock}, NewState}
             end
@@ -138,6 +144,8 @@ handle_call({release, LockRef, AgentId}, _From, State) ->
     case ets:lookup(?ETS_LOCKS, LockRef) of
         [#lock{agent_id = AgentId, resource = Resource}] ->
             ets:delete(?ETS_LOCKS, LockRef),
+            pluto_stats:inc(locks_released),
+            pluto_stats:inc_agent(AgentId, locks_released),
             %% Advance the wait queue for this resource
             NewState = advance_queue(Resource, State),
             {reply, ok, NewState};
@@ -155,6 +163,7 @@ handle_call({renew, LockRef, Opts}, _From, State) ->
             TtlMs = maps:get(ttl_ms, Opts, 30000),
             NewExpiry = pluto_lease:make_expires_at(TtlMs),
             ets:insert(?ETS_LOCKS, Lock#lock{expires_at = NewExpiry}),
+            pluto_stats:inc(locks_renewed),
             {reply, ok, State};
         [] ->
             {reply, {error, not_found}, State}
@@ -303,6 +312,8 @@ advance_waiters([{Key, Entry} | Rest], Resource, State) ->
             ets:delete(?ETS_WAITERS, Key),
             pluto_deadlock:remove_edge(AgentId),
             NewState = notify_lock_granted(Entry, State),
+            pluto_stats:inc(locks_acquired),
+            pluto_stats:inc_agent(AgentId, locks_acquired),
             %% If this was a read lock, continue granting consecutive readers
             case Mode of
                 read  -> advance_waiters(Rest, Resource, NewState);
@@ -364,6 +375,8 @@ sweep_expired_locks(State) ->
                 ?LOG_INFO("Lock ~s expired for agent ~s on ~s",
                           [Ref, AId, Res]),
                 ets:delete(?ETS_LOCKS, Ref),
+                pluto_stats:inc(locks_expired),
+                pluto_stats:inc_agent(AId, locks_expired),
                 advance_queue(Res, AccState);
             false ->
                 AccState

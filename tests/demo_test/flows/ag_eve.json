@@ -1,0 +1,37 @@
+{
+  "agent_id": "eve",
+  "description": "Eve asks and answers questions, logs to shared transcript",
+  "steps": [
+    {"action": "wait_message", "from": "diana", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A4] eve -> diana: There are 7 continents.\n"},
+    {"action": "release"},
+    {"action": "send", "to": "diana", "payload": {"type": "answer", "id": "A4", "text": "There are 7 continents."}},
+
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[Q5] eve -> alice: What is the speed of light?\n"},
+    {"action": "release"},
+    {"action": "send", "to": "alice", "payload": {"type": "question", "id": "Q5", "text": "What is the speed of light?"}},
+
+    {"action": "wait_message", "from": "alice", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A5] alice -> eve: The speed of light is approximately 299,792 km/s.\n"},
+    {"action": "release"},
+
+    {"action": "wait_message", "from": "charlie", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A8] eve -> charlie: The Titanic sank in 1912.\n"},
+    {"action": "release"},
+    {"action": "send", "to": "charlie", "payload": {"type": "answer", "id": "A8", "text": "The Titanic sank in 1912."}},
+
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[Q10] eve -> bob: How many planets are in our solar system?\n"},
+    {"action": "release"},
+    {"action": "send", "to": "bob", "payload": {"type": "question", "id": "Q10", "text": "How many planets are in our solar system?"}},
+
+    {"action": "wait_message", "from": "bob", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A10] bob -> eve: There are 8 planets in our solar system.\n"},
+    {"action": "release"}
+  ]
+}

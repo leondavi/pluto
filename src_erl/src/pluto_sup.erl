@@ -61,7 +61,16 @@ init([]) ->
             type     => worker,
             modules  => [pluto_persistence]
         },
-        %% 2) Event log — durable event history (before lock/msg for logging)
+        %% 2) Statistics — counters and per-agent metrics
+        #{
+            id       => pluto_stats,
+            start    => {pluto_stats, start_link, []},
+            restart  => permanent,
+            shutdown => 5000,
+            type     => worker,
+            modules  => [pluto_stats]
+        },
+        %% 3) Event log — durable event history (before lock/msg for logging)
         #{
             id       => pluto_event_log,
             start    => {pluto_event_log, start_link, []},

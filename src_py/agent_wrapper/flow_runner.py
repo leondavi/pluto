@@ -35,8 +35,9 @@ class FlowRunner:
         self.port = port
         self.work_dir = work_dir
         self.client = None
-        self.current_lock_ref = None
+        self.lock_refs = []  # stack of held lock refs (LIFO release)
         self.messages = []
+        self._lock_grants = []  # lock_granted events received asynchronously
         self._messages_lock = threading.Lock()
         self._msg_event = threading.Event()
         self.log = []
@@ -88,15 +89,22 @@ class FlowRunner:
         resource = step["resource"]
         mode = step.get("mode", "write")
         ttl_ms = step.get("ttl_ms", 30000)
+        timeout = step.get("timeout", 15)
         ref = self.client.acquire(resource, mode=mode, ttl_ms=ttl_ms)
-        self.current_lock_ref = ref
-        self._log(f"Acquired {resource} -> {ref}")
+        if ref.upper().startswith("WAIT"):
+            # Server queued us — wait for the lock_granted event
+            lock_ref = self._wait_for_lock_grant(ref, timeout)
+            self.lock_refs.append(lock_ref)
+            self._log(f"Acquired {resource} -> {ref} -> {lock_ref}")
+        else:
+            self.lock_refs.append(ref)
+            self._log(f"Acquired {resource} -> {ref}")
 
     def _action_release(self, step):
-        if self.current_lock_ref:
-            self.client.release(self.current_lock_ref)
-            self._log(f"Released {self.current_lock_ref}")
-            self.current_lock_ref = None
+        if self.lock_refs:
+            ref = self.lock_refs.pop()
+            self.client.release(ref)
+            self._log(f"Released {ref}")
 
     def _action_write_file(self, step):
         path = self._resolve(step["path"])
@@ -136,6 +144,10 @@ class FlowRunner:
         seconds = step.get("seconds", 1)
         time.sleep(seconds)
 
+    def _action_stats(self, step):
+        data = self.client.stats()
+        self._log(f"Stats: {json.dumps(data, indent=2)}")
+
     # ── Helpers ───────────────────────────────────────────────────────────
 
     def _resolve(self, path):
@@ -147,8 +159,25 @@ class FlowRunner:
         self._msg_event.set()
 
     def _on_lock_granted(self, event):
-        self.current_lock_ref = event.get("lock_ref")
+        with self._messages_lock:
+            self._lock_grants.append(event)
         self._msg_event.set()
+
+    def _wait_for_lock_grant(self, wait_ref, timeout):
+        """Wait for a lock_granted event matching the given wait_ref."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._messages_lock:
+                for grant in list(self._lock_grants):
+                    # Match by wait_ref (real server) or accept any grant (mock)
+                    if grant.get("wait_ref") == wait_ref or "wait_ref" not in grant:
+                        self._lock_grants.remove(grant)
+                        return grant["lock_ref"]
+            self._msg_event.clear()
+            remaining = deadline - time.time()
+            if remaining > 0:
+                self._msg_event.wait(timeout=min(remaining, 0.5))
+        raise TimeoutError(f"Timeout waiting for lock grant (wait_ref={wait_ref})")
 
     def _wait_for_message(self, from_agent, timeout):
         deadline = time.time() + timeout

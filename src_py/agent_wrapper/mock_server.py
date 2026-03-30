@@ -35,6 +35,23 @@ class MockPlutoServer:
         self._locks = {}          # resource -> {"agent_id": str, "lock_ref": str}
         self._wait_queues = {}    # resource -> [{"agent_id", "conn", "wait_ref"}]
         self._ref_counter = 0
+        # Statistics
+        self._stats = {
+            "locks_acquired": 0,
+            "locks_released": 0,
+            "lock_waits": 0,
+            "messages_sent": 0,
+            "messages_received": 0,
+            "broadcasts_sent": 0,
+            "agents_registered": 0,
+            "agents_disconnected": 0,
+            "total_requests": 0,
+            "deadlocks_detected": 0,
+            "deadlock_victims": 0,
+            "locks_expired": 0,
+            "locks_renewed": 0,
+        }
+        self._agent_stats = {}    # agent_id -> {counter_name: int}
 
     @property
     def port(self):
@@ -115,6 +132,8 @@ class MockPlutoServer:
             if agent_id:
                 with self._lock:
                     self._sessions.pop(agent_id, None)
+                    self._stats["agents_disconnected"] += 1
+                    self._inc_agent(agent_id, "disconnections")
                     for res in list(self._locks.keys()):
                         if self._locks[res]["agent_id"] == agent_id:
                             del self._locks[res]
@@ -146,30 +165,43 @@ class MockPlutoServer:
             sid = uuid.uuid4().hex[:8]
             with self._lock:
                 self._sessions[aid] = {"conn": conn, "session_id": sid}
+                self._stats["agents_registered"] += 1
+                self._stats["total_requests"] += 1
+                self._inc_agent(aid, "registrations")
             return {"status": "ok", "session_id": sid}, aid
 
         elif op == "acquire":
             resource = msg.get("resource")
             with self._lock:
+                self._stats["total_requests"] += 1
                 if resource not in self._locks:
                     ref = self._next_ref("lock")
                     self._locks[resource] = {
                         "agent_id": agent_id, "lock_ref": ref,
                     }
+                    self._stats["locks_acquired"] += 1
+                    if agent_id:
+                        self._inc_agent(agent_id, "locks_acquired")
                     return {"status": "ok", "lock_ref": ref}, None
                 else:
                     ref = self._next_ref("wait")
                     self._wait_queues.setdefault(resource, []).append(
                         {"agent_id": agent_id, "conn": conn, "wait_ref": ref},
                     )
+                    self._stats["lock_waits"] += 1
                     return {"status": "wait", "wait_ref": ref}, None
 
         elif op == "release":
             lock_ref = msg.get("lock_ref")
             with self._lock:
+                self._stats["total_requests"] += 1
                 for res, info in list(self._locks.items()):
                     if info["lock_ref"] == lock_ref:
+                        released_agent = info["agent_id"]
                         del self._locks[res]
+                        self._stats["locks_released"] += 1
+                        if released_agent:
+                            self._inc_agent(released_agent, "locks_released")
                         self._grant_next(res)
                         break
             return {"status": "ok"}, None
@@ -179,7 +211,14 @@ class MockPlutoServer:
             payload = msg.get("payload", {})
             from_id = msg.get("from", agent_id)
             with self._lock:
+                self._stats["total_requests"] += 1
                 target = self._sessions.get(to)
+                self._stats["messages_sent"] += 1
+                self._stats["messages_received"] += 1
+                if from_id:
+                    self._inc_agent(from_id, "messages_sent")
+                if to:
+                    self._inc_agent(to, "messages_received")
             if target:
                 self._send_line(target["conn"], {
                     "event": "message", "from": from_id, "payload": payload,
@@ -191,6 +230,10 @@ class MockPlutoServer:
             payload = msg.get("payload", {})
             from_id = msg.get("from", agent_id)
             with self._lock:
+                self._stats["total_requests"] += 1
+                self._stats["broadcasts_sent"] += 1
+                if from_id:
+                    self._inc_agent(from_id, "broadcasts_sent")
                 targets = [
                     s["conn"]
                     for aid, s in self._sessions.items()
@@ -204,11 +247,20 @@ class MockPlutoServer:
 
         elif op == "list_agents":
             with self._lock:
+                self._stats["total_requests"] += 1
                 agents = list(self._sessions.keys())
             return {"status": "ok", "agents": agents}, None
 
         elif op == "ping":
+            with self._lock:
+                self._stats["total_requests"] += 1
             return {"status": "pong"}, None
+
+        elif op == "stats":
+            with self._lock:
+                self._stats["total_requests"] += 1
+                summary = self._build_stats_summary()
+            return summary, None
 
         return {"status": "error", "reason": "unknown_op"}, None
 
@@ -223,8 +275,33 @@ class MockPlutoServer:
             self._locks[resource] = {
                 "agent_id": waiter["agent_id"], "lock_ref": ref,
             }
+            self._stats["locks_acquired"] += 1
+            if waiter["agent_id"]:
+                self._inc_agent(waiter["agent_id"], "locks_acquired")
             self._send_line(waiter["conn"], {
                 "event": "lock_granted",
                 "lock_ref": ref,
                 "resource": resource,
             })
+
+    def _inc_agent(self, agent_id, key):
+        """Increment a per-agent stat counter. Caller must hold self._lock."""
+        if agent_id not in self._agent_stats:
+            self._agent_stats[agent_id] = {}
+        stats = self._agent_stats[agent_id]
+        stats[key] = stats.get(key, 0) + 1
+
+    def _build_stats_summary(self):
+        """Build a stats summary dict. Caller must hold self._lock."""
+        return {
+            "status": "ok",
+            "counters": dict(self._stats),
+            "agent_stats": {aid: dict(s) for aid, s in self._agent_stats.items()},
+            "live": {
+                "active_locks": len(self._locks),
+                "connected_agents": len(self._sessions),
+                "total_agents": len(self._sessions),
+                "pending_waiters": sum(len(w) for w in self._wait_queues.values()),
+                "wait_graph_edges": 0,
+            },
+        }

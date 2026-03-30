@@ -1,0 +1,21 @@
+{
+  "agent_id": "writer-1",
+  "description": "Acquire lock, append a line, release — repeated 5 times for contention",
+  "steps": [
+    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-1] line 1\n"},
+    {"action": "release"},
+    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-1] line 2\n"},
+    {"action": "release"},
+    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-1] line 3\n"},
+    {"action": "release"},
+    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-1] line 4\n"},
+    {"action": "release"},
+    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-1] line 5\n"},
+    {"action": "release"}
+  ]
+}

@@ -54,6 +54,7 @@ from pluto_client_def import (
     OP_BROADCAST,
     OP_LIST_AGENTS,
     OP_PING,
+    OP_STATS,
     MODE_WRITE,
     STATUS_OK,
     STATUS_WAIT,
@@ -196,6 +197,10 @@ class PlutoClient:
         """Return the list of agent_ids currently connected to Pluto."""
         resp = self._send_and_wait({"op": OP_LIST_AGENTS})
         return resp.get("agents", [])
+
+    def stats(self) -> dict:
+        """Query server statistics: counters, per-agent stats, and live snapshot."""
+        return self._send_and_wait({"op": OP_STATS})
 
     # ── Event handlers ────────────────────────────────────────────────────────
 
@@ -340,7 +345,7 @@ def _build_parser():
                         dest="agent_id",
                         help=f"Agent identifier used for registration (default: {DEFAULT_AGENT_ID})")
 
-    subparsers = parser.add_subparsers(dest="command", metavar="{ping,list,guide}")
+    subparsers = parser.add_subparsers(dest="command", metavar="{ping,list,stats,guide}")
 
     # ping
     subparsers.add_parser(
@@ -354,6 +359,13 @@ def _build_parser():
         "list",
         help="List all agent IDs currently connected to the server.",
         description="Connect to the server and return the list of active agents.",
+    )
+
+    # stats
+    subparsers.add_parser(
+        "stats",
+        help="Query server statistics (locks, messages, deadlocks, per-agent).",
+        description="Connect to the server and retrieve runtime statistics.",
     )
 
     # guide
@@ -371,6 +383,48 @@ def _build_parser():
     )
 
     return parser
+
+
+def _print_stats(data):
+    """Pretty-print server statistics."""
+    counters = data.get("counters", {})
+    live = data.get("live", {})
+    agent_stats = data.get("agent_stats", {})
+    uptime_ms = data.get("uptime_ms", 0)
+
+    uptime_s = uptime_ms / 1000 if uptime_ms else 0
+    mins, secs = divmod(int(uptime_s), 60)
+    hours, mins = divmod(mins, 60)
+
+    print(f"\n  ╔══════════════════════════════════════════╗")
+    print(f"  ║         PLUTO SERVER STATISTICS          ║")
+    print(f"  ╠══════════════════════════════════════════╣")
+    print(f"  ║  Uptime: {hours:02d}h {mins:02d}m {secs:02d}s" + " " * (26 - len(f"{hours:02d}h {mins:02d}m {secs:02d}s")) + "║")
+    print(f"  ╠══════════════════════════════════════════╣")
+    print(f"  ║  LIVE SNAPSHOT                           ║")
+    print(f"  ║    Active locks      : {str(live.get('active_locks', 0)):>16s} ║")
+    print(f"  ║    Connected agents  : {str(live.get('connected_agents', 0)):>16s} ║")
+    print(f"  ║    Total agents      : {str(live.get('total_agents', 0)):>16s} ║")
+    print(f"  ║    Pending waiters   : {str(live.get('pending_waiters', 0)):>16s} ║")
+    print(f"  ║    Wait graph edges  : {str(live.get('wait_graph_edges', 0)):>16s} ║")
+    print(f"  ╠══════════════════════════════════════════╣")
+    print(f"  ║  COUNTERS                                ║")
+    for key in sorted(counters.keys()):
+        val = counters[key]
+        label = key.replace("_", " ").title()
+        print(f"  ║    {label:<22s}: {str(val):>10s} ║")
+    print(f"  ╠══════════════════════════════════════════╣")
+    print(f"  ║  PER-AGENT STATS                         ║")
+    if agent_stats:
+        for aid in sorted(agent_stats.keys()):
+            stats = agent_stats[aid]
+            print(f"  ║  [{aid}]" + " " * max(0, 36 - len(aid)) + "║")
+            for k in sorted(stats.keys()):
+                label = k.replace("_", " ").title()
+                print(f"  ║      {label:<20s}: {str(stats[k]):>8s} ║")
+    else:
+        print(f"  ║    (none)                                ║")
+    print(f"  ╚══════════════════════════════════════════╝\n")
 
 
 def _main():
@@ -407,6 +461,9 @@ def _main():
                         print(f"         · {agent}")
                 else:
                     print("[pluto] No agents currently connected.")
+            elif args.command == "stats":
+                data = client.stats()
+                _print_stats(data)
             else:
                 print("[pluto] Registration OK — Pluto is reachable.")
 

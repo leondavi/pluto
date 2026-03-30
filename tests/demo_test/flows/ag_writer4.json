@@ -1,0 +1,44 @@
+{
+  "agent_id": "writer-4",
+  "description": "Wait for writer-3 signal, write section 4, signal reviewer-4",
+  "steps": [
+    {
+      "action": "wait_message",
+      "from": "writer-3",
+      "timeout": 20
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:section-4",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/section4.txt",
+      "content": "## Section 4: Conclusion\nWritten by writer-4.\nPluto provides deadlock detection and fencing tokens for safe coordination.\n"
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:status-board",
+      "mode": "write",
+      "ttl_ms": 10000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/status.txt",
+      "content": "writer-4: section 4 drafted\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "send",
+      "to": "reviewer-4",
+      "payload": {"type": "review_ready", "section": 4}
+    }
+  ]
+}

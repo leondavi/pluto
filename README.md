@@ -128,6 +128,74 @@ with PlutoClient(host="localhost", port=9000, agent_id="coder-1") as client:
     peers = client.list_agents()
 ```
 
+## Starting an Agent with Pluto
+
+To build an agent that coordinates through Pluto, follow these steps:
+
+### Step 1 — Start the server
+
+```bash
+./PlutoServer.sh --daemon      # start in background
+./PlutoClient.sh ping           # verify it's reachable
+```
+
+### Step 2 — Generate the agent guide
+
+```bash
+./PlutoClient.sh guide --output agent_guide.md
+```
+
+This produces a comprehensive protocol reference your agent can use. Feed it to your AI agent as context or read it yourself.
+
+### Step 3 — Connect and register
+
+Open a TCP connection to `localhost:9000` and send:
+
+```json
+{"op": "register", "agent_id": "my-agent"}
+```
+
+The server responds with a session ID and the heartbeat interval:
+
+```json
+{"status": "ok", "session_id": "sess-...", "heartbeat_interval_ms": 15000}
+```
+
+### Step 4 — Coordinate
+
+| What | How |
+|------|-----|
+| **Lock a resource** | `{"op": "acquire", "resource": "file:/src/main.py", "mode": "write", "ttl_ms": 30000}` |
+| **Release a lock** | `{"op": "release", "lock_ref": "LOCK-42"}` |
+| **Send a message** | `{"op": "send", "to": "other-agent", "payload": {...}}` |
+| **Broadcast** | `{"op": "broadcast", "payload": {...}}` |
+| **Stay alive** | Send `{"op": "ping"}` every 15 seconds |
+
+### Step 5 — Use the Python client (optional)
+
+If your agent is in Python, use the included client library:
+
+```python
+from pluto_client import PlutoClient
+
+client = PlutoClient(host="localhost", port=9000, agent_id="my-agent")
+client.connect()
+
+lock = client.acquire("file:/shared/config.yaml", ttl_ms=30000)
+# ... work with the file ...
+client.release(lock)
+
+client.send("peer-agent", {"status": "done"})
+client.disconnect()
+```
+
+### Tips
+
+- **Always release locks** when done — or they'll expire after the TTL.
+- **Ping regularly** — the server kills sessions that go silent for 30 seconds.
+- **Handle `lock_granted` events** — if a resource is busy, you'll get a `WAIT-*` reference and the lock arrives later as a push event.
+- **Check `./PlutoClient.sh stats`** to monitor activity in real time.
+
 ## Protocol Reference
 
 All communication uses newline-delimited JSON over TCP.

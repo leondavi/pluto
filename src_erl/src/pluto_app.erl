@@ -72,6 +72,11 @@ print_banner() ->
         "    |       . . .  Agent Coordination Server  . . .     |\n"
         "    |                                                   |\n"
         "    +---------------------------------------------------+\n"
+        "\n"
+        "    Pluto is a lightweight coordination server for\n"
+        "    multi-agent workflows. It provides distributed\n"
+        "    locking, message passing, and resource management\n"
+        "    over a simple JSON-over-TCP protocol.\n"
         "\n",
     io:format("~s", [Banner]).
 
@@ -110,7 +115,23 @@ print_server_info() ->
         "  |  2. Send ping every ~w ms to stay alive~s|~n"
         "  |  3. Read the agent_guide.md for full protocol         |~n"
         "  |                                                       |~n"
-        "  +-------------------------------------------------------+~n~n",
+        "  +-------------------------------------------------------+~n"
+        "~n"
+        "  Quick Start:~n"
+        "    ./PlutoClient.sh ping          Check connectivity~n"
+        "    ./PlutoClient.sh stats         View server statistics~n"
+        "    ./PlutoServer.sh --status      Check server status~n"
+        "    ./PlutoServer.sh --kill        Stop the server~n"
+        "~n"
+        "  Starting an Agent:~n"
+        "    1. Connect via TCP to this server on port 9000~n"
+        "    2. Send: {\"op\":\"register\",\"agent_id\":\"<name>\"}~n"
+        "    3. Acquire locks before touching shared resources~n"
+        "    4. Send/receive messages to coordinate with peers~n"
+        "    5. Ping every 15s to stay alive~n"
+        "    Run: ./PlutoClient.sh guide --output agent_guide.md~n"
+        "~n"
+        "  Server is ready. Waiting for agent connections...~n~n",
         [Host, IP, Port, HttpStr,
          "JSON over TCP + REST/HTTP",
          ?VERSION,
@@ -118,7 +139,7 @@ print_server_info() ->
          HttpStr,
          HbMs, padding_int(HbMs, 24)
         ]),
-    ?LOG_INFO("Pluto v~s listening on ~s:~w (TCP), HTTP: ~s", [?VERSION, IP, Port, HttpStr]).
+    ?LOG_NOTICE("Pluto v~s listening on ~s:~w (TCP), HTTP: ~s", [?VERSION, IP, Port, HttpStr]).
 
 %% @private Get the system hostname as a string.
 get_hostname() ->

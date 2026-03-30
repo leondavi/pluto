@@ -1,0 +1,44 @@
+{
+  "agent_id": "reviewer-3",
+  "description": "Wait for writer-3 to finish section 3, review it, append approval, signal writer-1",
+  "steps": [
+    {
+      "action": "wait_message",
+      "from": "writer-3",
+      "timeout": 20
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:section-3",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/section3.txt",
+      "content": "Reviewed and approved by reviewer-3.\n"
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:status-board",
+      "mode": "write",
+      "ttl_ms": 10000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/status.txt",
+      "content": "reviewer-3: section 3 approved\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "send",
+      "to": "writer-1",
+      "payload": {"type": "review_complete", "section": 3, "approved": true}
+    }
+  ]
+}

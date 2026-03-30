@@ -47,6 +47,8 @@
 %% These wrap the OTP logger macros for convenience.
 -define(LOG_INFO(Msg),        logger:info(Msg)).
 -define(LOG_INFO(Fmt, Args),  logger:info(Fmt, Args)).
+-define(LOG_NOTICE(Msg),      logger:notice(Msg)).
+-define(LOG_NOTICE(Fmt, Args),logger:notice(Fmt, Args)).
 -define(LOG_WARN(Msg),        logger:warning(Msg)).
 -define(LOG_WARN(Fmt, Args),  logger:warning(Fmt, Args)).
 -define(LOG_ERROR(Msg),       logger:error(Msg)).

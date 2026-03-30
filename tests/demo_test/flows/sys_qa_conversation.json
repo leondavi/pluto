@@ -1,0 +1,44 @@
+{
+  "name": "qa_conversation_10_questions",
+  "description": "5 agents (alice, bob, charlie, diana, eve) exchange 10 general knowledge questions through Pluto messaging, logging a shared transcript protected by locks",
+  "work_dir": "${TEMP_DIR}/pluto_demo_qa",
+  "agents": [
+    {"flow": "ag_bob.json",     "start_delay_s": 0},
+    {"flow": "ag_charlie.json", "start_delay_s": 0},
+    {"flow": "ag_diana.json",   "start_delay_s": 0},
+    {"flow": "ag_eve.json",     "start_delay_s": 0},
+    {"flow": "ag_alice.json",   "start_delay_s": 0.5}
+  ],
+  "timeout_s": 30,
+  "assertions": [
+    {
+      "type": "file_contains",
+      "path": "${WORK_DIR}/transcript.txt",
+      "expected": [
+        "[Q1] alice -> bob",
+        "[A1] bob -> alice",
+        "[Q2] bob -> charlie",
+        "[A2] charlie -> bob",
+        "[Q3] charlie -> diana",
+        "[A3] diana -> charlie",
+        "[Q4] diana -> eve",
+        "[A4] eve -> diana",
+        "[Q5] eve -> alice",
+        "[A5] alice -> eve",
+        "[Q6] alice -> charlie",
+        "[A6] charlie -> alice",
+        "[Q7] bob -> diana",
+        "[A7] diana -> bob",
+        "[Q8] charlie -> eve",
+        "[A8] eve -> charlie",
+        "[Q9] diana -> alice",
+        "[A9] alice -> diana",
+        "[Q10] eve -> bob",
+        "[A10] bob -> eve"
+      ]
+    },
+    {
+      "type": "all_agents_completed"
+    }
+  ]
+}

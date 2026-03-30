@@ -8,6 +8,7 @@
         pluto_heartbeat,
         pluto_persistence,
         pluto_event_log,
+        pluto_stats,
         pluto_listener_sup,
         pluto_http_listener
     ]},

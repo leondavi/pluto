@@ -1,0 +1,49 @@
+{
+  "agent_id": "writer-2",
+  "description": "Wait for writer-1 signal, write section 2, signal reviewer-2 and writer-3",
+  "steps": [
+    {
+      "action": "wait_message",
+      "from": "writer-1",
+      "timeout": 20
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:section-2",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/section2.txt",
+      "content": "## Section 2: Architecture\nWritten by writer-2.\nPluto uses gen_server for serialized lock management.\n"
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:status-board",
+      "mode": "write",
+      "ttl_ms": 10000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/status.txt",
+      "content": "writer-2: section 2 drafted\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "send",
+      "to": "reviewer-2",
+      "payload": {"type": "review_ready", "section": 2}
+    },
+    {
+      "action": "send",
+      "to": "writer-3",
+      "payload": {"type": "your_turn"}
+    }
+  ]
+}

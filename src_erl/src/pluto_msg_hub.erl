@@ -129,6 +129,10 @@ handle_call({send, From, To, Payload}, _From, State) ->
                 <<"payload">> => Payload
             },
             Pid ! {pluto_event, Event},
+            pluto_stats:inc(messages_sent),
+            pluto_stats:inc(messages_received),
+            pluto_stats:inc_agent(From, messages_sent),
+            pluto_stats:inc_agent(To, messages_received),
             {reply, ok, State};
         _ ->
             {reply, {error, unknown_target}, State}
@@ -152,6 +156,8 @@ handle_cast({broadcast, From, Payload}, State) ->
         <<"from">>    => From,
         <<"payload">> => Payload
     },
+    pluto_stats:inc(broadcasts_sent),
+    pluto_stats:inc_agent(From, broadcasts_sent),
     %% Send to all connected agents except the sender
     AllAgents = ets:match_object(?ETS_AGENTS, #agent{status = connected, _ = '_'}),
     lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid}) ->
@@ -171,6 +177,8 @@ handle_cast({unregister, AgentId}, State) ->
                 status      = disconnected,
                 session_pid = undefined
             }),
+            pluto_stats:inc(agents_disconnected),
+            pluto_stats:inc_agent(AgentId, disconnections),
             %% Remove the session record
             ets:delete(?ETS_SESSIONS, SessId),
             %% Notify other agents
@@ -194,7 +202,7 @@ handle_cast(_Msg, State) ->
 handle_info({grace_expired, AgentId}, State) ->
     case ets:lookup(?ETS_AGENTS, AgentId) of
         [#agent{status = disconnected}] ->
-            ?LOG_INFO("Grace period expired for agent ~s — releasing locks",
+            ?LOG_INFO("Grace period expired for agent ~s -- releasing locks",
                       [AgentId]),
             %% Release all locks held by this agent
             Locks = pluto_lock_mgr:locks_for_agent(AgentId),
@@ -247,6 +255,10 @@ do_register(AgentId, SessionId, SessionPid) ->
 
     %% Monitor the session process so we clean up if it crashes
     erlang:monitor(process, SessionPid),
+
+    %% Track stats
+    pluto_stats:inc(agents_registered),
+    pluto_stats:inc_agent(AgentId, registrations),
 
     %% Broadcast agent_joined to all other connected agents
     broadcast_event(#{

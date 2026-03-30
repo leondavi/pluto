@@ -1,0 +1,37 @@
+{
+  "agent_id": "charlie",
+  "description": "Charlie asks and answers questions, logs to shared transcript",
+  "steps": [
+    {"action": "wait_message", "from": "bob", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A2] charlie -> bob: Mount Everest is the tallest mountain.\n"},
+    {"action": "release"},
+    {"action": "send", "to": "bob", "payload": {"type": "answer", "id": "A2", "text": "Mount Everest is the tallest mountain."}},
+
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[Q3] charlie -> diana: Who wrote Romeo and Juliet?\n"},
+    {"action": "release"},
+    {"action": "send", "to": "diana", "payload": {"type": "question", "id": "Q3", "text": "Who wrote Romeo and Juliet?"}},
+
+    {"action": "wait_message", "from": "diana", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A3] diana -> charlie: William Shakespeare wrote Romeo and Juliet.\n"},
+    {"action": "release"},
+
+    {"action": "wait_message", "from": "alice", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A6] charlie -> alice: The Pacific Ocean is the largest ocean.\n"},
+    {"action": "release"},
+    {"action": "send", "to": "alice", "payload": {"type": "answer", "id": "A6", "text": "The Pacific Ocean is the largest ocean."}},
+
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[Q8] charlie -> eve: What year did the Titanic sink?\n"},
+    {"action": "release"},
+    {"action": "send", "to": "eve", "payload": {"type": "question", "id": "Q8", "text": "What year did the Titanic sink?"}},
+
+    {"action": "wait_message", "from": "eve", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A8] eve -> charlie: The Titanic sank in 1912.\n"},
+    {"action": "release"}
+  ]
+}

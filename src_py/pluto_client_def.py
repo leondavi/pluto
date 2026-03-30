@@ -43,6 +43,7 @@ OP_SEND        = "send"
 OP_BROADCAST   = "broadcast"
 OP_LIST_AGENTS = "list_agents"
 OP_PING        = "ping"
+OP_STATS       = "stats"
 
 # ── Lock modes ───────────────────────────────────────────────────────────────
 
@@ -97,7 +98,7 @@ ERR_INTERNAL_ERROR     = "internal_error"
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-CLI_OPS = ["ping", "list", "guide"]
+CLI_OPS = ["ping", "list", "guide", "stats"]
 
 CLI_DESCRIPTION = """\
 Pluto client — interact with a running Pluto coordination server.
@@ -105,6 +106,7 @@ Pluto client — interact with a running Pluto coordination server.
 Subcommands:
   ping    Verify connectivity: register and confirm the server is reachable.
   list    List all agent IDs currently connected to the server.
+  stats   Query server statistics (locks, messages, deadlocks, per-agent).
   guide   Generate the Pluto agent guide to a file (and print it to stdout).
 """
 
@@ -112,6 +114,7 @@ CLI_EPILOG = (
     "Examples:\n"
     "  python pluto_client.py ping\n"
     "  python pluto_client.py list --host 10.0.0.5 --port 9000\n"
+    "  python pluto_client.py stats\n"
     "  python pluto_client.py guide\n"
     "  python pluto_client.py guide --output /home/agent/guide.md\n"
     "  python pluto_client.py guide --output ./guide.md --host myhost --port 9001\n"

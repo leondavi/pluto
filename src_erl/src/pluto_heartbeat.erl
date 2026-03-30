@@ -66,7 +66,7 @@ handle_info(sweep, #state{sweep_ms = SweepMs, timeout_ms = TimeoutMs} = State) -
     lists:foreach(fun({SessionId, LastSeen}) ->
         case Now - LastSeen > TimeoutMs of
             true ->
-                ?LOG_WARN("Session ~s heartbeat timeout — terminating",
+                ?LOG_WARN("Session ~s heartbeat timeout -- terminating",
                           [SessionId]),
                 %% Look up the session to find the session PID
                 case ets:lookup(?ETS_SESSIONS, SessionId) of

@@ -145,30 +145,18 @@ handle_line(Line, #sess{socket = Sock, session_id = SessId} = S) ->
 
 %% @private Route a decoded JSON request to the appropriate handler.
 handle_request(#{<<"op">> := ?OP_REGISTER} = Msg, S) ->
+    pluto_stats:inc(total_requests),
     handle_register(Msg, S);
 handle_request(#{<<"op">> := ?OP_PING}, S) ->
+    pluto_stats:inc(total_requests),
     handle_ping(S);
 handle_request(#{<<"op">> := ?OP_SELFTEST}, S) ->
+    pluto_stats:inc(total_requests),
     handle_selftest(S);
-handle_request(#{<<"op">> := _Op}, #sess{agent_id = undefined} = S) ->
-    %% All operations except register, ping, and selftest require registration
-    send_error(S#sess.socket, ?ERR_NOT_REGISTERED),
-    S;
-handle_request(#{<<"op">> := ?OP_ACQUIRE} = Msg, S) ->
-    handle_acquire(Msg, S);
-handle_request(#{<<"op">> := ?OP_RELEASE} = Msg, S) ->
-    handle_release(Msg, S);
-handle_request(#{<<"op">> := ?OP_RENEW} = Msg, S) ->
-    handle_renew(Msg, S);
-handle_request(#{<<"op">> := ?OP_SEND} = Msg, S) ->
-    handle_send(Msg, S);
-handle_request(#{<<"op">> := ?OP_BROADCAST} = Msg, S) ->
-    handle_broadcast(Msg, S);
-handle_request(#{<<"op">> := ?OP_LIST_AGENTS}, S) ->
-    handle_list_agents(S);
-handle_request(#{<<"op">> := ?OP_EVENT_HISTORY} = Msg, S) ->
-    handle_event_history(Msg, S);
-%% ── Admin operations ────────────────────────────────────────────
+handle_request(#{<<"op">> := ?OP_STATS}, S) ->
+    pluto_stats:inc(total_requests),
+    handle_stats(S);
+%% ── Admin operations (no registration required) ─────────────────
 handle_request(#{<<"op">> := ?OP_ADMIN_LIST_LOCKS} = Msg, S) ->
     handle_admin(Msg, S);
 handle_request(#{<<"op">> := ?OP_ADMIN_FORCE_RELEASE} = Msg, S) ->
@@ -181,6 +169,33 @@ handle_request(#{<<"op">> := ?OP_ADMIN_DEADLOCK_GRAPH} = Msg, S) ->
     handle_admin(Msg, S);
 handle_request(#{<<"op">> := ?OP_ADMIN_FENCING_SEQ} = Msg, S) ->
     handle_admin(Msg, S);
+handle_request(#{<<"op">> := ?OP_ADMIN_RESET_STATS} = Msg, S) ->
+    handle_admin(Msg, S);
+handle_request(#{<<"op">> := _Op}, #sess{agent_id = undefined} = S) ->
+    %% All operations except register, ping, selftest, stats, and admin require registration
+    send_error(S#sess.socket, ?ERR_NOT_REGISTERED),
+    S;
+handle_request(#{<<"op">> := ?OP_ACQUIRE} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_acquire(Msg, S);
+handle_request(#{<<"op">> := ?OP_RELEASE} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_release(Msg, S);
+handle_request(#{<<"op">> := ?OP_RENEW} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_renew(Msg, S);
+handle_request(#{<<"op">> := ?OP_SEND} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_send(Msg, S);
+handle_request(#{<<"op">> := ?OP_BROADCAST} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_broadcast(Msg, S);
+handle_request(#{<<"op">> := ?OP_LIST_AGENTS}, S) ->
+    pluto_stats:inc(total_requests),
+    handle_list_agents(S);
+handle_request(#{<<"op">> := ?OP_EVENT_HISTORY} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_event_history(Msg, S);
 handle_request(#{<<"op">> := _}, S) ->
     send_error(S#sess.socket, ?ERR_UNKNOWN_OP),
     S;
@@ -392,6 +407,12 @@ handle_selftest(#sess{socket = Sock} = S) ->
     send_json(Sock, Result),
     S.
 
+%% ── Stats ───────────────────────────────────────────────────────────
+handle_stats(#sess{socket = Sock} = S) ->
+    Summary = pluto_stats:get_summary(),
+    send_json(Sock, Summary),
+    S.
+
 %% ── Admin operations ────────────────────────────────────────────────
 handle_admin(#{<<"op">> := Op} = Msg, #sess{socket = Sock} = S) ->
     AdminToken = pluto_config:get(admin_token, undefined),
@@ -459,6 +480,9 @@ execute_admin(?OP_ADMIN_DEADLOCK_GRAPH, _Msg) ->
 execute_admin(?OP_ADMIN_FENCING_SEQ, _Msg) ->
     FSeq = pluto_lock_mgr:get_fencing_seq(),
     #{<<"status">> => ?STATUS_OK, <<"fencing_seq">> => FSeq};
+execute_admin(?OP_ADMIN_RESET_STATS, _Msg) ->
+    pluto_stats:reset(),
+    #{<<"status">> => ?STATUS_OK};
 execute_admin(_, _) ->
     #{<<"status">> => ?STATUS_ERROR, <<"reason">> => ?ERR_UNKNOWN_OP}.
 

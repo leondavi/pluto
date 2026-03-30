@@ -140,14 +140,14 @@ load_snapshot(Dir) ->
                 FSeq
             catch
                 _:Err ->
-                    ?LOG_ERROR("pluto_persistence: corrupt snapshot — ~p", [Err]),
+                    ?LOG_ERROR("pluto_persistence: corrupt snapshot -- ~p", [Err]),
                     0
             end;
         {error, enoent} ->
-            ?LOG_INFO("pluto_persistence: no snapshot found — starting fresh"),
+            ?LOG_INFO("pluto_persistence: no snapshot found -- starting fresh"),
             0;
         {error, Reason} ->
-            ?LOG_ERROR("pluto_persistence: failed to read snapshot — ~p", [Reason]),
+            ?LOG_ERROR("pluto_persistence: failed to read snapshot -- ~p", [Reason]),
             0
     end.
 

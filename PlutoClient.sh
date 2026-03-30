@@ -8,6 +8,7 @@
 # Usage:
 #   ./PlutoClient.sh ping                        Test server connectivity
 #   ./PlutoClient.sh list                         List connected agents
+#   ./PlutoClient.sh stats                        Show server statistics
 #   ./PlutoClient.sh guide                        Generate the agent guide
 #   ./PlutoClient.sh guide --output ./guide.md    Generate to custom path
 #   ./PlutoClient.sh --host 10.0.1.5 --port 9000 ping
@@ -83,20 +84,43 @@ Usage:
 Commands:
   ping                    Verify connectivity to the Pluto server.
   list                    List all connected agents.
+  stats                   Show server statistics (locks, messages, deadlocks,
+                          per-agent counters). No registration required.
   guide                   Generate the Pluto agent guide file.
 
-Global options (before command):
-  --host HOST             Pluto server host (default: localhost)
+Global options (place before the command):
+  --host HOST             Pluto server host (default: 127.0.0.1)
   --port PORT             Pluto server port (default: 9000)
   --agent-id ID           Agent ID for registration (default: pluto-cli)
 
 Guide-specific options:
-  --output PATH           Output path for the guide file.
+  --output PATH           Output path for the generated guide file.
 
 Examples:
+  ${GREEN}# Check if the server is reachable${NC}
   $(basename "$0") ping
-  $(basename "$0") --host 10.0.1.5 list
+
+  ${GREEN}# Show live server statistics${NC}
+  $(basename "$0") stats
+
+  ${GREEN}# List agents on a remote server${NC}
+  $(basename "$0") --host 10.0.1.5 --port 9000 list
+
+  ${GREEN}# Generate the agent coordination guide${NC}
   $(basename "$0") guide --output ./agent_guide.md
+
+Requires: Python 3, a running Pluto server (see ${CYAN}./PlutoServer.sh --help${NC}).
+
+${YELLOW}Starting an Agent with Pluto:${NC}
+  1. Start the server:       ${GREEN}./PlutoServer.sh --daemon${NC}
+  2. Verify it's running:     ${GREEN}./PlutoClient.sh ping${NC}
+  3. Generate the agent guide: ${GREEN}./PlutoClient.sh guide --output agent_guide.md${NC}
+  4. In your agent code, connect via TCP to localhost:9000
+     and send: ${CYAN}{"op":"register","agent_id":"my-agent"}${NC}
+  5. Acquire locks before accessing shared resources,
+     send/receive messages to coordinate with other agents,
+     and ping every 15s to stay alive.
+  See the generated agent_guide.md for the full protocol reference.
 
 EOF
 }

@@ -9,3 +9,4 @@ rebar.lock
 .venv/
 .vscode/
 /tmp/
+agent/

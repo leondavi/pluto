@@ -1,0 +1,41 @@
+{
+  "agent_id": "alice",
+  "description": "Alice asks and answers questions, logs to shared transcript",
+  "steps": [
+    {"action": "sleep", "seconds": 0.3},
+
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[Q1] alice -> bob: What is the capital of France?\n"},
+    {"action": "release"},
+    {"action": "send", "to": "bob", "payload": {"type": "question", "id": "Q1", "text": "What is the capital of France?"}},
+
+    {"action": "wait_message", "from": "bob", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A1] bob -> alice: The capital of France is Paris.\n"},
+    {"action": "release"},
+
+    {"action": "wait_message", "from": "eve", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A5] alice -> eve: The speed of light is approximately 299,792 km/s.\n"},
+    {"action": "release"},
+    {"action": "send", "to": "eve", "payload": {"type": "answer", "id": "A5", "text": "The speed of light is approximately 299,792 km/s."}},
+
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[Q6] alice -> charlie: What is the largest ocean on Earth?\n"},
+    {"action": "release"},
+    {"action": "send", "to": "charlie", "payload": {"type": "question", "id": "Q6", "text": "What is the largest ocean on Earth?"}},
+
+    {"action": "wait_message", "from": "charlie", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A6] charlie -> alice: The Pacific Ocean is the largest ocean.\n"},
+    {"action": "release"},
+
+    {"action": "wait_message", "from": "diana", "timeout": 15},
+    {"action": "acquire", "resource": "qa:transcript", "mode": "write", "ttl_ms": 10000},
+    {"action": "append_file", "path": "${WORK_DIR}/transcript.txt", "content": "[A9] alice -> diana: The chemical symbol for gold is Au.\n"},
+    {"action": "release"},
+    {"action": "send", "to": "diana", "payload": {"type": "answer", "id": "A9", "text": "The chemical symbol for gold is Au."}},
+
+    {"action": "broadcast", "payload": {"type": "done", "from": "alice"}}
+  ]
+}

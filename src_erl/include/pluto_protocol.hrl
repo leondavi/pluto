@@ -25,6 +25,8 @@
 -define(OP_ADMIN_DISCONNECT,    <<"admin_disconnect_agent">>).
 -define(OP_ADMIN_DEADLOCK_GRAPH,<<"admin_deadlock_graph">>).
 -define(OP_ADMIN_FENCING_SEQ,   <<"admin_fencing_seq">>).
+-define(OP_STATS,               <<"stats">>).
+-define(OP_ADMIN_RESET_STATS,   <<"admin_reset_stats">>).
 
 %% ── Response status codes ───────────────────────────────────────────────────
 -define(STATUS_OK,    <<"ok">>).

@@ -1,0 +1,98 @@
+{
+  "agent_id": "writer-1",
+  "description": "Write section 1, signal reviewer-1 and writer-2, wait for reviewer approval, then collect all completions",
+  "steps": [
+    {
+      "action": "acquire",
+      "resource": "doc:section-1",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/section1.txt",
+      "content": "## Section 1: Introduction\nWritten by writer-1.\nPluto enables multi-agent coordination through distributed locking.\n"
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:status-board",
+      "mode": "write",
+      "ttl_ms": 10000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/status.txt",
+      "content": "writer-1: section 1 drafted\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "send",
+      "to": "reviewer-1",
+      "payload": {"type": "review_ready", "section": 1}
+    },
+    {
+      "action": "send",
+      "to": "writer-2",
+      "payload": {"type": "your_turn"}
+    },
+    {
+      "action": "wait_message",
+      "from": "reviewer-1",
+      "timeout": 20
+    },
+    {
+      "action": "wait_message",
+      "from": "reviewer-2",
+      "timeout": 20
+    },
+    {
+      "action": "wait_message",
+      "from": "reviewer-3",
+      "timeout": 20
+    },
+    {
+      "action": "wait_message",
+      "from": "reviewer-4",
+      "timeout": 20
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:final-assembly",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "read_file",
+      "path": "${WORK_DIR}/section1.txt"
+    },
+    {
+      "action": "read_file",
+      "path": "${WORK_DIR}/section2.txt"
+    },
+    {
+      "action": "read_file",
+      "path": "${WORK_DIR}/section3.txt"
+    },
+    {
+      "action": "read_file",
+      "path": "${WORK_DIR}/section4.txt"
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/final_document.txt",
+      "content": "# Assembled Document\nAll 4 sections reviewed and approved.\nAssembled by writer-1.\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "broadcast",
+      "payload": {"type": "pipeline_complete"}
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "coordinated_write",
+  "description": "4 writers each append 5 lines to a shared file using Pluto lock coordination — no corruption",
+  "work_dir": "${TEMP_DIR}/pluto_demo_corruption",
+  "agents": [
+    {"flow": "ag_writer_1.json", "start_delay_s": 0},
+    {"flow": "ag_writer_2.json", "start_delay_s": 0},
+    {"flow": "ag_writer_3.json", "start_delay_s": 0},
+    {"flow": "ag_writer_4.json", "start_delay_s": 0}
+  ],
+  "timeout_s": 30,
+  "assertions": [
+    {
+      "type": "file_contains",
+      "path": "${WORK_DIR}/data.txt",
+      "expected": [
+        "[writer-1] line 1", "[writer-1] line 2", "[writer-1] line 3", "[writer-1] line 4", "[writer-1] line 5",
+        "[writer-2] line 1", "[writer-2] line 2", "[writer-2] line 3", "[writer-2] line 4", "[writer-2] line 5",
+        "[writer-3] line 1", "[writer-3] line 2", "[writer-3] line 3", "[writer-3] line 4", "[writer-3] line 5",
+        "[writer-4] line 1", "[writer-4] line 2", "[writer-4] line 3", "[writer-4] line 4", "[writer-4] line 5"
+      ]
+    },
+    {
+      "type": "all_agents_completed"
+    }
+  ]
+}

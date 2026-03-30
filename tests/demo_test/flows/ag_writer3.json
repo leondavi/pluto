@@ -1,0 +1,49 @@
+{
+  "agent_id": "writer-3",
+  "description": "Wait for writer-2 signal, write section 3, signal reviewer-3 and writer-4",
+  "steps": [
+    {
+      "action": "wait_message",
+      "from": "writer-2",
+      "timeout": 20
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:section-3",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/section3.txt",
+      "content": "## Section 3: Protocol\nWritten by writer-3.\nPluto communicates via newline-delimited JSON over TCP.\n"
+    },
+    {
+      "action": "acquire",
+      "resource": "doc:status-board",
+      "mode": "write",
+      "ttl_ms": 10000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/status.txt",
+      "content": "writer-3: section 3 drafted\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "send",
+      "to": "reviewer-3",
+      "payload": {"type": "review_ready", "section": 3}
+    },
+    {
+      "action": "send",
+      "to": "writer-4",
+      "payload": {"type": "your_turn"}
+    }
+  ]
+}

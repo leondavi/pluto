@@ -1,0 +1,21 @@
+{application, pluto, [
+    {description, "Pluto — Agent Coordination Server"},
+    {vsn, "0.1.0"},
+    {registered, [
+        pluto_sup,
+        pluto_lock_mgr,
+        pluto_msg_hub,
+        pluto_heartbeat,
+        pluto_persistence,
+        pluto_listener_sup
+    ]},
+    {mod, {pluto_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        sasl
+    ]},
+    {env, []},
+    {modules, []}
+]}.

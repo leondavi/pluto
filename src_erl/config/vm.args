@@ -1,0 +1,17 @@
+## Name of the node
+-sname pluto
+
+## Cookie for distributed erlang (not used in v1, but set for safety)
+-setcookie pluto_secret
+
+## Enable heart for crash recovery
+## -heart
+
+## Increase process limit
++P 1048576
+
+## Increase port limit
++Q 65536
+
+## Enable SMP
+-smp auto

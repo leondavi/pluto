@@ -31,7 +31,7 @@ DEFAULT_AGENT_ID: str = "pluto-cli"
 
 DEFAULT_GUIDE_OUTPUT_PATH: str = "/tmp/pluto/agent_guide.md"
 # Relative path from src_py/ to the template file
-GUIDE_TEMPLATE_RELATIVE: str = "../agent/agent_guide_template.md"
+GUIDE_TEMPLATE_RELATIVE: str = "agent_guide_template.md"
 
 # ── Protocol operations ──────────────────────────────────────────────────────
 

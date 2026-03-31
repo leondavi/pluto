@@ -10,3 +10,4 @@ rebar.lock
 .vscode/
 /tmp/
 agent/
+agent_guide.md

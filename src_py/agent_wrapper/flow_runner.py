@@ -148,6 +148,27 @@ class FlowRunner:
         data = self.client.stats()
         self._log(f"Stats: {json.dumps(data, indent=2)}")
 
+    def _action_read_modify_write_loop(self, step):
+        """Read-modify-write loop: read file, append a line, write back.
+
+        This is intentionally NOT atomic — concurrent agents will cause
+        lost updates because the whole file is read then rewritten.
+        """
+        path = self._resolve(step["path"])
+        count = step.get("count", 1)
+        line_prefix = step.get("line_prefix", self.agent_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        for i in range(1, count + 1):
+            try:
+                with open(path, "r") as f:
+                    content = f.read()
+            except FileNotFoundError:
+                content = ""
+            content += f"[{line_prefix}] line {i}\n"
+            with open(path, "w") as f:
+                f.write(content)
+        self._log(f"read_modify_write_loop: wrote {count} lines to {path}")
+
     # ── Helpers ───────────────────────────────────────────────────────────
 
     def _resolve(self, path):

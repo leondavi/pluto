@@ -1,0 +1,12 @@
+{
+  "agent_id": "writer-2",
+  "description": "Uncoordinated: read-modify-write 25 lines with NO locking — triggers lost updates",
+  "steps": [
+    {
+      "action": "read_modify_write_loop",
+      "path": "${WORK_DIR}/data.txt",
+      "line_prefix": "writer-2",
+      "count": 25
+    }
+  ]
+}

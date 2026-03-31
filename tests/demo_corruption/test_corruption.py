@@ -1,16 +1,16 @@
 """
 Demo: File corruption WITHOUT vs WITH Pluto coordination.
 
-Part 1 — Without Pluto server (TestCorruptionWithoutPluto):
-    4 threads do concurrent read-modify-write on the same file with NO
-    coordination.  The read-modify-write race causes lost updates:
+Part 1 — Without lock coordination (TestCorruptionWithoutPluto):
+    4 agents do concurrent read-modify-write on the same file WITHOUT
+    acquiring locks.  The read-modify-write race causes lost updates:
     the final file has fewer lines than expected.
 
-Part 2 — With real Pluto server (TestCorruptionWithPluto):
+Part 2 — With lock coordination (TestCorruptionWithPluto):
     4 agents each append 5 lines to a shared file, acquiring Pluto locks
     before every write.  All 20 lines are present and intact.
 
-Requires the real Erlang Pluto server for Part 2.
+Both parts require the real Erlang Pluto server.
 Start with:  ./PlutoServer.sh --daemon
 """
 
@@ -19,7 +19,6 @@ import shutil
 import socket
 import sys
 import tempfile
-import threading
 import time
 import unittest
 
@@ -53,58 +52,45 @@ def _server_reachable():
         return False
 
 
-def _uncoordinated_writer(path, writer_id, lines, barrier):
-    """Read-modify-write loop with no locking — triggers lost updates."""
-    barrier.wait()
-    for i in range(1, lines + 1):
-        # ---- classic race: read → modify → write-back ----
-        try:
-            with open(path, "r") as f:
-                content = f.read()
-        except FileNotFoundError:
-            content = ""
-        content += f"[writer-{writer_id}] line {i}\n"
-        with open(path, "w") as f:
-            f.write(content)
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# Part 1: WITHOUT Pluto — concurrent writes corrupt the file
+# Part 1: WITHOUT lock coordination — concurrent writes corrupt the file
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@unittest.skipUnless(
+    _server_reachable(),
+    "Real Pluto server not running on port 9000 — start with ./PlutoServer.sh --daemon",
+)
 class TestCorruptionWithoutPluto(unittest.TestCase):
-    """Demonstrate data loss when multiple writers share a file with no coordination."""
+    """Demonstrate data loss when multiple agents share a file with no coordination."""
 
     def test_concurrent_read_modify_write_causes_lost_updates(self):
         """
-        4 threads each append 25 lines via read-modify-write.
-        Expected total: 100 lines.  Actual: fewer, because threads
-        overwrite each other's changes.
+        4 agents each read-modify-write 25 lines via FlowRunner with NO
+        lock coordination.  Expected total: 100 lines.  Actual: fewer,
+        because agents overwrite each other's changes.
         """
-        work_dir = tempfile.mkdtemp(prefix="pluto_corruption_no_server_")
-        target = os.path.join(work_dir, "data.txt")
+        flows_dir = os.path.join(_HERE, "flows")
+        sys_flow = os.path.join(flows_dir, "sys_uncoordinated_write.json")
 
-        # Barrier so all threads start simultaneously
-        barrier = threading.Barrier(NUM_WRITERS)
-        threads = []
-        for wid in range(1, NUM_WRITERS + 1):
-            t = threading.Thread(
-                target=_uncoordinated_writer,
-                args=(target, wid, LINES_PER_WRITER, barrier),
+        wrapper = AgentWrapper(host=PLUTO_HOST, port=PLUTO_PORT)
+        results = wrapper.run_system_flow(sys_flow)
+
+        # All agents should complete (they just don't coordinate)
+        for agent in results["agents"]:
+            self.assertTrue(
+                agent["success"],
+                f"Agent {agent['agent_id']} failed: {agent['error']}",
             )
-            threads.append(t)
 
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-
+        target = os.path.join(
+            tempfile.gettempdir(), "pluto_corruption_no_server", "data.txt",
+        )
         with open(target) as f:
             lines = [l for l in f.read().splitlines() if l.strip()]
 
         unique_lines = set(lines)
         print(f"\n{'='*60}")
-        print("WITHOUT PLUTO — uncoordinated concurrent writes")
+        print("WITHOUT PLUTO — uncoordinated concurrent writes (agents)")
         print(f"{'='*60}")
         print(f"  Writers:            {NUM_WRITERS}")
         print(f"  Lines per writer:   {LINES_PER_WRITER}")

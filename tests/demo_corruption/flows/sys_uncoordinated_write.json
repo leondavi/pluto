@@ -1,12 +1,24 @@
 {
   "name": "uncoordinated_write",
-  "description": "4 writers each read-modify-write 25 lines with NO lock coordination — demonstrates data loss",
+  "description": "4 writers each do 25 read-modify-write cycles x 10 appends with NO lock coordination",
   "work_dir": "${TEMP_DIR}/pluto_corruption_no_server",
   "agents": [
-    {"flow": "ag_writer_1_no_lock.json", "start_delay_s": 0},
-    {"flow": "ag_writer_2_no_lock.json", "start_delay_s": 0},
-    {"flow": "ag_writer_3_no_lock.json", "start_delay_s": 0},
-    {"flow": "ag_writer_4_no_lock.json", "start_delay_s": 0}
+    {
+      "flow": "ag_writer_1_no_lock.json",
+      "start_delay_s": 0
+    },
+    {
+      "flow": "ag_writer_2_no_lock.json",
+      "start_delay_s": 0
+    },
+    {
+      "flow": "ag_writer_3_no_lock.json",
+      "start_delay_s": 0
+    },
+    {
+      "flow": "ag_writer_4_no_lock.json",
+      "start_delay_s": 0
+    }
   ],
   "timeout_s": 30,
   "assertions": [

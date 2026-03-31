@@ -1,21 +1,1481 @@
 {
   "agent_id": "writer-3",
-  "description": "Acquire lock, append a line, release — repeated 5 times for contention",
+  "description": "Acquire lock, append 10 lines, release \u2014 repeated 25 times (250 lines total)",
   "steps": [
-    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
-    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-3] line 1\n"},
-    {"action": "release"},
-    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
-    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-3] line 2\n"},
-    {"action": "release"},
-    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
-    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-3] line 3\n"},
-    {"action": "release"},
-    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
-    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-3] line 4\n"},
-    {"action": "release"},
-    {"action": "acquire", "resource": "file:/corruption-test/data.txt", "mode": "write", "ttl_ms": 10000},
-    {"action": "append_file", "path": "${WORK_DIR}/data.txt", "content": "[writer-3] line 5\n"},
-    {"action": "release"}
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 1\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 2\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 3\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 4\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 5\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 6\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 7\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 8\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 9\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 10\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 11\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 12\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 13\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 14\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 15\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 16\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 17\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 18\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 19\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 20\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 21\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 22\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 23\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 24\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 25\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 26\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 27\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 28\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 29\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 30\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 31\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 32\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 33\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 34\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 35\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 36\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 37\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 38\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 39\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 40\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 41\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 42\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 43\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 44\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 45\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 46\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 47\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 48\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 49\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 50\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 51\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 52\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 53\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 54\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 55\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 56\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 57\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 58\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 59\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 60\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 61\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 62\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 63\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 64\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 65\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 66\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 67\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 68\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 69\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 70\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 71\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 72\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 73\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 74\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 75\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 76\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 77\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 78\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 79\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 80\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 81\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 82\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 83\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 84\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 85\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 86\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 87\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 88\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 89\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 90\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 91\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 92\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 93\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 94\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 95\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 96\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 97\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 98\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 99\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 100\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 101\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 102\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 103\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 104\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 105\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 106\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 107\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 108\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 109\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 110\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 111\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 112\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 113\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 114\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 115\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 116\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 117\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 118\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 119\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 120\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 121\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 122\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 123\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 124\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 125\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 126\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 127\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 128\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 129\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 130\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 131\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 132\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 133\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 134\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 135\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 136\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 137\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 138\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 139\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 140\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 141\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 142\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 143\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 144\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 145\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 146\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 147\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 148\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 149\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 150\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 151\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 152\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 153\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 154\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 155\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 156\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 157\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 158\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 159\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 160\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 161\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 162\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 163\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 164\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 165\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 166\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 167\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 168\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 169\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 170\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 171\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 172\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 173\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 174\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 175\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 176\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 177\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 178\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 179\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 180\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 181\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 182\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 183\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 184\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 185\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 186\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 187\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 188\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 189\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 190\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 191\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 192\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 193\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 194\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 195\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 196\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 197\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 198\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 199\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 200\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 201\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 202\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 203\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 204\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 205\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 206\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 207\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 208\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 209\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 210\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 211\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 212\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 213\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 214\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 215\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 216\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 217\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 218\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 219\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 220\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 221\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 222\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 223\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 224\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 225\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 226\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 227\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 228\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 229\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 230\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 231\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 232\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 233\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 234\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 235\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 236\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 237\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 238\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 239\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 240\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "acquire",
+      "resource": "file:/corruption-test/data.txt",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 241\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 242\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 243\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 244\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 245\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 246\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 247\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 248\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 249\n"
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/data.txt",
+      "content": "[writer-3] line 250\n"
+    },
+    {
+      "action": "release"
+    }
   ]
 }

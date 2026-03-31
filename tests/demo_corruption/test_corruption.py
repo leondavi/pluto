@@ -2,18 +2,19 @@
 Demo: File corruption WITHOUT vs WITH Pluto coordination.
 
 Part 1 — Without lock coordination (TestCorruptionWithoutPluto):
-    4 agents do concurrent read-modify-write on the same file WITHOUT
-    acquiring locks.  The read-modify-write race causes lost updates:
-    the final file has fewer lines than expected.
+    4 agents do 25 concurrent read-modify-write cycles (× 10 appends each)
+    on the same file WITHOUT acquiring locks.  The read-modify-write race
+    causes lost updates: the final file has fewer lines than expected.
 
 Part 2 — With lock coordination (TestCorruptionWithPluto):
-    4 agents each append 5 lines to a shared file, acquiring Pluto locks
-    before every write.  All 20 lines are present and intact.
+    4 agents each perform 25 lock-protected cycles (× 10 appends each)
+    to a shared file.  All 1000 lines are present and intact.
 
 Both parts require the real Erlang Pluto server.
 Start with:  ./PlutoServer.sh --daemon
 """
 
+import json
 import os
 import shutil
 import socket
@@ -36,8 +37,10 @@ PLUTO_HOST = "127.0.0.1"
 PLUTO_PORT = 9000
 
 NUM_WRITERS = 4
-LINES_PER_WRITER = 25          # enough iterations to reliably trigger races
-TOTAL_EXPECTED = NUM_WRITERS * LINES_PER_WRITER
+NUM_CYCLES = 25
+APPENDS_PER_CYCLE = 10
+LINES_PER_WRITER = NUM_CYCLES * APPENDS_PER_CYCLE   # 250
+TOTAL_EXPECTED = NUM_WRITERS * LINES_PER_WRITER      # 1000
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -65,8 +68,8 @@ class TestCorruptionWithoutPluto(unittest.TestCase):
 
     def test_concurrent_read_modify_write_causes_lost_updates(self):
         """
-        4 agents each read-modify-write 25 lines via FlowRunner with NO
-        lock coordination.  Expected total: 100 lines.  Actual: fewer,
+        4 agents each do 25 read-modify-write cycles (× 10 appends) with NO
+        lock coordination.  Expected total: 1000 lines.  Actual: fewer,
         because agents overwrite each other's changes.
         """
         flows_dir = os.path.join(_HERE, "flows")
@@ -93,6 +96,8 @@ class TestCorruptionWithoutPluto(unittest.TestCase):
         print("WITHOUT PLUTO — uncoordinated concurrent writes (agents)")
         print(f"{'='*60}")
         print(f"  Writers:            {NUM_WRITERS}")
+        print(f"  Cycles per writer:  {NUM_CYCLES}")
+        print(f"  Appends per cycle:  {APPENDS_PER_CYCLE}")
         print(f"  Lines per writer:   {LINES_PER_WRITER}")
         print(f"  Expected total:     {TOTAL_EXPECTED}")
         print(f"  Actual lines:       {len(lines)}")
@@ -129,8 +134,8 @@ class TestCorruptionWithPluto(unittest.TestCase):
 
     def test_coordinated_writes_preserve_all_lines(self):
         """
-        4 agents each append 5 lines via Pluto-locked writes.
-        All 20 lines must be present and intact.
+        4 agents each perform 25 lock-protected cycles (× 10 appends) via
+        Pluto locks.  All 1000 lines must be present and intact.
         """
         # Clean work dir from previous runs so counts are exact
         work_dir = os.path.join(tempfile.gettempdir(), "pluto_demo_corruption")
@@ -160,8 +165,6 @@ class TestCorruptionWithPluto(unittest.TestCase):
             self.assertTrue(a["passed"], f"Assertion failed: {a}")
 
         # Read actual file and verify line count
-        work_dir = results["agents"][0]["log"][0]  # extract from log
-        # Use the system flow's work_dir convention
         target = os.path.join(
             tempfile.gettempdir(), "pluto_demo_corruption", "data.txt",
         )
@@ -169,13 +172,26 @@ class TestCorruptionWithPluto(unittest.TestCase):
             lines = [l for l in f.read().splitlines() if l.strip()]
 
         unique_lines = set(lines)
-        coordinated_total = NUM_WRITERS * 5  # 5 lines per agent in flows
+        coordinated_total = TOTAL_EXPECTED  # 4 writers × 250 lines
+
+        # Query server stats
+        try:
+            stats_client = PlutoClient(
+                host=PLUTO_HOST, port=PLUTO_PORT, agent_id="stats-reader",
+            )
+            stats_client.connect()
+            server_stats = stats_client.stats()
+            stats_client.disconnect()
+        except Exception as exc:
+            server_stats = {"error": str(exc)}
 
         print(f"\n{'='*60}")
         print("WITH PLUTO — coordinated writes via lock acquisition")
         print(f"{'='*60}")
         print(f"  Writers:            {NUM_WRITERS}")
-        print(f"  Lines per writer:   5")
+        print(f"  Cycles per writer:  {NUM_CYCLES}")
+        print(f"  Appends per cycle:  {APPENDS_PER_CYCLE}")
+        print(f"  Lines per writer:   {LINES_PER_WRITER}")
         print(f"  Expected total:     {coordinated_total}")
         print(f"  Actual lines:       {len(lines)}")
         print(f"  Unique lines:       {len(unique_lines)}")
@@ -183,8 +199,10 @@ class TestCorruptionWithPluto(unittest.TestCase):
 
         for wid in range(1, NUM_WRITERS + 1):
             count = sum(1 for l in unique_lines if l.startswith(f"[writer-{wid}]"))
-            print(f"  writer-{wid} lines:    {count} / 5")
+            print(f"  writer-{wid} lines:    {count} / {LINES_PER_WRITER}")
 
+        print(f"\n  --- Pluto Server Statistics ---")
+        print(f"  {json.dumps(server_stats, indent=4)}")
         print(f"{'='*60}")
 
         # Zero data loss

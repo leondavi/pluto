@@ -15,6 +15,7 @@ Start with:  ./PlutoServer.sh --daemon
 """
 
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -145,6 +146,11 @@ class TestCorruptionWithPluto(unittest.TestCase):
         4 agents each append 5 lines via Pluto-locked writes.
         All 20 lines must be present and intact.
         """
+        # Clean work dir from previous runs so counts are exact
+        work_dir = os.path.join(tempfile.gettempdir(), "pluto_demo_corruption")
+        if os.path.exists(work_dir):
+            shutil.rmtree(work_dir)
+
         flows_dir = os.path.join(_HERE, "flows")
         sys_flow = os.path.join(flows_dir, "sys_coordinated_write.json")
 

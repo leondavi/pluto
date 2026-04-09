@@ -8,7 +8,7 @@
 #   ./PlutoInstall.sh --check    Only check what is installed / missing
 #
 # What gets installed:
-#   • Erlang/OTP 26+
+#   • Erlang/OTP 28 (exact major version, from apt or built from source)
 #   • rebar3
 #   • Python 3.10+
 #
@@ -75,15 +75,18 @@ version_gte() {
 
 # ── Check individual tools ───────────────────────────────────────────────────
 
+# Required OTP major version
+REQUIRED_OTP_MAJOR=28
+
 check_erlang() {
     if command -v erl &>/dev/null; then
         local otp_ver
         otp_ver=$(erl -eval 'io:format("~s",[erlang:system_info(otp_release)]),halt().' -noshell 2>/dev/null || echo "0")
-        if version_gte "$otp_ver" "26"; then
+        if version_gte "$otp_ver" "${REQUIRED_OTP_MAJOR}"; then
             ok "Erlang/OTP ${otp_ver} ✓"
             return 0
         else
-            warn "Erlang/OTP ${otp_ver} found but 26+ required"
+            warn "Erlang/OTP ${otp_ver} found but ${REQUIRED_OTP_MAJOR}+ required"
             return 1
         fi
     else
@@ -120,6 +123,66 @@ check_python() {
     return 1
 }
 
+# ── Build Erlang/OTP from source (fallback) ───────────────────────────────────
+
+install_erlang_from_source() {
+    local otp_tag="OTP-${REQUIRED_OTP_MAJOR}.0"
+    local otp_src_url="https://github.com/erlang/otp/releases/download/${otp_tag}/otp_src_${REQUIRED_OTP_MAJOR}.0.tar.gz"
+    local build_dir="/tmp/otp_build"
+
+    info "Building Erlang/OTP ${REQUIRED_OTP_MAJOR} from source (${otp_tag}) ..."
+
+    # Install build dependencies
+    if [[ "$PLATFORM" == "debian" ]]; then
+        sudo apt-get install -y -qq build-essential autoconf libncurses5-dev \
+            libssl-dev libwxgtk3.2-dev libglu1-mesa-dev libgl1-mesa-dev \
+            libpng-dev libssh-dev unixodbc-dev xsltproc fop libxml2-utils \
+            2>/dev/null || \
+        sudo apt-get install -y -qq build-essential autoconf libncurses5-dev \
+            libssl-dev libpng-dev libssh-dev unixodbc-dev xsltproc \
+            2>/dev/null || true
+    fi
+
+    rm -rf "${build_dir}"
+    mkdir -p "${build_dir}"
+    cd "${build_dir}"
+
+    info "Downloading OTP source from ${otp_src_url} ..."
+    if ! curl -fsSL -o "otp_src.tar.gz" "${otp_src_url}"; then
+        # Try the archive URL pattern as fallback
+        local alt_url="https://github.com/erlang/otp/archive/refs/tags/${otp_tag}.tar.gz"
+        info "Primary URL failed, trying ${alt_url} ..."
+        curl -fsSL -o "otp_src.tar.gz" "${alt_url}"
+    fi
+
+    tar xzf otp_src.tar.gz
+    cd otp*${REQUIRED_OTP_MAJOR}* || cd otp-${otp_tag} || cd otp_src_${REQUIRED_OTP_MAJOR}.0
+
+    info "Configuring (this may take a few minutes) ..."
+    export ERL_TOP="$PWD"
+    ./configure --prefix=/usr/local --without-javac --without-wx --without-odbc 2>&1 | tail -5
+
+    info "Compiling (this may take several minutes) ..."
+    make -j"$(nproc)" 2>&1 | tail -5
+
+    info "Installing to /usr/local ..."
+    sudo make install 2>&1 | tail -5
+
+    cd /
+    rm -rf "${build_dir}"
+
+    # Refresh hash table so shell picks up new erl
+    hash -r 2>/dev/null || true
+
+    if check_erlang; then
+        ok "Erlang/OTP ${REQUIRED_OTP_MAJOR} built and installed from source."
+    else
+        err "Source build completed but OTP ${REQUIRED_OTP_MAJOR} still not detected."
+        err "Check /usr/local/bin/erl and your PATH."
+        exit 1
+    fi
+}
+
 # ── Install functions (macOS / Homebrew) ──────────────────────────────────────
 
 ensure_homebrew() {
@@ -142,6 +205,11 @@ install_macos() {
     if ! check_erlang; then
         info "Installing Erlang via Homebrew ..."
         brew install erlang
+        # Verify we got OTP ${REQUIRED_OTP_MAJOR}; if not, build from source
+        if ! check_erlang; then
+            warn "Homebrew Erlang does not provide OTP ${REQUIRED_OTP_MAJOR}. Building from source ..."
+            install_erlang_from_source
+        fi
     fi
 
     if ! check_rebar3; then
@@ -162,10 +230,10 @@ install_debian() {
     sudo apt-get update -qq
 
     if ! check_erlang; then
-        info "Installing Erlang/OTP ..."
-        # Try the Erlang Solutions repo for a recent version
+        info "Installing Erlang/OTP ${REQUIRED_OTP_MAJOR} ..."
+        # Try the Erlang Solutions repo first for a packaged OTP 28
         if ! dpkg -l erlang-nox &>/dev/null || ! check_erlang; then
-            info "Adding Erlang Solutions repository for OTP 26+ ..."
+            info "Adding Erlang Solutions repository for OTP ${REQUIRED_OTP_MAJOR} ..."
             sudo apt-get install -y -qq curl gnupg apt-transport-https
             # Import key and add repo
             if [[ ! -f /usr/share/keyrings/erlang-solutions-keyring.gpg ]]; then
@@ -179,6 +247,12 @@ install_debian() {
             sudo apt-get update -qq
         fi
         sudo apt-get install -y -qq erlang-nox erlang-dev erlang-src
+
+        # Verify we got the right version; if not, build from source
+        if ! check_erlang; then
+            warn "apt did not provide OTP ${REQUIRED_OTP_MAJOR}. Building from source ..."
+            install_erlang_from_source
+        fi
     fi
 
     if ! check_rebar3; then
@@ -249,7 +323,7 @@ Supported platforms:
   • Debian / Ubuntu (via apt + Erlang Solutions repo)
 
 Dependencies installed:
-  • Erlang/OTP 26+
+  • Erlang/OTP 28 (exact, from apt or source)
   • rebar3
   • Python 3.10+
 EOF

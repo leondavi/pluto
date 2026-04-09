@@ -319,6 +319,85 @@ route('POST', <<"/selftest">>, _Body) ->
     Result = pluto_selftest:run(),
     {200, Result};
 
+%% ── Messaging via HTTP ──────────────────────────────────────────────
+%% These endpoints allow HTTP-only clients to send and broadcast messages
+%% without maintaining a persistent TCP session.  The sender provides an
+%% `agent_id` field in the request body (no session required).
+%% Messages to offline agents are queued in the target's inbox.
+
+route('POST', <<"/messages/send">>, Body) ->
+    case decode_body(Body) of
+        {ok, #{<<"agent_id">> := From, <<"to">> := To,
+               <<"payload">> := Payload} = Msg} ->
+            RequestId = maps:get(<<"request_id">>, Msg, undefined),
+            case pluto_msg_hub:send_msg(From, To, Payload, RequestId) of
+                {ok, MsgId} ->
+                    {200, #{<<"status">> => <<"ok">>, <<"msg_id">> => MsgId}};
+                ok ->
+                    {200, #{<<"status">> => <<"ok">>}};
+                {error, unknown_target} ->
+                    {404, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"unknown_target">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing agent_id, to, and payload">>}}
+    end;
+
+route('POST', <<"/messages/broadcast">>, Body) ->
+    case decode_body(Body) of
+        {ok, #{<<"agent_id">> := From, <<"payload">> := Payload}} ->
+            pluto_msg_hub:broadcast(From, Payload),
+            {200, #{<<"status">> => <<"ok">>}};
+        _ ->
+            {400, #{<<"error">> => <<"missing agent_id and payload">>}}
+    end;
+
+%% ── Agent discovery ─────────────────────────────────────────────────
+%% Query agents by attributes: POST {"filter": {"role": "code-fixer"}}
+route('POST', <<"/agents/find">>, Body) ->
+    case decode_body(Body) of
+        {ok, #{<<"filter">> := Filter}} when is_map(Filter) ->
+            Agents = pluto_msg_hub:find_agents(Filter),
+            {200, #{<<"status">> => <<"ok">>, <<"agents">> => Agents}};
+        _ ->
+            {400, #{<<"error">> => <<"missing filter map">>}}
+    end;
+
+%% ── Agent status query ──────────────────────────────────────────────
+%% Returns connection status, last-seen timestamp, custom status, and
+%% attributes for a specific agent — useful for deciding whether to send
+%% a direct message or fall back to broadcast.
+route('GET', <<"/agents/", AgentId/binary>>, _Body)
+  when AgentId =/= <<>> ->
+    case pluto_msg_hub:agent_status(AgentId) of
+        {ok, Info} ->
+            {200, #{<<"status">> => <<"ok">>, <<"agent">> => Info}};
+        {error, not_found} ->
+            {404, #{<<"status">> => <<"error">>,
+                    <<"reason">> => <<"not_found">>}}
+    end;
+
+%% ── Detailed agent listing ──────────────────────────────────────────
+route('GET', <<"/agents/list/detailed">>, _Body) ->
+    AgentMaps = pluto_msg_hub:list_agents_detailed(),
+    {200, #{<<"status">> => <<"ok">>, <<"agents">> => AgentMaps}};
+
+%% ── Task management via HTTP ────────────────────────────────────────
+route('GET', <<"/tasks">>, _Body) ->
+    Tasks = [T || {_Id, T} <- ets:tab2list(?ETS_TASKS)],
+    {200, #{<<"status">> => <<"ok">>, <<"tasks">> => Tasks}};
+
+route('GET', <<"/tasks/progress">>, _Body) ->
+    AllTasks = [T || {_Id, T} <- ets:tab2list(?ETS_TASKS)],
+    StatusCounts = lists:foldl(fun(T, Acc) ->
+        St = maps:get(<<"status">>, T, <<"unknown">>),
+        Acc#{St => maps:get(St, Acc, 0) + 1}
+    end, #{}, AllTasks),
+    {200, #{<<"status">> => <<"ok">>,
+            <<"total">>  => length(AllTasks),
+            <<"by_status">> => StatusCounts,
+            <<"tasks">> => AllTasks}};
+
 %% ── 404 ─────────────────────────────────────────────────────────────
 route('GET', _Path, _Body) ->
     {404, #{<<"error">> => <<"not_found">>}};

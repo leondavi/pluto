@@ -190,12 +190,59 @@ handle_request(#{<<"op">> := ?OP_SEND} = Msg, S) ->
 handle_request(#{<<"op">> := ?OP_BROADCAST} = Msg, S) ->
     pluto_stats:inc(total_requests),
     handle_broadcast(Msg, S);
-handle_request(#{<<"op">> := ?OP_LIST_AGENTS}, S) ->
+handle_request(#{<<"op">> := ?OP_LIST_AGENTS} = Msg, S) ->
     pluto_stats:inc(total_requests),
-    handle_list_agents(S);
+    handle_list_agents(Msg, S);
 handle_request(#{<<"op">> := ?OP_EVENT_HISTORY} = Msg, S) ->
     pluto_stats:inc(total_requests),
     handle_event_history(Msg, S);
+%% ── Message delivery confirmation ───────────────────────────────────
+handle_request(#{<<"op">> := ?OP_ACK} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_ack(Msg, S);
+%% ── Event sequence acknowledgment ───────────────────────────────────
+handle_request(#{<<"op">> := ?OP_ACK_EVENTS} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_ack_events(Msg, S);
+%% ── Task management (assign / update / list) ────────────────────────
+handle_request(#{<<"op">> := ?OP_TASK_ASSIGN} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_task_assign(Msg, S);
+handle_request(#{<<"op">> := ?OP_TASK_UPDATE} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_task_update(Msg, S);
+handle_request(#{<<"op">> := ?OP_TASK_LIST}, S) ->
+    pluto_stats:inc(total_requests),
+    handle_task_list(S);
+%% ── Agent discovery by attributes ───────────────────────────────────
+handle_request(#{<<"op">> := ?OP_FIND_AGENTS} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_find_agents(Msg, S);
+%% ── Topic-based publish / subscribe ─────────────────────────────────
+handle_request(#{<<"op">> := ?OP_SUBSCRIBE} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_subscribe(Msg, S);
+handle_request(#{<<"op">> := ?OP_UNSUBSCRIBE} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_unsubscribe(Msg, S);
+handle_request(#{<<"op">> := ?OP_PUBLISH} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_publish(Msg, S);
+%% ── Non-blocking lock probe (try-acquire) ───────────────────────────
+handle_request(#{<<"op">> := ?OP_TRY_ACQUIRE} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_try_acquire(Msg, S);
+%% ── Agent presence & status query ───────────────────────────────────
+handle_request(#{<<"op">> := ?OP_AGENT_STATUS} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_agent_status(Msg, S);
+%% ── Batch work distribution ─────────────────────────────────────────
+handle_request(#{<<"op">> := ?OP_TASK_BATCH} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_task_batch(Msg, S);
+handle_request(#{<<"op">> := ?OP_TASK_PROGRESS}, S) ->
+    pluto_stats:inc(total_requests),
+    handle_task_progress(S);
 handle_request(#{<<"op">> := _}, S) ->
     send_error(S#sess.socket, ?ERR_UNKNOWN_OP),
     S;
@@ -212,9 +259,10 @@ handle_register(#{<<"agent_id">> := AgentId} = Msg, #sess{socket = Sock,
                                                            session_id = SessId} = S)
   when is_binary(AgentId), AgentId =/= <<>> ->
     Token = maps:get(<<"token">>, Msg, undefined),
+    Attrs = maps:get(<<"attributes">>, Msg, #{}),
     case pluto_policy:check_auth(AgentId, Token) of
         ok ->
-            case pluto_msg_hub:register_agent(AgentId, SessId, self()) of
+            case pluto_msg_hub:register_agent(AgentId, SessId, self(), Attrs) of
                 {ok, SessId} ->
                     HbMs = pluto_config:get(heartbeat_interval_ms,
                                             ?DEFAULT_HEARTBEAT_INTERVAL_MS),
@@ -353,11 +401,19 @@ handle_renew(_, #sess{socket = Sock} = S) ->
     send_error(Sock, ?ERR_BAD_REQUEST),
     S.
 
-%% ── Send direct message ────────────────────────────────────────────
-handle_send(#{<<"to">> := To, <<"payload">> := Payload},
+%% ── Send direct message ─────────────────────────────────────────────
+%% Supports optional `request_id` field: when present the server will push
+%% a delivery_ack event back to the sender once the target receives the
+%% message, giving reliable end-to-end delivery feedback.
+%% Messages to disconnected-but-known agents are queued in their inbox.
+handle_send(#{<<"to">> := To, <<"payload">> := Payload} = Msg,
             #sess{socket = Sock, agent_id = From} = S)
   when is_binary(To) ->
-    case pluto_msg_hub:send_msg(From, To, Payload) of
+    RequestId = maps:get(<<"request_id">>, Msg, undefined),
+    case pluto_msg_hub:send_msg(From, To, Payload, RequestId) of
+        {ok, MsgId} ->
+            send_json(Sock, #{<<"status">> => ?STATUS_OK,
+                              <<"msg_id">> => MsgId});
         ok ->
             send_json(Sock, #{<<"status">> => ?STATUS_OK});
         {error, unknown_target} ->
@@ -382,12 +438,20 @@ handle_broadcast(_, #sess{socket = Sock} = S) ->
     S.
 
 %% ── List agents ─────────────────────────────────────────────────────
-handle_list_agents(#sess{socket = Sock} = S) ->
-    Agents = pluto_msg_hub:list_agents(),
-    send_json(Sock, #{
-        <<"status">> => ?STATUS_OK,
-        <<"agents">> => Agents
-    }),
+%% Pass {"detailed": true} to include last_seen timestamps, custom status,
+%% agent attributes, and subscriptions for each agent.
+handle_list_agents(Msg, #sess{socket = Sock} = S) ->
+    Detailed = maps:get(<<"detailed">>, Msg, false),
+    case Detailed of
+        true ->
+            AgentMaps = pluto_msg_hub:list_agents_detailed(),
+            send_json(Sock, #{<<"status">> => ?STATUS_OK,
+                              <<"agents">> => AgentMaps});
+        _ ->
+            Agents = pluto_msg_hub:list_agents(),
+            send_json(Sock, #{<<"status">> => ?STATUS_OK,
+                              <<"agents">> => Agents})
+    end,
     S.
 
 %% ── Event history ───────────────────────────────────────────────────
@@ -398,6 +462,291 @@ handle_event_history(Msg, #sess{socket = Sock} = S) ->
     send_json(Sock, #{
         <<"status">> => ?STATUS_OK,
         <<"events">> => Events
+    }),
+    S.
+
+%% ── Message delivery acknowledgment ─────────────────────────────────
+%% The sender confirms receipt of a message by its msg_id.  This is an
+%% application-level ack — the server logs the acknowledgment event.
+handle_ack(#{<<"msg_id">> := MsgId}, #sess{socket = Sock, agent_id = AgentId} = S) ->
+    pluto_event_log:log(message_acked, #{agent_id => AgentId, msg_id => MsgId}),
+    send_json(Sock, #{<<"status">> => ?STATUS_OK}),
+    S;
+handle_ack(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Event sequence acknowledgment ───────────────────────────────────
+%% Agents report the highest event sequence they processed so the server
+%% can distinguish new vs. already-handled events.  Currently logged;
+%% future versions may use this for server-side cursor management.
+handle_ack_events(#{<<"up_to_seq">> := Seq}, #sess{socket = Sock,
+                                                     agent_id = AgentId} = S)
+  when is_integer(Seq) ->
+    pluto_event_log:log(events_acked, #{agent_id => AgentId, up_to_seq => Seq}),
+    send_json(Sock, #{<<"status">> => ?STATUS_OK}),
+    S;
+handle_ack_events(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Task assignment ─────────────────────────────────────────────────
+%% Creates a server-tracked task with an immutable task_id.  The server
+%% stores the task, broadcasts a task_assigned event so all agents can
+%% observe progress, and tries to deliver it to the assigned agent's inbox
+%% if that agent is offline.
+handle_task_assign(#{<<"task_id">> := TaskId, <<"to">> := Assignee} = Msg,
+                   #sess{socket = Sock, agent_id = From} = S)
+  when is_binary(TaskId), is_binary(Assignee) ->
+    Payload = maps:get(<<"payload">>, Msg, #{}),
+    Now = erlang:system_time(millisecond),
+    Task = #{
+        <<"task_id">>    => TaskId,
+        <<"from">>       => From,
+        <<"assignee">>   => Assignee,
+        <<"payload">>    => Payload,
+        <<"status">>     => <<"assigned">>,
+        <<"created_at">> => Now,
+        <<"updated_at">> => Now
+    },
+    ets:insert(?ETS_TASKS, {TaskId, Task}),
+    %% Broadcast task_assigned to all connected agents
+    Event = #{
+        <<"event">>   => ?EVT_TASK_ASSIGNED,
+        <<"task_id">> => TaskId,
+        <<"from">>    => From,
+        <<"to">>      => Assignee,
+        <<"payload">> => Payload
+    },
+    pluto_msg_hub:broadcast(From, Event),
+    pluto_event_log:log(task_assigned, #{task_id => TaskId, from => From,
+                                          to => Assignee}),
+    send_json(Sock, #{<<"status">> => ?STATUS_OK, <<"task_id">> => TaskId}),
+    S;
+handle_task_assign(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Task status update ──────────────────────────────────────────────
+%% Agents report progress on a task.  Valid statuses include "in_progress",
+%% "complete", "failed".  A task_updated event is broadcast so all agents
+%% can track workflow progress in real time.
+handle_task_update(#{<<"task_id">> := TaskId, <<"status">> := NewStatus} = Msg,
+                   #sess{socket = Sock, agent_id = AgentId} = S)
+  when is_binary(TaskId), is_binary(NewStatus) ->
+    Result = maps:get(<<"result">>, Msg, #{}),
+    case ets:lookup(?ETS_TASKS, TaskId) of
+        [{TaskId, Task}] ->
+            Now = erlang:system_time(millisecond),
+            Updated = Task#{
+                <<"status">>     => NewStatus,
+                <<"result">>     => Result,
+                <<"updated_at">> => Now
+            },
+            ets:insert(?ETS_TASKS, {TaskId, Updated}),
+            %% Broadcast task_updated to all agents
+            Event = #{
+                <<"event">>   => ?EVT_TASK_UPDATED,
+                <<"task_id">> => TaskId,
+                <<"agent_id">> => AgentId,
+                <<"status">>  => NewStatus,
+                <<"result">>  => Result
+            },
+            pluto_msg_hub:broadcast(AgentId, Event),
+            pluto_event_log:log(task_updated, #{task_id => TaskId,
+                                                 agent_id => AgentId,
+                                                 status => NewStatus}),
+            send_json(Sock, #{<<"status">> => ?STATUS_OK});
+        [] ->
+            send_json(Sock, #{<<"status">> => ?STATUS_ERROR,
+                              <<"reason">> => ?ERR_NOT_FOUND})
+    end,
+    S;
+handle_task_update(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Task list query ─────────────────────────────────────────────────
+%% Returns all server-tracked tasks with their current status, assignee,
+%% timestamps, and result payloads.
+handle_task_list(#sess{socket = Sock} = S) ->
+    Tasks = [T || {_Id, T} <- ets:tab2list(?ETS_TASKS)],
+    send_json(Sock, #{<<"status">> => ?STATUS_OK, <<"tasks">> => Tasks}),
+    S.
+
+%% ── Agent discovery by attributes ───────────────────────────────────
+%% Find agents whose metadata matches all key-value pairs in the filter.
+%% Example: {"op": "find_agents", "filter": {"role": "code-fixer"}}
+handle_find_agents(#{<<"filter">> := Filter}, #sess{socket = Sock} = S)
+  when is_map(Filter) ->
+    Agents = pluto_msg_hub:find_agents(Filter),
+    send_json(Sock, #{<<"status">> => ?STATUS_OK, <<"agents">> => Agents}),
+    S;
+handle_find_agents(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Topic subscription ──────────────────────────────────────────────
+%% Agents subscribe to named channels (e.g. "tasks.code-fix") and only
+%% receive messages published on those channels.
+handle_subscribe(#{<<"topic">> := Topic}, #sess{socket = Sock,
+                                                 agent_id = AgentId} = S)
+  when is_binary(Topic) ->
+    pluto_msg_hub:subscribe(AgentId, Topic),
+    send_json(Sock, #{<<"status">> => ?STATUS_OK}),
+    S;
+handle_subscribe(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Topic unsubscription ────────────────────────────────────────────
+handle_unsubscribe(#{<<"topic">> := Topic}, #sess{socket = Sock,
+                                                   agent_id = AgentId} = S)
+  when is_binary(Topic) ->
+    pluto_msg_hub:unsubscribe(AgentId, Topic),
+    send_json(Sock, #{<<"status">> => ?STATUS_OK}),
+    S;
+handle_unsubscribe(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Publish to topic ────────────────────────────────────────────────
+%% Sends a message to all agents subscribed to the given topic.  Only
+%% subscribers receive the event — more targeted than the global broadcast.
+handle_publish(#{<<"topic">> := Topic, <<"payload">> := Payload},
+               #sess{socket = Sock, agent_id = From} = S)
+  when is_binary(Topic) ->
+    pluto_msg_hub:publish(From, Topic, Payload),
+    send_json(Sock, #{<<"status">> => ?STATUS_OK}),
+    S;
+handle_publish(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Non-blocking lock probe (try-acquire) ───────────────────────────
+%% Returns immediately with "ok" + lock_ref if the resource is free, or
+%% "unavailable" if it is already locked — never enters the wait queue.
+%% Useful for polling or optional coordination.
+handle_try_acquire(Msg, #sess{socket = Sock, session_id = SessId,
+                               agent_id = AgentId} = S) ->
+    case maps:find(<<"resource">>, Msg) of
+        {ok, RawResource} ->
+            case pluto_resource:normalize(RawResource) of
+                {ok, Resource} ->
+                    Mode = parse_mode(maps:get(<<"mode">>, Msg, ?MODE_WRITE)),
+                    case pluto_policy:check_acl(AgentId, Resource, Mode) of
+                        ok ->
+                            TtlMs = maps:get(<<"ttl_ms">>, Msg, 30000),
+                            Opts = #{
+                                ttl_ms      => TtlMs,
+                                max_wait_ms => undefined,
+                                session_id  => SessId,
+                                session_pid => self()
+                            },
+                            case pluto_lock_mgr:try_acquire(Resource, Mode,
+                                                             AgentId, Opts) of
+                                {ok, LockRef, FToken} ->
+                                    send_json(Sock, #{
+                                        <<"status">>        => ?STATUS_OK,
+                                        <<"lock_ref">>      => LockRef,
+                                        <<"fencing_token">> => FToken
+                                    });
+                                unavailable ->
+                                    send_json(Sock, #{
+                                        <<"status">> => ?STATUS_UNAVAILABLE
+                                    })
+                            end;
+                        {error, unauthorized} ->
+                            send_json(Sock, #{
+                                <<"status">> => ?STATUS_ERROR,
+                                <<"reason">> => ?ERR_UNAUTHORIZED
+                            })
+                    end;
+                {error, empty_resource} ->
+                    send_error(Sock, ?ERR_BAD_REQUEST)
+            end;
+        error ->
+            send_error(Sock, ?ERR_BAD_REQUEST)
+    end,
+    S.
+
+%% ── Agent presence & status query ───────────────────────────────────
+%% Returns whether a specific agent is online, its last-seen timestamp,
+%% custom status, and attributes.  Lets callers choose between send and
+%% broadcast intelligently.
+handle_agent_status(#{<<"agent_id">> := TargetId}, #sess{socket = Sock} = S)
+  when is_binary(TargetId) ->
+    case pluto_msg_hub:agent_status(TargetId) of
+        {ok, Info} ->
+            send_json(Sock, #{<<"status">> => ?STATUS_OK, <<"agent">> => Info});
+        {error, not_found} ->
+            send_json(Sock, #{<<"status">> => ?STATUS_ERROR,
+                              <<"reason">> => ?ERR_NOT_FOUND})
+    end,
+    S;
+handle_agent_status(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Batch task distribution ─────────────────────────────────────────
+%% Atomically assigns a batch of tasks across multiple agents and stores
+%% them server-side.  If an assigned agent is disconnected, the task is
+%% immediately marked as "orphaned" and a tasks_orphaned event is broadcast.
+handle_task_batch(#{<<"assignments">> := Assignments},
+                  #sess{socket = Sock, agent_id = From} = S)
+  when is_list(Assignments) ->
+    Now = erlang:system_time(millisecond),
+    TaskIds = lists:map(fun(Assignment) ->
+        Assignee = maps:get(<<"agent">>, Assignment, undefined),
+        Tasks    = maps:get(<<"tasks">>, Assignment, []),
+        lists:map(fun(TaskDef) ->
+            TaskId = maps:get(<<"task_id">>, TaskDef, generate_task_id()),
+            Task = #{
+                <<"task_id">>    => TaskId,
+                <<"from">>       => From,
+                <<"assignee">>   => Assignee,
+                <<"payload">>    => TaskDef,
+                <<"status">>     => <<"assigned">>,
+                <<"created_at">> => Now,
+                <<"updated_at">> => Now
+            },
+            ets:insert(?ETS_TASKS, {TaskId, Task}),
+            pluto_event_log:log(task_assigned, #{task_id => TaskId,
+                                                  from => From,
+                                                  to => Assignee}),
+            TaskId
+        end, Tasks)
+    end, Assignments),
+    FlatIds = lists:flatten(TaskIds),
+    %% Broadcast batch assignment
+    Event = #{
+        <<"event">>    => ?EVT_TASK_ASSIGNED,
+        <<"from">>     => From,
+        <<"task_ids">> => FlatIds,
+        <<"batch">>    => true
+    },
+    pluto_msg_hub:broadcast(From, Event),
+    send_json(Sock, #{<<"status">> => ?STATUS_OK, <<"task_ids">> => FlatIds}),
+    S;
+handle_task_batch(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% ── Task progress overview ──────────────────────────────────────────
+%% Returns a global view of all assigned/completed/failed/orphaned tasks
+%% grouped by status, enabling coordinators to monitor multi-agent workflows.
+handle_task_progress(#sess{socket = Sock} = S) ->
+    AllTasks = [T || {_Id, T} <- ets:tab2list(?ETS_TASKS)],
+    %% Group by status
+    StatusCounts = lists:foldl(fun(T, Acc) ->
+        St = maps:get(<<"status">>, T, <<"unknown">>),
+        Acc#{St => maps:get(St, Acc, 0) + 1}
+    end, #{}, AllTasks),
+    send_json(Sock, #{
+        <<"status">> => ?STATUS_OK,
+        <<"total">>  => length(AllTasks),
+        <<"by_status">> => StatusCounts,
+        <<"tasks">> => AllTasks
     }),
     S.
 
@@ -528,6 +877,11 @@ generate_session_id() ->
 parse_mode(?MODE_WRITE) -> write;
 parse_mode(?MODE_READ)  -> read;
 parse_mode(_)           -> write.  %% Default to write (exclusive)
+
+%% @private Generate a unique task ID in the form `TASK-<hex>`.
+generate_task_id() ->
+    Hex = string:lowercase(binary:encode_hex(crypto:strong_rand_bytes(8))),
+    iolist_to_binary([<<"TASK-">>, Hex]).
 
 %% @private Convert a term to binary for JSON error reasons.
 to_bin(B) when is_binary(B)  -> B;

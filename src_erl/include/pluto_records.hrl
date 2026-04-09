@@ -62,13 +62,21 @@
 %%   session_pid  — PID of the current session process, or 'undefined'
 %%   status       — 'connected' | 'disconnected'
 %%   connected_at — Monotonic time (ms) when last connected
+%%   attributes   — Agent metadata key-value map (binary keys/values)
+%%   last_seen    — System time (ms) of last heartbeat/message
+%%   custom_status— Custom agent status (e.g. <<"busy">>, <<"idle">>)
+%%   subscriptions— List of topic names this agent subscribes to
 %%
 -record(agent, {
-    agent_id     :: binary(),
-    session_id   :: binary() | undefined,
-    session_pid  :: pid() | undefined,
-    status       :: connected | disconnected,
-    connected_at :: integer()
+    agent_id      :: binary(),
+    session_id    :: binary() | undefined,
+    session_pid   :: pid() | undefined,
+    status        :: connected | disconnected,
+    connected_at  :: integer(),
+    attributes    :: map(),
+    last_seen     :: integer(),
+    custom_status :: binary(),
+    subscriptions :: [binary()]
 }).
 
 %% ── Session record ──────────────────────────────────────────────────────────

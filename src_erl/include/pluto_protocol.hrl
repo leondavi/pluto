@@ -28,6 +28,51 @@
 -define(OP_STATS,               <<"stats">>).
 -define(OP_ADMIN_RESET_STATS,   <<"admin_reset_stats">>).
 
+%% ── Message delivery confirmation ───────────────────────────────────────────
+%% Lets the sender explicitly acknowledge receipt of a message, closing the
+%% fire-and-forget gap so agents get reliable end-to-end delivery feedback.
+-define(OP_ACK,                 <<"ack">>).
+
+%% ── Event sequence acknowledgment ──────────────────────────────────────────
+%% Agents report the highest event sequence number they have processed,
+%% enabling the server to distinguish new vs. already-handled events.
+-define(OP_ACK_EVENTS,          <<"ack_events">>).
+
+%% ── First-class task management ─────────────────────────────────────────────
+%% Structured primitives for assigning work to agents, reporting progress,
+%% and querying task status — replaces ad-hoc message conventions.
+-define(OP_TASK_ASSIGN,         <<"task_assign">>).
+-define(OP_TASK_UPDATE,         <<"task_update">>).
+-define(OP_TASK_LIST,           <<"task_list">>).
+
+%% ── Agent discovery by attributes ───────────────────────────────────────────
+%% Lets agents discover peers by capability, role, or any custom metadata
+%% instead of hardcoding agent IDs.
+-define(OP_FIND_AGENTS,         <<"find_agents">>).
+
+%% ── Topic-based publish / subscribe ─────────────────────────────────────────
+%% Agents subscribe to named channels and receive only messages published
+%% on those channels — more efficient than broadcast-to-all.
+-define(OP_SUBSCRIBE,           <<"subscribe">>).
+-define(OP_UNSUBSCRIBE,         <<"unsubscribe">>).
+-define(OP_PUBLISH,             <<"publish">>).
+
+%% ── Non-blocking lock probe (try-acquire) ───────────────────────────────────
+%% Returns immediately with granted/unavailable without entering the wait
+%% queue — useful for polling or optional coordination.
+-define(OP_TRY_ACQUIRE,         <<"try_acquire">>).
+
+%% ── Agent presence & status query ───────────────────────────────────────────
+%% Query whether a specific agent is online, its last-seen timestamp, and
+%% custom status so the caller can choose send vs. broadcast intelligently.
+-define(OP_AGENT_STATUS,        <<"agent_status">>).
+
+%% ── Batch work distribution ─────────────────────────────────────────────────
+%% Atomically assign a batch of tasks across multiple agents and track
+%% global progress.  Orphaned tasks are re-emitted if an agent disconnects.
+-define(OP_TASK_BATCH,          <<"task_batch">>).
+-define(OP_TASK_PROGRESS,       <<"task_progress">>).
+
 %% ── Response status codes ───────────────────────────────────────────────────
 -define(STATUS_OK,    <<"ok">>).
 -define(STATUS_WAIT,  <<"wait">>).
@@ -49,6 +94,25 @@
 -define(EVT_AGENT_JOINED,      <<"agent_joined">>).
 -define(EVT_AGENT_LEFT,        <<"agent_left">>).
 
+%% ── Delivery confirmation events ────────────────────────────────────────────
+%% Pushed to the message sender when the target agent receives the message.
+-define(EVT_DELIVERY_ACK,      <<"delivery_ack">>).
+
+%% ── Task lifecycle events ───────────────────────────────────────────────────
+%% Broadcast when a task is assigned to an agent or when its status changes,
+%% enabling all participants to observe progress without custom broadcasts.
+-define(EVT_TASK_ASSIGNED,     <<"task_assigned">>).
+-define(EVT_TASK_UPDATED,      <<"task_updated">>).
+
+%% ── Topic subscription events ───────────────────────────────────────────────
+%% Delivered to agents subscribed to a named channel via the publish op.
+-define(EVT_TOPIC_MESSAGE,     <<"topic_message">>).
+
+%% ── Orphaned task events ────────────────────────────────────────────────────
+%% Broadcast when an agent disconnects with unfinished tasks, allowing
+%% another agent to pick up the abandoned work.
+-define(EVT_TASKS_ORPHANED,    <<"tasks_orphaned">>).
+
 %% ── Error reason codes ──────────────────────────────────────────────────────
 -define(ERR_BAD_REQUEST,        <<"bad_request">>).
 -define(ERR_UNKNOWN_OP,         <<"unknown_op">>).
@@ -62,5 +126,10 @@
 -define(ERR_UNAUTHORIZED,       <<"unauthorized">>).
 -define(ERR_INTERNAL_ERROR,     <<"internal_error">>).
 -define(ERR_NOT_REGISTERED,     <<"not_registered">>).
+
+%% ── Non-blocking try-acquire response ───────────────────────────────────────
+%% Returned by try_acquire when the resource is already locked and the
+%% caller does not want to enter the wait queue.
+-define(STATUS_UNAVAILABLE,     <<"unavailable">>).
 
 -endif. %% PLUTO_PROTOCOL_HRL

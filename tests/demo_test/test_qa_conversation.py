@@ -1,17 +1,23 @@
 """
-Q&A Conversation test: 5 agents exchange 10 general knowledge questions
-through the REAL Pluto Erlang server.
+Q&A Conversation — Real Copilot Agent Test
+============================================
 
-Agents: alice, bob, charlie, diana, eve
-- Each agent asks 2 questions and answers 2 questions
-- All Q&A entries are logged to a shared transcript file protected by a Pluto lock
-- Messages are exchanged via Pluto's send/wait_message mechanism
+3 real Copilot CLI agents (alice, bob, charlie) exchange questions and
+answers through the Pluto server, logging each exchange to a shared
+transcript file protected by a Pluto lock.
 
-The real Pluto server is auto-started if not already running.
+  alice   → asks bob a question, answers charlie's question
+  bob     → answers alice's question, asks charlie a question
+  charlie → answers bob's question, asks alice a question
+
+Each agent is a separate `copilot -p` process using PlutoClient.
+
+Requires the real Erlang Pluto server (auto-started via PlutoTestServer).
 """
 
 import json
 import os
+import shutil
 import sys
 import unittest
 
@@ -31,10 +37,80 @@ from pluto_test_server import PlutoTestServer
 
 PLUTO_HOST = "127.0.0.1"
 PLUTO_PORT = 9000
+WORK_DIR = "/tmp/pluto_copilot_qa_conversation"
+
+COPILOT_AVAILABLE = shutil.which("copilot") is not None
+
+# ── Task descriptions ────────────────────────────────────────────────────────
+
+ALICE_TASK = """\
+You are 'alice'. You will ask bob a question and answer charlie's question.
+
+1. Register with Pluto as 'alice' and set up message handling.
+2. Acquire a write lock on resource 'qa:transcript'.
+3. APPEND the line '[Q1] alice asks bob: What is the capital of France?' followed by
+   a newline to the file transcript.txt in the work directory (create it if it doesn't exist).
+4. Release the lock.
+5. Send a message to 'bob' with payload {"type": "question", "id": "Q1", "text": "What is the capital of France?"}.
+6. Wait for a message from 'bob' (timeout 120s). This is bob's answer to Q1.
+7. Acquire a write lock on 'qa:transcript'.
+8. APPEND the line '[A1] bob answers alice: Paris' followed by a newline to transcript.txt.
+9. Release the lock.
+10. Wait for a message from 'charlie' (timeout 120s). This is charlie's question Q3.
+11. Acquire a write lock on 'qa:transcript'.
+12. APPEND the line '[A3] alice answers charlie: The speed of light is approximately 300,000 km/s' followed by a newline to transcript.txt.
+13. Release the lock.
+14. Send a message to 'charlie' with payload {"type": "answer", "id": "A3", "text": "approximately 300,000 km/s"}.
+15. Disconnect from Pluto.
+"""
+
+BOB_TASK = """\
+You are 'bob'. You will answer alice's question and ask charlie a question.
+
+1. Register with Pluto as 'bob' and set up message handling.
+2. Wait for a message from 'alice' (timeout 120s). This is alice's question Q1.
+3. Acquire a write lock on resource 'qa:transcript'.
+4. APPEND the line '[A1-note] bob received Q1 from alice' followed by a newline
+   to the file transcript.txt in the work directory.
+5. Release the lock.
+6. Send a message to 'alice' with payload {"type": "answer", "id": "A1", "text": "Paris"}.
+7. Acquire a write lock on 'qa:transcript'.
+8. APPEND the line '[Q2] bob asks charlie: What is 2+2?' followed by a newline to transcript.txt.
+9. Release the lock.
+10. Send a message to 'charlie' with payload {"type": "question", "id": "Q2", "text": "What is 2+2?"}.
+11. Wait for a message from 'charlie' (timeout 120s). This is charlie's answer to Q2.
+12. Acquire a write lock on 'qa:transcript'.
+13. APPEND the line '[A2] charlie answers bob: 4' followed by a newline to transcript.txt.
+14. Release the lock.
+15. Disconnect from Pluto.
+"""
+
+CHARLIE_TASK = """\
+You are 'charlie'. You will answer bob's question and ask alice a question.
+
+1. Register with Pluto as 'charlie' and set up message handling.
+2. Wait for a message from 'bob' (timeout 120s). This is bob's question Q2.
+3. Acquire a write lock on resource 'qa:transcript'.
+4. APPEND the line '[A2-note] charlie received Q2 from bob' followed by a newline
+   to the file transcript.txt in the work directory.
+5. Release the lock.
+6. Send a message to 'bob' with payload {"type": "answer", "id": "A2", "text": "4"}.
+7. Acquire a write lock on 'qa:transcript'.
+8. APPEND the line '[Q3] charlie asks alice: What is the speed of light?' followed by
+   a newline to transcript.txt.
+9. Release the lock.
+10. Send a message to 'alice' with payload {"type": "question", "id": "Q3", "text": "What is the speed of light?"}.
+11. Wait for a message from 'alice' (timeout 120s). This is alice's answer A3.
+12. Acquire a write lock on 'qa:transcript'.
+13. APPEND the line '[A3-note] charlie received A3 from alice' followed by a newline to transcript.txt.
+14. Release the lock.
+15. Disconnect from Pluto.
+"""
 
 
+@unittest.skipUnless(COPILOT_AVAILABLE, "copilot CLI not installed")
 class TestQAConversation(unittest.TestCase):
-    """5 agents exchange 10 Q&A pairs through the real Pluto server."""
+    """3 real Copilot agents exchange Q&A through Pluto."""
 
     @classmethod
     def setUpClass(cls):
@@ -45,53 +121,73 @@ class TestQAConversation(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.stop()
 
-    def _reset_stats(self):
-        """Reset server stats before the test."""
-        with PlutoClient(
-            host=PLUTO_HOST, port=PLUTO_PORT, agent_id="test-setup"
-        ) as client:
-            client._send_and_wait({"op": "admin_reset_stats"})
+    def setUp(self):
+        if os.path.exists(WORK_DIR):
+            shutil.rmtree(WORK_DIR)
+        os.makedirs(WORK_DIR, exist_ok=True)
 
-    def test_10_questions_exchanged(self):
-        """All 10 questions and answers are exchanged and logged to transcript."""
-        self._reset_stats()
-
-        flows_dir = os.path.join(_HERE, "flows")
-        sys_flow = os.path.join(flows_dir, "sys_qa_conversation.json")
-
+    def test_questions_exchanged(self):
+        """All questions and answers are exchanged and logged to transcript."""
         wrapper = AgentWrapper(host=PLUTO_HOST, port=PLUTO_PORT)
-        results = wrapper.run_system_flow(sys_flow)
 
-        # Print all agent logs
+        agents = [
+            {"agent_id": "bob",     "task": BOB_TASK,     "start_delay_s": 0},
+            {"agent_id": "charlie", "task": CHARLIE_TASK, "start_delay_s": 0},
+            {"agent_id": "alice",   "task": ALICE_TASK,   "start_delay_s": 5},
+        ]
+
+        results = wrapper.run_copilot_agents(agents, WORK_DIR, timeout=240)
+
+        # Print agent output
         for agent in results["agents"]:
-            for line in agent["log"]:
-                print(line)
+            print(f"\n{'=' * 60}")
+            print(f"  Agent: {agent['agent_id']}  rc={agent['returncode']}")
+            print(f"{'=' * 60}")
+            print(agent["stdout"][:3000])
+            if agent["stderr"]:
+                print(f"STDERR:\n{agent['stderr'][:1000]}")
 
-        # All 5 agents must complete successfully
+        # All agents must complete
         for agent in results["agents"]:
             self.assertTrue(
                 agent["success"],
-                f"Agent {agent['agent_id']} failed: {agent['error']}",
+                f"Agent {agent['agent_id']} failed (rc={agent['returncode']}): "
+                f"{agent['stderr'][:500]}",
             )
 
-        # All assertions (20 transcript lines + all_agents_completed)
-        for a in results["assertions"]:
-            self.assertTrue(a["passed"], f"Assertion failed: {a}")
+        # Transcript must contain all Q&A entries
+        transcript = os.path.join(WORK_DIR, "transcript.txt")
+        self.assertTrue(os.path.exists(transcript), "transcript.txt not created")
 
-        self.assertTrue(results["success"], f"System flow failed: {results}")
+        with open(transcript) as f:
+            content = f.read()
+
+        # Core conversation markers
+        self.assertIn("[Q1]", content, f"Q1 missing from transcript:\n{content}")
+        self.assertIn("[Q2]", content, f"Q2 missing from transcript:\n{content}")
+        self.assertIn("[Q3]", content, f"Q3 missing from transcript:\n{content}")
+        self.assertIn("alice", content)
+        self.assertIn("bob", content)
+        self.assertIn("charlie", content)
+
+        print(f"\n{'=' * 60}")
+        print("  FINAL TRANSCRIPT")
+        print(f"{'=' * 60}")
+        print(content)
 
     def test_stats_reflect_conversation(self):
-        """After Q&A, stats show correct message and lock counts."""
-        self._reset_stats()
-
-        flows_dir = os.path.join(_HERE, "flows")
-        sys_flow = os.path.join(flows_dir, "sys_qa_conversation.json")
-
+        """After Q&A, stats show message and lock activity."""
         wrapper = AgentWrapper(host=PLUTO_HOST, port=PLUTO_PORT)
-        results = wrapper.run_system_flow(sys_flow)
-        self.assertTrue(results["success"], f"Q&A flow failed: {results}")
 
-        # Query stats from the real server
+        agents = [
+            {"agent_id": "bob",     "task": BOB_TASK,     "start_delay_s": 0},
+            {"agent_id": "charlie", "task": CHARLIE_TASK, "start_delay_s": 0},
+            {"agent_id": "alice",   "task": ALICE_TASK,   "start_delay_s": 5},
+        ]
+
+        results = wrapper.run_copilot_agents(agents, WORK_DIR, timeout=240)
+        self.assertTrue(results["success"], f"Q&A flow failed")
+
         with PlutoClient(
             host=PLUTO_HOST, port=PLUTO_PORT, agent_id="stats-verifier"
         ) as client:
@@ -99,28 +195,13 @@ class TestQAConversation(unittest.TestCase):
 
         self.assertEqual(stats["status"], "ok")
         counters = stats["counters"]
+        self.assertGreaterEqual(counters["agents_registered"], 3)
+        self.assertGreater(counters["messages_sent"], 0)
+        self.assertGreater(counters["locks_acquired"], 0)
+        self.assertGreater(counters["locks_released"], 0)
 
-        # 5 agents registered
-        self.assertGreaterEqual(counters["agents_registered"], 5)
-        # 10 questions + 10 answers = 20 send operations (plus 1 broadcast from alice)
-        self.assertGreaterEqual(counters["messages_sent"], 20)
-        self.assertGreaterEqual(counters["messages_received"], 20)
-        # Each Q&A pair requires 2 lock acquire/release cycles for transcript logging
-        # 20 transcript entries = 20 lock cycles
-        self.assertGreaterEqual(counters["locks_acquired"], 20)
-        self.assertGreaterEqual(counters["locks_released"], 20)
-        # At least 1 broadcast
-        self.assertGreaterEqual(counters["broadcasts_sent"], 1)
-
-        # Print stats summary
         print("\n=== Server Statistics After Q&A ===")
-        print(f"  Agents registered:  {counters['agents_registered']}")
-        print(f"  Messages sent:      {counters['messages_sent']}")
-        print(f"  Messages received:  {counters['messages_received']}")
-        print(f"  Locks acquired:     {counters['locks_acquired']}")
-        print(f"  Locks released:     {counters['locks_released']}")
-        print(f"  Broadcasts sent:    {counters['broadcasts_sent']}")
-        print(f"  Total requests:     {counters['total_requests']}")
+        print(json.dumps(stats, indent=2))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ Pipeline test: 8 agents coordinate to build a reviewed document.
 - writer-1 collects all reviewer approvals and assembles the final document
 - Final assertions check all sections, status board, final assembly, and stats
 
-Uses MockPlutoServer so no running Erlang server is needed.
+Requires the real Erlang Pluto server (auto-started if not already running).
 """
 
 import json
@@ -20,11 +20,18 @@ import unittest
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJECT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 _SRC_PY = os.path.join(_PROJECT, "src_py")
+_TESTS = os.path.join(_PROJECT, "tests")
 if _SRC_PY not in sys.path:
     sys.path.insert(0, _SRC_PY)
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
 
-from agent_wrapper import AgentWrapper, MockPlutoServer
+from agent_wrapper import AgentWrapper
 from pluto_client import PlutoClient
+from pluto_test_server import PlutoTestServer
+
+PLUTO_HOST = "127.0.0.1"
+PLUTO_PORT = 9000
 
 
 class TestPipeline8Agents(unittest.TestCase):
@@ -32,7 +39,7 @@ class TestPipeline8Agents(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.server = MockPlutoServer(host="127.0.0.1", port=0)
+        cls.server = PlutoTestServer()
         cls.server.start()
 
     @classmethod
@@ -44,7 +51,7 @@ class TestPipeline8Agents(unittest.TestCase):
         flows_dir = os.path.join(_HERE, "flows")
         sys_flow = os.path.join(flows_dir, "sys_pipeline_8agents.json")
 
-        wrapper = AgentWrapper(host="127.0.0.1", port=self.server.port)
+        wrapper = AgentWrapper(host=PLUTO_HOST, port=PLUTO_PORT)
         results = wrapper.run_system_flow(sys_flow)
 
         # Print all agent logs for visibility
@@ -71,15 +78,15 @@ class TestPipeline8Agents(unittest.TestCase):
         flows_dir = os.path.join(_HERE, "flows")
         sys_flow = os.path.join(flows_dir, "sys_pipeline_8agents.json")
 
-        wrapper = AgentWrapper(host="127.0.0.1", port=self.server.port)
+        wrapper = AgentWrapper(host=PLUTO_HOST, port=PLUTO_PORT)
         results = wrapper.run_system_flow(sys_flow)
 
         # Verify the pipeline succeeded
         self.assertTrue(results["success"], f"Pipeline failed: {results}")
 
-        # Now query stats from the mock server
+        # Now query stats from the real server
         with PlutoClient(
-            host="127.0.0.1", port=self.server.port, agent_id="stats-checker"
+            host=PLUTO_HOST, port=PLUTO_PORT, agent_id="stats-checker"
         ) as client:
             stats = client.stats()
 

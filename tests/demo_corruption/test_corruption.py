@@ -10,28 +10,29 @@ Part 2 — With lock coordination (TestCorruptionWithPluto):
     4 agents each perform 25 lock-protected cycles (× 10 appends each)
     to a shared file.  All 1000 lines are present and intact.
 
-Both parts require the real Erlang Pluto server.
-Start with:  ./PlutoServer.sh --daemon
+Both parts require the real Erlang Pluto server (auto-started if not already running).
 """
 
 import json
 import os
 import shutil
-import socket
 import sys
 import tempfile
-import time
 import unittest
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJECT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 _SRC_PY = os.path.join(_PROJECT, "src_py")
+_TESTS = os.path.join(_PROJECT, "tests")
 if _SRC_PY not in sys.path:
     sys.path.insert(0, _SRC_PY)
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
 
 from agent_wrapper import AgentWrapper
 from pluto_client import PlutoClient
+from pluto_test_server import PlutoTestServer
 
 PLUTO_HOST = "127.0.0.1"
 PLUTO_PORT = 9000
@@ -43,28 +44,21 @@ LINES_PER_WRITER = NUM_CYCLES * APPENDS_PER_CYCLE   # 250
 TOTAL_EXPECTED = NUM_WRITERS * LINES_PER_WRITER      # 1000
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _server_reachable():
-    """Quick TCP check for the real Pluto server."""
-    try:
-        s = socket.create_connection((PLUTO_HOST, PLUTO_PORT), timeout=2)
-        s.close()
-        return True
-    except OSError:
-        return False
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Part 1: WITHOUT lock coordination — concurrent writes corrupt the file
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@unittest.skipUnless(
-    _server_reachable(),
-    "Real Pluto server not running on port 9000 — start with ./PlutoServer.sh --daemon",
-)
 class TestCorruptionWithoutPluto(unittest.TestCase):
     """Demonstrate data loss when multiple agents share a file with no coordination."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = PlutoTestServer()
+        cls.server.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.stop()
 
     def test_concurrent_read_modify_write_causes_lost_updates(self):
         """
@@ -125,12 +119,17 @@ class TestCorruptionWithoutPluto(unittest.TestCase):
 # Part 2: WITH real Pluto server — coordinated writes preserve integrity
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@unittest.skipUnless(
-    _server_reachable(),
-    "Real Pluto server not running on port 9000 — start with ./PlutoServer.sh --daemon",
-)
 class TestCorruptionWithPluto(unittest.TestCase):
     """Demonstrate that Pluto lock coordination prevents all data loss."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = PlutoTestServer()
+        cls.server.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.stop()
 
     def test_coordinated_writes_preserve_all_lines(self):
         """

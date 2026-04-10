@@ -12,6 +12,7 @@
 #   ./PlutoClient.sh guide                        Generate the agent guide
 #   ./PlutoClient.sh guide --output ./guide.md    Generate to custom path
 #   ./PlutoClient.sh --host 10.0.1.5 --port 9000 ping
+#   ./PlutoClient.sh --version                        Print the version
 #
 # All arguments are forwarded to pluto_client.py.
 # ===========================================================================
@@ -20,6 +21,7 @@ set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUTO_VERSION="$(cat "${SCRIPT_DIR}/VERSION.md" | tr -d '\n')"
 PY_SRC_DIR="${SCRIPT_DIR}/src_py"
 VENV_DIR="/tmp/pluto/.venv"
 PYTHON_SCRIPT="${PY_SRC_DIR}/pluto_client.py"
@@ -125,10 +127,14 @@ ${YELLOW}Starting an Agent with Pluto:${NC}
 EOF
 }
 
-# Check for help flag
+# Check for help/version flags
 case "${1:-}" in
     -h|--help)
         usage
+        exit 0
+        ;;
+    --version)
+        echo "Pluto ${PLUTO_VERSION}"
         exit 0
         ;;
 esac

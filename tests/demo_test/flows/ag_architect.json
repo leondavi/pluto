@@ -1,0 +1,101 @@
+{
+  "agent_id": "architect",
+  "description": "Design the system architecture, signal both devs to start parallel work, wait for their completions, then assemble the final document",
+  "steps": [
+    {
+      "action": "acquire",
+      "resource": "project:design",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/architecture.txt",
+      "content": "## System Architecture\nDesigned by architect.\n\nComponents:\n- Backend API service (REST + WebSocket)\n- Frontend SPA (React + TypeScript)\n- Shared data layer (PostgreSQL + Redis cache)\n\nConstraints:\n- Backend must expose /api/v1/* endpoints\n- Frontend must consume the API via typed client\n- Both must agree on shared schema defined here\n\nSchema:\n  User { id: uuid, name: string, role: enum(admin,user) }\n  Task { id: uuid, title: string, assignee: uuid, status: enum(todo,doing,done) }\n"
+    },
+    {
+      "action": "acquire",
+      "resource": "project:status-board",
+      "mode": "write",
+      "ttl_ms": 10000
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/status.txt",
+      "content": "=== Project Status Board ===\narchitect: architecture design COMPLETE\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "send",
+      "to": "backend-dev",
+      "payload": {"type": "start_work", "task": "implement backend API", "schema_file": "architecture.txt"}
+    },
+    {
+      "action": "send",
+      "to": "frontend-dev",
+      "payload": {"type": "start_work", "task": "implement frontend SPA", "schema_file": "architecture.txt"}
+    },
+    {
+      "action": "wait_message",
+      "from": "backend-dev",
+      "timeout": 30
+    },
+    {
+      "action": "wait_message",
+      "from": "frontend-dev",
+      "timeout": 30
+    },
+    {
+      "action": "acquire",
+      "resource": "project:assembly",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "read_file",
+      "path": "${WORK_DIR}/architecture.txt"
+    },
+    {
+      "action": "read_file",
+      "path": "${WORK_DIR}/backend.txt"
+    },
+    {
+      "action": "read_file",
+      "path": "${WORK_DIR}/frontend.txt"
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/final_design_doc.txt",
+      "content": "================================================================\n         FINAL DESIGN DOCUMENT — Assembled by architect\n================================================================\n\nThis document was produced by 3 cooperating agents:\n  1. architect   — designed overall architecture (sequential)\n  2. backend-dev — implemented backend spec     (parallel)\n  3. frontend-dev— implemented frontend spec    (parallel)\n\nAll agents coordinated through Pluto locks and messaging.\n\n--- Architecture Section (by architect) ---\nSee architecture.txt for full design.\n\n--- Backend Section (by backend-dev) ---\nSee backend.txt for full implementation spec.\n\n--- Frontend Section (by frontend-dev) ---\nSee frontend.txt for full implementation spec.\n\nAssembly complete. All sections verified.\n"
+    },
+    {
+      "action": "acquire",
+      "resource": "project:status-board",
+      "mode": "write",
+      "ttl_ms": 10000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/status.txt",
+      "content": "architect: final assembly COMPLETE\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "broadcast",
+      "payload": {"type": "project_complete", "document": "final_design_doc.txt"}
+    },
+    {
+      "action": "stats"
+    }
+  ]
+}

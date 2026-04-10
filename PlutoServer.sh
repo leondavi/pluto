@@ -10,6 +10,7 @@
 #   ./PlutoServer.sh --build      Build only (compile + release)
 #   ./PlutoServer.sh --clean      Clean build artefacts
 #   ./PlutoServer.sh --console    Start an interactive Erlang shell
+#   ./PlutoServer.sh --version    Print the version and exit
 #
 # The rebar3 build and release are placed under /tmp/pluto/build to keep
 # the source tree clean.
@@ -19,11 +20,13 @@ set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUTO_VERSION="$(cat "${SCRIPT_DIR}/VERSION.md" | tr -d '\n')"
 SRC_DIR="${SCRIPT_DIR}/src_erl"
 BUILD_DIR="/tmp/pluto/build"
 REL_DIR="${BUILD_DIR}/_build/default/rel/pluto"
 PID_FILE="/tmp/pluto/pluto.pid"
 PING_TOOL="${SCRIPT_DIR}/src_py/utils/ping.py"
+INFO_TOOL="${SCRIPT_DIR}/src_py/utils/server_info.py"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -302,13 +305,142 @@ cmd_kill() {
 }
 
 cmd_status() {
-    if pluto_ping; then
-        local pid
-        pid=$(lsof -ti :9000 2>/dev/null || echo "?")
-        ok "Pluto is running (pid ${pid}, port 9000)."
-    else
-        warn "Pluto is not running."
+    if ! pluto_ping; then
+        echo ""
+        echo -e "${RED}"
+        cat <<'LOGO'
+    ╔════════════════════════════════════════════════╗
+    ║                                                ║
+    ║        *  .  ✦        .    *                   ║
+    ║     .    ___         .        .  ✦             ║
+    ║   ✦    /   \    *        .                     ║
+    ║       /_____\        .    PLUTO SERVER          ║
+    ║      |=  =  =|  .     ✦  Agent Coordination    ║
+    ║      |  ---  |    *                   .         ║
+    ║     /|  | |  |\       .     *                   ║
+    ║    / |  |_|  | \  .       .                     ║
+    ║   |  |_______|  |    ✦        .  *              ║
+    ║   | /    A    \ |  .                            ║
+    ║   |/   / \   \|      .    *                    ║
+    ║       /   \          ✦                          ║
+    ║      / ~~~ \   .        .     *                 ║
+    ║     /~~~~~~~\     *         .                   ║
+    ║    ~~~~~~~~~~~        .  ✦                      ║
+    ║                                                ║
+    ║            STATUS:  ● OFFLINE                  ║
+    ╚════════════════════════════════════════════════╝
+LOGO
+        echo -e "${NC}"
+        warn "Pluto server is not running."
+        echo ""
+        return 1
     fi
+
+    # Query detailed server info from the running Erlang server
+    local info_json
+    info_json=$(python3 "${INFO_TOOL}" --timeout 3 2>/dev/null || echo "{}")
+
+    # Parse fields from the JSON response using python3 for reliability
+    local version otp_release erts_version node_name hostname os_type
+    local tcp_port http_port uptime_ms schedulers
+    local process_count process_limit
+    local mem_total mem_ets
+    local connected_agents active_locks pending_waiters
+    local ip_list server_time
+
+    version=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo "?")
+    otp_release=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('otp_release','?'))" 2>/dev/null || echo "?")
+    erts_version=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('erts_version','?'))" 2>/dev/null || echo "?")
+    node_name=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('node','?'))" 2>/dev/null || echo "?")
+    hostname=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hostname','?'))" 2>/dev/null || echo "?")
+    os_type=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('os','?'))" 2>/dev/null || echo "?")
+    tcp_port=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tcp_port','?'))" 2>/dev/null || echo "?")
+    http_port=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('http_port','?'))" 2>/dev/null || echo "?")
+    uptime_ms=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('uptime_ms',0))" 2>/dev/null || echo "0")
+    schedulers=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('schedulers','?'))" 2>/dev/null || echo "?")
+    process_count=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('process_count','?'))" 2>/dev/null || echo "?")
+    process_limit=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('process_limit','?'))" 2>/dev/null || echo "?")
+    mem_total=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); m=d.get('memory',{}); print(f\"{m.get('total',0)/(1024*1024):.1f}\")" 2>/dev/null || echo "?")
+    mem_ets=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); m=d.get('memory',{}); print(f\"{m.get('ets',0)/(1024*1024):.1f}\")" 2>/dev/null || echo "?")
+    connected_agents=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('live',{}).get('connected_agents','?'))" 2>/dev/null || echo "?")
+    active_locks=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('live',{}).get('active_locks','?'))" 2>/dev/null || echo "?")
+    pending_waiters=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('live',{}).get('pending_waiters','?'))" 2>/dev/null || echo "?")
+    ip_list=$(echo "${info_json}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(', '.join(d.get('ips',[])))" 2>/dev/null || echo "?")
+
+    # Format uptime as human-readable
+    local uptime_str
+    uptime_str=$(python3 -c "
+ms = int(${uptime_ms})
+s = ms // 1000
+d, s = divmod(s, 86400)
+h, s = divmod(s, 3600)
+m, s = divmod(s, 60)
+parts = []
+if d: parts.append(f'{d}d')
+if h: parts.append(f'{h}h')
+if m: parts.append(f'{m}m')
+parts.append(f'{s}s')
+print(' '.join(parts))
+" 2>/dev/null || echo "?")
+
+    local pid
+    pid=$(lsof -ti :${tcp_port} 2>/dev/null || echo "?")
+
+    echo ""
+    echo -e "${CYAN}"
+    cat <<'LOGO'
+    ╔════════════════════════════════════════════════╗
+    ║                                                ║
+    ║        *  .  ✦        .    *                   ║
+    ║     .    ___         .        .  ✦             ║
+    ║   ✦    /   \    *        .                     ║
+    ║       /_____\        .    PLUTO SERVER          ║
+    ║      |=  =  =|  .     ✦  Agent Coordination    ║
+    ║      |  ---  |    *                   .         ║
+    ║     /|  | |  |\       .     *                   ║
+    ║    / |  |_|  | \  .       .                     ║
+    ║   |  |_______|  |    ✦        .  *              ║
+    ║   | /    A    \ |  .                            ║
+    ║   |/   / \   \|      .    *                    ║
+    ║       /   \          ✦                          ║
+    ║      / ~~~ \   .        .     *                 ║
+    ║     /~~~~~~~\     *         .                   ║
+    ║    ~~~~~~~~~~~        .  ✦                      ║
+    ║                                                ║
+    ║            STATUS:  ● ONLINE                   ║
+    ╚════════════════════════════════════════════════╝
+LOGO
+    echo -e "${NC}"
+
+    echo -e "  ${GREEN}▸ Server${NC}"
+    echo -e "    Version:          ${CYAN}${version}${NC}"
+    echo -e "    Node:             ${node_name}"
+    echo -e "    Hostname:         ${hostname}"
+    echo -e "    PID:              ${pid}"
+    echo -e "    Uptime:           ${GREEN}${uptime_str}${NC}"
+    echo ""
+
+    echo -e "  ${GREEN}▸ Network${NC}"
+    echo -e "    TCP Port:         ${CYAN}${tcp_port}${NC}"
+    echo -e "    HTTP Port:        ${http_port}"
+    echo -e "    IPs:              ${ip_list}"
+    echo ""
+
+    echo -e "  ${GREEN}▸ Runtime${NC}"
+    echo -e "    OTP Release:      ${CYAN}OTP ${otp_release}${NC}"
+    echo -e "    ERTS:             ${erts_version}"
+    echo -e "    OS:               ${os_type}"
+    echo -e "    Schedulers:       ${schedulers}"
+    echo -e "    Processes:        ${process_count} / ${process_limit}"
+    echo -e "    Memory (total):   ${mem_total} MB"
+    echo -e "    Memory (ETS):     ${mem_ets} MB"
+    echo ""
+
+    echo -e "  ${GREEN}▸ Live${NC}"
+    echo -e "    Connected Agents: ${CYAN}${connected_agents}${NC}"
+    echo -e "    Active Locks:     ${active_locks}"
+    echo -e "    Pending Waiters:  ${pending_waiters}"
+    echo ""
 }
 
 cmd_console() {
@@ -338,6 +470,7 @@ Options:
   --build       Compile and assemble the release (no start).
   --clean       Remove build artefacts.
   --console     Start an interactive Erlang shell with Pluto loaded.
+  --version     Print the version and exit.
   -h, --help    Show this help message.
 
 Build directory: ${BUILD_DIR}
@@ -352,6 +485,7 @@ case "${1:-}" in
     --build)    cmd_build ;;
     --clean)    cmd_clean ;;
     --console)  cmd_console ;;
+    --version)  echo "Pluto ${PLUTO_VERSION}" ;;
     -h|--help)  usage ;;
     "")         cmd_start_foreground ;;
     *)          err "Unknown option: $1"; usage; exit 1 ;;

@@ -26,6 +26,7 @@
 -define(OP_ADMIN_DEADLOCK_GRAPH,<<"admin_deadlock_graph">>).
 -define(OP_ADMIN_FENCING_SEQ,   <<"admin_fencing_seq">>).
 -define(OP_STATS,               <<"stats">>).
+-define(OP_SERVER_INFO,         <<"server_info">>).
 -define(OP_ADMIN_RESET_STATS,   <<"admin_reset_stats">>).
 
 %% ── Message delivery confirmation ───────────────────────────────────────────

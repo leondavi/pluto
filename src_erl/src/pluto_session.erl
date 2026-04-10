@@ -156,6 +156,9 @@ handle_request(#{<<"op">> := ?OP_SELFTEST}, S) ->
 handle_request(#{<<"op">> := ?OP_STATS}, S) ->
     pluto_stats:inc(total_requests),
     handle_stats(S);
+handle_request(#{<<"op">> := ?OP_SERVER_INFO}, S) ->
+    pluto_stats:inc(total_requests),
+    handle_server_info(S);
 %% ── Admin operations (no registration required) ─────────────────
 handle_request(#{<<"op">> := ?OP_ADMIN_LIST_LOCKS} = Msg, S) ->
     handle_admin(Msg, S);
@@ -269,17 +272,26 @@ handle_register(#{<<"agent_id">> := AgentId} = Msg, #sess{socket = Sock,
                     send_json(Sock, #{
                         <<"status">>               => ?STATUS_OK,
                         <<"session_id">>           => SessId,
+                        <<"agent_id">>             => AgentId,
                         <<"heartbeat_interval_ms">> => HbMs
                     }),
                     pluto_event_log:log(agent_registered, #{agent_id => AgentId,
                                                             session_id => SessId}),
                     S#sess{agent_id = AgentId};
-                {error, already_registered} ->
+                {ok, SessId, ActualAgentId} ->
+                    %% Name was taken — server assigned a unique suffixed name
+                    HbMs = pluto_config:get(heartbeat_interval_ms,
+                                            ?DEFAULT_HEARTBEAT_INTERVAL_MS),
                     send_json(Sock, #{
-                        <<"status">> => ?STATUS_ERROR,
-                        <<"reason">> => ?ERR_ALREADY_REGISTERED
+                        <<"status">>               => ?STATUS_OK,
+                        <<"session_id">>           => SessId,
+                        <<"agent_id">>             => ActualAgentId,
+                        <<"heartbeat_interval_ms">> => HbMs
                     }),
-                    S
+                    pluto_event_log:log(agent_registered, #{agent_id => ActualAgentId,
+                                                            requested_id => AgentId,
+                                                            session_id => SessId}),
+                    S#sess{agent_id = ActualAgentId}
             end;
         {error, unauthorized} ->
             pluto_event_log:log(auth_failure, #{agent_id => AgentId, reason => bad_token}),
@@ -811,6 +823,95 @@ handle_selftest(#sess{socket = Sock} = S) ->
 handle_stats(#sess{socket = Sock} = S) ->
     Summary = pluto_stats:get_summary(),
     send_json(Sock, Summary),
+    S.
+
+%% ── Server Info ─────────────────────────────────────────────────────
+%% Returns comprehensive server metadata: version, OTP version, node name,
+%% listen addresses, uptime, OS info, resource counts, and configuration.
+handle_server_info(#sess{socket = Sock} = S) ->
+    Now       = erlang:system_time(millisecond),
+    StartedAt = pluto_stats:get_summary(),
+    UptimeMs  = maps:get(<<"uptime_ms">>, StartedAt, 0),
+    Live      = maps:get(<<"live">>, StartedAt, #{}),
+
+    %% Erlang / OTP version
+    OtpRelease  = list_to_binary(erlang:system_info(otp_release)),
+    ErtsVsn     = list_to_binary(erlang:system_info(version)),
+
+    %% Node name
+    NodeName = atom_to_binary(node(), utf8),
+
+    %% Configured ports
+    TcpPort  = pluto_config:get(tcp_port, ?DEFAULT_TCP_PORT),
+    HttpPort = pluto_config:get(http_port, ?DEFAULT_HTTP_PORT),
+    HttpPortBin = case HttpPort of
+        disabled -> <<"disabled">>;
+        P when is_integer(P) -> P
+    end,
+
+    %% Collect all local IPs from network interfaces
+    IPs = case inet:getifaddrs() of
+        {ok, Ifaddrs} ->
+            lists:usort(lists:filtermap(fun({_Iface, Props}) ->
+                case proplists:get_value(addr, Props) of
+                    {A, B, C, D} ->
+                        Bin = iolist_to_binary(io_lib:format("~w.~w.~w.~w", [A, B, C, D])),
+                        {true, Bin};
+                    _ ->
+                        false
+                end
+            end, Ifaddrs));
+        _ ->
+            []
+    end,
+
+    %% Hostname
+    Hostname = case inet:gethostname() of
+        {ok, H} -> list_to_binary(H);
+        _       -> <<"unknown">>
+    end,
+
+    %% OS info
+    {OsFamily, OsName} = os:type(),
+    OsStr = iolist_to_binary(io_lib:format("~w/~w", [OsFamily, OsName])),
+
+    %% Process counts
+    ProcessCount = erlang:system_info(process_count),
+    ProcessLimit = erlang:system_info(process_limit),
+
+    %% Memory (in bytes)
+    MemTotal   = erlang:memory(total),
+    MemProcs   = erlang:memory(processes),
+    MemEts     = erlang:memory(ets),
+
+    %% Schedulers
+    Schedulers = erlang:system_info(schedulers_online),
+
+    Info = #{
+        <<"status">>          => ?STATUS_OK,
+        <<"server">>          => <<"pluto">>,
+        <<"version">>         => list_to_binary(?VERSION),
+        <<"otp_release">>     => OtpRelease,
+        <<"erts_version">>    => ErtsVsn,
+        <<"node">>            => NodeName,
+        <<"hostname">>        => Hostname,
+        <<"os">>              => OsStr,
+        <<"tcp_port">>        => TcpPort,
+        <<"http_port">>       => HttpPortBin,
+        <<"ips">>             => IPs,
+        <<"uptime_ms">>       => UptimeMs,
+        <<"server_time">>     => Now,
+        <<"schedulers">>      => Schedulers,
+        <<"process_count">>   => ProcessCount,
+        <<"process_limit">>   => ProcessLimit,
+        <<"memory">>          => #{
+            <<"total">>     => MemTotal,
+            <<"processes">> => MemProcs,
+            <<"ets">>       => MemEts
+        },
+        <<"live">>            => Live
+    },
+    send_json(Sock, Info),
     S.
 
 %% ── Admin operations ────────────────────────────────────────────────

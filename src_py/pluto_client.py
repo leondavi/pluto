@@ -135,6 +135,9 @@ class PlutoClient:
             msg["attributes"] = self.attributes
         resp = self._send_and_wait(msg)
         self.session_id = resp.get("session_id")
+        # Server may assign a different agent_id if the requested one was taken
+        if resp.get("agent_id"):
+            self.agent_id = resp["agent_id"]
 
     def disconnect(self):
         """Close the connection gracefully."""

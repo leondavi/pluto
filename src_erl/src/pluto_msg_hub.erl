@@ -54,16 +54,17 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %% @doc Register an agent with its session.
-%% Returns `{ok, SessionId}` on success, or `{error, already_registered}`
-%% if the agent_id is already active (in strict mode).
+%% Returns `{ok, SessionId}` when the requested agent_id was used,
+%% or `{ok, SessionId, ActualAgentId}` when a unique suffix was appended
+%% because the requested name was already active.
 -spec register_agent(binary(), binary(), pid()) ->
-    {ok, binary()} | {error, already_registered}.
+    {ok, binary()} | {ok, binary(), binary()}.
 register_agent(AgentId, SessionId, SessionPid) ->
     register_agent(AgentId, SessionId, SessionPid, #{}).
 
 %% @doc Register an agent with its session and attributes.
 -spec register_agent(binary(), binary(), pid(), map()) ->
-    {ok, binary()} | {error, already_registered}.
+    {ok, binary()} | {ok, binary(), binary()}.
 register_agent(AgentId, SessionId, SessionPid, Attrs) ->
     gen_server:call(?MODULE, {register, AgentId, SessionId, SessionPid, Attrs}).
 
@@ -158,7 +159,10 @@ handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
         [#agent{status = connected, session_pid = OldPid}] when Policy =:= strict ->
             case is_process_alive(OldPid) of
                 true ->
-                    {reply, {error, already_registered}, State};
+                    %% Name taken by a live agent — assign a unique suffixed name
+                    UniqueId = make_unique_agent_id(AgentId),
+                    do_register(UniqueId, SessionId, SessionPid, Attrs),
+                    {reply, {ok, SessionId, UniqueId}, State};
                 false ->
                     do_register(AgentId, SessionId, SessionPid, Attrs),
                     {reply, {ok, SessionId}, State}
@@ -517,6 +521,12 @@ do_register(AgentId, SessionId, SessionPid, Attrs) ->
     }, AgentId),
 
     ok.
+
+%% @private Generate a unique agent_id by appending a unique integer suffix.
+%% Called when the requested name is already taken by a live agent.
+make_unique_agent_id(BaseId) ->
+    Suffix = integer_to_binary(erlang:unique_integer([positive])),
+    <<BaseId/binary, "-", Suffix/binary>>.
 
 %% @private Send an event to all connected agents except `ExcludeAgentId`.
 broadcast_event(Event, ExcludeAgentId) ->

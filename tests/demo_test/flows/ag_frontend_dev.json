@@ -1,0 +1,48 @@
+{
+  "agent_id": "frontend-dev",
+  "description": "Wait for architect signal, implement frontend SPA spec, update status board, signal architect on completion",
+  "steps": [
+    {
+      "action": "wait_message",
+      "from": "architect",
+      "timeout": 20
+    },
+    {
+      "action": "read_file",
+      "path": "${WORK_DIR}/architecture.txt"
+    },
+    {
+      "action": "acquire",
+      "resource": "project:frontend",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/frontend.txt",
+      "content": "## Frontend SPA Implementation Spec\nWritten by frontend-dev.\n\nTech Stack:\n  React 18 + TypeScript 5 + Vite bundler\n  State management: Zustand\n  Styling: Tailwind CSS\n\nPages:\n  /login             — JWT auth form\n  /dashboard         — task board (kanban view)\n  /users             — user management (admin only)\n  /tasks/:id         — task detail + status transitions\n\nAPI Client:\n  Generated from OpenAPI spec (matches backend endpoints).\n  Type-safe request/response using zod schemas.\n  WebSocket hook for real-time task board updates.\n\nComponents:\n  TaskCard, KanbanColumn, UserAvatar, StatusBadge\n  All components have Storybook stories.\n\nTesting:\n  Vitest for unit tests, Playwright for E2E.\n  Visual regression with Chromatic.\n"
+    },
+    {
+      "action": "acquire",
+      "resource": "project:status-board",
+      "mode": "write",
+      "ttl_ms": 10000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/status.txt",
+      "content": "frontend-dev: frontend SPA spec COMPLETE\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "send",
+      "to": "architect",
+      "payload": {"type": "work_complete", "section": "frontend", "file": "frontend.txt"}
+    }
+  ]
+}

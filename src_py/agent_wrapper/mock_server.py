@@ -164,11 +164,23 @@ class MockPlutoServer:
             aid = msg.get("agent_id", "unknown")
             sid = uuid.uuid4().hex[:8]
             with self._lock:
+                # If the name is already taken by a live connection, assign a unique suffix
+                if aid in self._sessions:
+                    existing = self._sessions[aid]
+                    try:
+                        # Check if the existing connection is still alive
+                        existing["conn"].getpeername()
+                        # Connection alive — append unique suffix
+                        self._unique_counter = getattr(self, "_unique_counter", 0) + 1
+                        aid = f"{aid}-{self._unique_counter}"
+                    except OSError:
+                        # Old connection is dead — allow reuse of the name
+                        pass
                 self._sessions[aid] = {"conn": conn, "session_id": sid}
                 self._stats["agents_registered"] += 1
                 self._stats["total_requests"] += 1
                 self._inc_agent(aid, "registrations")
-            return {"status": "ok", "session_id": sid}, aid
+            return {"status": "ok", "session_id": sid, "agent_id": aid}, aid
 
         elif op == "acquire":
             resource = msg.get("resource")

@@ -1,0 +1,46 @@
+name: Pluto CI
+
+on:
+  push:
+    branches: [master, 'dev/**']
+  pull_request:
+    branches: [master]
+
+jobs:
+  erlang-tests:
+    name: Erlang Tests (OTP ${{ matrix.otp }})
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        otp: ['28']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Erlang/OTP ${{ matrix.otp }}
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          rebar3-version: '3.24'
+
+      - name: Compile
+        working-directory: src_erl
+        run: rebar3 compile
+
+      - name: Run EUnit tests
+        working-directory: src_erl
+        run: rebar3 eunit
+
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check syntax
+        working-directory: src_py
+        run: python -m py_compile pluto_client.py && python -m py_compile pluto_client_def.py

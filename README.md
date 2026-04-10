@@ -13,7 +13,9 @@
 
 ## What Is Pluto?
 
-Pluto is a centralized coordination server built on Erlang/OTP that lets multiple AI agents share resources safely. It does **not** plan or assign tasks — that is the agent's job. Pluto exclusively handles:
+Pluto is a high-performance coordination server built on Erlang/OTP that enables safe, real-time collaboration between multiple AI agents. It provides resource locking with deadlock detection, lease-based ownership, fencing tokens, agent discovery, and inter-agent messaging.
+giving multi-agent systems the infrastructure they need to operate concur
+It does **not** plan or assign tasks — that is the agent's job. Pluto exclusively handles:
 
 - **Resource locking** — exclusive (write) and shared (read) locks with automatic expiration
 - **Lease management** — every lock carries a TTL and must be renewed or it expires

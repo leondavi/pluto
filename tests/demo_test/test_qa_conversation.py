@@ -7,13 +7,11 @@ Agents: alice, bob, charlie, diana, eve
 - All Q&A entries are logged to a shared transcript file protected by a Pluto lock
 - Messages are exchanged via Pluto's send/wait_message mechanism
 
-Requires the real Pluto server running on 127.0.0.1:9000.
-Start with: ./PlutoServer.sh --daemon
+The real Pluto server is auto-started if not already running.
 """
 
 import json
 import os
-import socket
 import sys
 import unittest
 
@@ -21,29 +19,31 @@ import unittest
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJECT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 _SRC_PY = os.path.join(_PROJECT, "src_py")
+_TESTS = os.path.join(_PROJECT, "tests")
 if _SRC_PY not in sys.path:
     sys.path.insert(0, _SRC_PY)
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
 
 from agent_wrapper import AgentWrapper
 from pluto_client import PlutoClient
+from pluto_test_server import PlutoTestServer
 
 PLUTO_HOST = "127.0.0.1"
 PLUTO_PORT = 9000
 
 
-def _server_reachable():
-    """Quick TCP connect check to see if the real server is up."""
-    try:
-        s = socket.create_connection((PLUTO_HOST, PLUTO_PORT), timeout=2)
-        s.close()
-        return True
-    except OSError:
-        return False
-
-
-@unittest.skipUnless(_server_reachable(), "Real Pluto server not running on port 9000")
 class TestQAConversation(unittest.TestCase):
     """5 agents exchange 10 Q&A pairs through the real Pluto server."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = PlutoTestServer()
+        cls.server.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.stop()
 
     def _reset_stats(self):
         """Reset server stats before the test."""

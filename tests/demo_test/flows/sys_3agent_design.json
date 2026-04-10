@@ -1,0 +1,41 @@
+{
+  "name": "3agent_cooperative_design",
+  "description": "3 agents (architect + backend-dev + frontend-dev) cooperate to build a software design document. Phase 1 is sequential (architect designs), Phase 2 is parallel (both devs implement simultaneously with lock contention on shared status board), Phase 3 is sequential (architect assembles final document).",
+  "work_dir": "${TEMP_DIR}/pluto_demo_3agent",
+  "agents": [
+    {"flow": "ag_architect.json",    "start_delay_s": 0},
+    {"flow": "ag_backend_dev.json",  "start_delay_s": 0},
+    {"flow": "ag_frontend_dev.json", "start_delay_s": 0}
+  ],
+  "timeout_s": 60,
+  "assertions": [
+    {
+      "type": "file_contains",
+      "path": "${WORK_DIR}/architecture.txt",
+      "expected": ["architect", "Backend API", "Frontend SPA"]
+    },
+    {
+      "type": "file_contains",
+      "path": "${WORK_DIR}/backend.txt",
+      "expected": ["backend-dev", "/api/v1/users", "PostgreSQL"]
+    },
+    {
+      "type": "file_contains",
+      "path": "${WORK_DIR}/frontend.txt",
+      "expected": ["frontend-dev", "React", "TypeScript"]
+    },
+    {
+      "type": "file_contains",
+      "path": "${WORK_DIR}/final_design_doc.txt",
+      "expected": ["architect", "backend-dev", "frontend-dev", "Assembly complete"]
+    },
+    {
+      "type": "file_contains",
+      "path": "${WORK_DIR}/status.txt",
+      "expected": ["architect", "backend-dev", "frontend-dev", "COMPLETE"]
+    },
+    {
+      "type": "all_agents_completed"
+    }
+  ]
+}

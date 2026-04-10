@@ -16,7 +16,7 @@
 -define(APP, pluto).
 
 %% ── Version ─────────────────────────────────────────────────────────────────
--define(VERSION, "0.1.0").
+-define(VERSION, "0.2.0").
 
 %% ── Default configuration values ────────────────────────────────────────────
 -define(DEFAULT_TCP_PORT,               9000).
@@ -31,6 +31,7 @@
 -define(DEFAULT_PERSISTENCE_DIR,        "/tmp/pluto/state").
 -define(DEFAULT_EVENT_LOG_DIR,          "/tmp/pluto/events").
 -define(DEFAULT_SESSION_CONFLICT,       strict).   %% strict | takeover
+-define(DEFAULT_MAX_INBOX_SIZE,         1000).     %% max offline messages per agent
 
 %% ── ETS table names ────────────────────────────────────────────────────────
 -define(ETS_LOCKS,      pluto_locks).       %% Active lock entries
@@ -39,6 +40,8 @@
 -define(ETS_WAITERS,    pluto_waiters).     %% Wait queue entries (ordered)
 -define(ETS_WAIT_GRAPH, pluto_wait_graph).  %% Deadlock detection edges
 -define(ETS_LIVENESS,   pluto_liveness).    %% session_id -> last_seen_ms
+-define(ETS_TASKS,      pluto_tasks).       %% task_id -> task record
+-define(ETS_MSG_INBOX,  pluto_msg_inbox).   %% {agent_id, seq} -> message map
 
 %% ── Maximum line length for TCP reads (1 MB) ───────────────────────────────
 -define(MAX_LINE_LENGTH, 1048576).

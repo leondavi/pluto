@@ -23,6 +23,7 @@
 -export([
     start_link/0,
     acquire/4,
+    try_acquire/4,
     release/2,
     renew/2,
     list_locks/0,
@@ -69,6 +70,16 @@ start_link() ->
     {ok, binary(), non_neg_integer()} | {wait, binary()} | {error, term()}.
 acquire(Resource, Mode, AgentId, Opts) ->
     gen_server:call(?MODULE, {acquire, Resource, Mode, AgentId, Opts}).
+
+%% @doc Non-blocking lock probe: returns immediately with `{ok, LockRef, FToken}`
+%% if the lock can be granted, or `unavailable` if the resource is already
+%% locked.  Never enters the wait queue — useful for polling or optional
+%% coordination patterns where an agent wants to check if a resource is free
+%% without committing to wait for it.
+-spec try_acquire(binary(), write | read, binary(), map()) ->
+    {ok, binary(), non_neg_integer()} | unavailable.
+try_acquire(Resource, Mode, AgentId, Opts) ->
+    gen_server:call(?MODULE, {try_acquire, Resource, Mode, AgentId, Opts}).
 
 %% @doc Release a lock by its reference.
 -spec release(binary(), binary()) -> ok | {error, term()}.
@@ -137,6 +148,20 @@ handle_call({acquire, Resource, Mode, AgentId, Opts}, _From, State) ->
                     notify_deadlock(Agents, AgentId),
                     {reply, {error, deadlock}, NewState}
             end
+    end;
+
+%% ── try_acquire (non-blocking) ──────────────────────────────────────
+%% Checks for conflict and either grants immediately or returns
+%% `unavailable` — never queues the request.
+handle_call({try_acquire, Resource, Mode, AgentId, Opts}, _From, State) ->
+    case check_conflict(Resource, Mode, AgentId) of
+        no_conflict ->
+            {LockRef, FToken, NewState} = grant_lock(Resource, Mode, AgentId, Opts, State),
+            pluto_stats:inc(locks_acquired),
+            pluto_stats:inc_agent(AgentId, locks_acquired),
+            {reply, {ok, LockRef, FToken}, NewState};
+        conflict ->
+            {reply, unavailable, State}
     end;
 
 %% ── release ─────────────────────────────────────────────────────────

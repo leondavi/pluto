@@ -1,0 +1,48 @@
+{
+  "agent_id": "backend-dev",
+  "description": "Wait for architect signal, implement backend API spec, update status board, signal architect on completion",
+  "steps": [
+    {
+      "action": "wait_message",
+      "from": "architect",
+      "timeout": 20
+    },
+    {
+      "action": "read_file",
+      "path": "${WORK_DIR}/architecture.txt"
+    },
+    {
+      "action": "acquire",
+      "resource": "project:backend",
+      "mode": "write",
+      "ttl_ms": 15000
+    },
+    {
+      "action": "write_file",
+      "path": "${WORK_DIR}/backend.txt",
+      "content": "## Backend API Implementation Spec\nWritten by backend-dev.\n\nEndpoints:\n  GET    /api/v1/users          — list all users (paginated)\n  POST   /api/v1/users          — create user { name, role }\n  GET    /api/v1/users/:id      — get user by ID\n  GET    /api/v1/tasks          — list tasks (filter by assignee/status)\n  POST   /api/v1/tasks          — create task { title, assignee }\n  PATCH  /api/v1/tasks/:id      — update task status\n  WS     /api/v1/ws             — real-time task updates\n\nData Layer:\n  PostgreSQL for persistence, Redis for caching hot queries.\n  Connection pool: 20 connections, 5s timeout.\n\nAuth:\n  JWT tokens, RS256 signing, 1h expiry.\n  Role-based access: admin can CRUD all, user can CRUD own tasks.\n\nTesting:\n  100% endpoint coverage, integration tests with test DB.\n"
+    },
+    {
+      "action": "acquire",
+      "resource": "project:status-board",
+      "mode": "write",
+      "ttl_ms": 10000
+    },
+    {
+      "action": "append_file",
+      "path": "${WORK_DIR}/status.txt",
+      "content": "backend-dev: backend API spec COMPLETE\n"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "release"
+    },
+    {
+      "action": "send",
+      "to": "architect",
+      "payload": {"type": "work_complete", "section": "backend", "file": "backend.txt"}
+    }
+  ]
+}

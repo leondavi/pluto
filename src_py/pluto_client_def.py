@@ -45,6 +45,21 @@ OP_LIST_AGENTS = "list_agents"
 OP_PING        = "ping"
 OP_STATS       = "stats"
 
+# v0.2.0 operations
+OP_ACK           = "ack"
+OP_ACK_EVENTS    = "ack_events"
+OP_TASK_ASSIGN   = "task_assign"
+OP_TASK_UPDATE   = "task_update"
+OP_TASK_LIST     = "task_list"
+OP_FIND_AGENTS   = "find_agents"
+OP_SUBSCRIBE     = "subscribe"
+OP_UNSUBSCRIBE   = "unsubscribe"
+OP_PUBLISH       = "publish"
+OP_TRY_ACQUIRE   = "try_acquire"
+OP_AGENT_STATUS  = "agent_status"
+OP_TASK_BATCH    = "task_batch"
+OP_TASK_PROGRESS = "task_progress"
+
 # ── Lock modes ───────────────────────────────────────────────────────────────
 
 MODE_WRITE = "write"
@@ -57,6 +72,7 @@ STATUS_OK    = "ok"
 STATUS_WAIT  = "wait"
 STATUS_ERROR = "error"
 STATUS_PONG  = "pong"
+STATUS_UNAVAILABLE = "unavailable"
 
 # ── Event types ──────────────────────────────────────────────────────────────
 
@@ -70,6 +86,13 @@ EVENT_DEADLOCK_DETECTED = "deadlock_detected"
 EVENT_AGENT_JOINED      = "agent_joined"
 EVENT_AGENT_LEFT        = "agent_left"
 
+# v0.2.0 events
+EVENT_DELIVERY_ACK   = "delivery_ack"
+EVENT_TASK_ASSIGNED  = "task_assigned"
+EVENT_TASK_UPDATED   = "task_updated"
+EVENT_TOPIC_MESSAGE  = "topic_message"
+EVENT_TASKS_ORPHANED = "tasks_orphaned"
+
 ALL_EVENT_TYPES = [
     EVENT_MESSAGE,
     EVENT_BROADCAST,
@@ -80,6 +103,11 @@ ALL_EVENT_TYPES = [
     EVENT_DEADLOCK_DETECTED,
     EVENT_AGENT_JOINED,
     EVENT_AGENT_LEFT,
+    EVENT_DELIVERY_ACK,
+    EVENT_TASK_ASSIGNED,
+    EVENT_TASK_UPDATED,
+    EVENT_TOPIC_MESSAGE,
+    EVENT_TASKS_ORPHANED,
 ]
 
 # ── Error reasons ─────────────────────────────────────────────────────────────

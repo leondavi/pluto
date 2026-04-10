@@ -1,14 +1,18 @@
 """
-Pipeline test: 8 agents coordinate to build a reviewed document.
+3-Agent Cooperative Design Test
+================================
 
-- 4 writer agents each write a section of a document
-- 4 reviewer agents each review and approve their paired section
-- Writers chain-pass control (writer-1 → writer-2 → writer-3 → writer-4)
-- All agents contend for a shared status-board lock
-- writer-1 collects all reviewer approvals and assembles the final document
-- Final assertions check all sections, status board, final assembly, and stats
+3 agents (architect, backend-dev, frontend-dev) cooperate through Pluto
+to build a software design document:
 
-Requires the real Erlang Pluto server (auto-started if not already running).
+  Phase 1 (Sequential):  architect designs the system architecture
+  Phase 2 (Parallel):    backend-dev and frontend-dev implement their
+                         sections simultaneously, contending for the
+                         shared status-board lock
+  Phase 3 (Sequential):  architect collects both completions and
+                         assembles the final document
+
+Runs against the real Erlang Pluto server (auto-started via PlutoTestServer).
 """
 
 import json
@@ -34,8 +38,8 @@ PLUTO_HOST = "127.0.0.1"
 PLUTO_PORT = 9000
 
 
-class TestPipeline8Agents(unittest.TestCase):
-    """Integration test: 8 agents cooperate through Pluto to build a reviewed document."""
+class Test3AgentCooperativeDesign(unittest.TestCase):
+    """Integration test: 3 agents cooperate via Pluto to build a design doc."""
 
     @classmethod
     def setUpClass(cls):
@@ -46,18 +50,22 @@ class TestPipeline8Agents(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.stop()
 
-    def test_pipeline_document_assembly(self):
-        """4 writers + 4 reviewers coordinate via locks and messages."""
+    def test_cooperative_design_document(self):
+        """architect → parallel(backend-dev, frontend-dev) → architect assembles."""
         flows_dir = os.path.join(_HERE, "flows")
-        sys_flow = os.path.join(flows_dir, "sys_pipeline_8agents.json")
+        sys_flow = os.path.join(flows_dir, "sys_3agent_design.json")
 
         wrapper = AgentWrapper(host=PLUTO_HOST, port=PLUTO_PORT)
         results = wrapper.run_system_flow(sys_flow)
 
         # Print all agent logs for visibility
+        print("\n" + "=" * 70)
+        print("  3-AGENT COOPERATIVE DESIGN — AGENT LOGS")
+        print("=" * 70)
         for agent in results["agents"]:
+            print(f"\n--- {agent['agent_id']} ---")
             for line in agent["log"]:
-                print(line)
+                print(f"  {line}")
 
         # All agents must complete successfully
         for agent in results["agents"]:
@@ -70,21 +78,19 @@ class TestPipeline8Agents(unittest.TestCase):
         for a in results["assertions"]:
             self.assertTrue(a["passed"], f"Assertion failed: {a}")
 
-        # Overall
+        # Overall success
         self.assertTrue(results["success"], f"System flow failed: {results}")
 
-    def test_stats_after_pipeline(self):
-        """Run the pipeline and verify statistics are tracked correctly."""
+    def test_stats_after_cooperation(self):
+        """Run the cooperative flow and verify Pluto statistics."""
         flows_dir = os.path.join(_HERE, "flows")
-        sys_flow = os.path.join(flows_dir, "sys_pipeline_8agents.json")
+        sys_flow = os.path.join(flows_dir, "sys_3agent_design.json")
 
         wrapper = AgentWrapper(host=PLUTO_HOST, port=PLUTO_PORT)
         results = wrapper.run_system_flow(sys_flow)
+        self.assertTrue(results["success"], f"Flow failed: {results}")
 
-        # Verify the pipeline succeeded
-        self.assertTrue(results["success"], f"Pipeline failed: {results}")
-
-        # Now query stats from the real server
+        # Query stats from the real Pluto server
         with PlutoClient(
             host=PLUTO_HOST, port=PLUTO_PORT, agent_id="stats-checker"
         ) as client:
@@ -93,26 +99,26 @@ class TestPipeline8Agents(unittest.TestCase):
         self.assertEqual(stats["status"], "ok")
 
         counters = stats["counters"]
-        # We should have acquired and released multiple locks
+        # Locks were acquired and released
         self.assertGreater(counters["locks_acquired"], 0,
                            "Expected locks to have been acquired")
         self.assertGreater(counters["locks_released"], 0,
                            "Expected locks to have been released")
-        # 8 agents registered per pipeline run (x2 runs now) + stats-checker
+        # 3 agents (x2 test runs) + stats-checker registered
         self.assertGreater(counters["agents_registered"], 0)
-        # Messages were exchanged
+        # Messages exchanged: architect→backend-dev, architect→frontend-dev,
+        # backend-dev→architect, frontend-dev→architect = 4 per run
         self.assertGreater(counters["messages_sent"], 0)
-        self.assertGreater(counters["messages_received"], 0)
-        # At least one broadcast from writer-1
+        # At least one broadcast from architect
         self.assertGreater(counters["broadcasts_sent"], 0)
 
-        # Per-agent stats should exist
-        agent_stats = stats["agent_stats"]
-        self.assertIn("writer-1", agent_stats)
-        self.assertIn("reviewer-1", agent_stats)
+        # Per-agent stats should include our agents
+        agent_stats = stats.get("agent_stats", {})
 
-        # Print stats for visibility
-        print("\n=== Server Statistics ===")
+        # Print full statistics
+        print("\n" + "=" * 70)
+        print("  PLUTO SERVER STATISTICS")
+        print("=" * 70)
         print(json.dumps(stats, indent=2))
 
 

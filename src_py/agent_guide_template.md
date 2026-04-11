@@ -626,7 +626,86 @@ with PlutoClient(host="{{host}}", port={{port}}, agent_id="coder-1") as client:
     client.publish("build-status", {"status": "green", "commit": "abc123"})
 ```
 
-### 2.4 CLI Reference
+### 2.4 Threaded Message Waiting & Multi-Turn Conversations
+
+The `on_message` callback fires on the client's internal reader thread.
+To **block your main thread** until a specific message arrives, use a
+thread-safe helper like the one below. Every Pluto demo relies on this
+pattern for turn-based or request/response coordination.
+
+```python
+import threading, time
+from pluto_client import PlutoClient
+
+# ── shared message queue ──────────────────────────────────────────
+messages = []
+msg_event = threading.Event()
+_msg_lock = threading.Lock()
+
+def on_msg(event):
+    """Callback — runs on PlutoClient's reader thread."""
+    with _msg_lock:
+        messages.append(event)
+    msg_event.set()
+
+def wait_msg(from_agent, timeout=30):
+    """Block until a message from `from_agent` arrives (or timeout)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with _msg_lock:
+            for i, m in enumerate(messages):
+                if m.get("from") == from_agent:
+                    return messages.pop(i)
+        msg_event.clear()
+        msg_event.wait(timeout=1)
+    raise TimeoutError(f"No message from {from_agent} within {timeout}s")
+
+# ── connect with the handler installed BEFORE connect() ───────────
+client = PlutoClient(host="{{host}}", port={{port}}, agent_id="agent-a")
+client.on_message(on_msg)      # must be set before connect()
+client.connect()
+```
+
+#### Handshake / Ready Synchronisation
+
+Two agents can synchronise startup before beginning coordinated work:
+
+```python
+# Both agents run this (with each other's ID as PEER):
+PEER = "agent-b"
+client.send(PEER, {"type": "ready", "agent": client.agent_id})
+wait_msg(PEER, timeout=30)     # blocks until peer sends ready
+```
+
+#### Multi-Turn Conversation Loop
+
+```python
+TURNS = [
+    (1, "What is the capital of France?", "Paris"),
+    (2, "What is 2 + 2?",                "4"),
+    # ... more turns ...
+]
+
+for turn, question, expected_answer in TURNS:
+    if my_turn_to_ask(turn):
+        client.send(PEER, {"type": "question", "turn": turn, "text": question})
+        answer_msg = wait_msg(PEER, timeout=30)
+        answer_text = answer_msg["payload"]["text"]
+        # Optionally lock a shared resource to log the exchange
+        lock = client.acquire("shared:transcript", mode="write", ttl_ms=10000)
+        log_exchange(turn, question, answer_text)
+        client.release(lock)
+    else:
+        q_msg = wait_msg(PEER, timeout=30)
+        client.send(PEER, {"type": "answer", "turn": turn, "text": expected_answer})
+```
+
+This pattern scales to any number of turns or agents. The key rules:
+- Install `on_message` **before** calling `connect()`.
+- Use a `threading.Lock` around the shared message list.
+- Always set a reasonable `timeout` to avoid permanent hangs.
+
+### 2.5 CLI Reference
 
 ```bash
 # Verify server connectivity

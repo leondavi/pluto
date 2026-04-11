@@ -11,6 +11,39 @@
 %%%
 %%% Socket mode: `{active, once}`.  After each received packet we
 %%% re-arm with `inet:setopts/2` to prevent mailbox flooding.
+%%%
+%%% == Message Push Architecture ==
+%%%
+%%% Pluto uses a persistent, bidirectional TCP connection per agent.
+%%% The same socket carries both request/response traffic and
+%%% server-initiated (pushed) events.  The push flow is:
+%%%
+%%%   1. Agent A sends {"op":"send", "to":"B", "payload":{...}}
+%%%      → this session decodes it and calls pluto_msg_hub:send_msg/4.
+%%%
+%%%   2. pluto_msg_hub looks up Agent B's session_pid in ETS and
+%%%      delivers the event via an Erlang message:
+%%%        Pid ! {pluto_event, #{"event" => "message", ...}}
+%%%      If Agent B is disconnected the event is queued in the
+%%%      agent's inbox ETS table and replayed on reconnect.
+%%%
+%%%   3. Agent B's session process receives {pluto_event, Event} in
+%%%      its main receive loop (see below) and writes it directly
+%%%      to B's TCP socket as a newline-delimited JSON line via
+%%%      gen_tcp:send/2.
+%%%
+%%% The same push mechanism is used for lock_granted events from
+%%% pluto_lock_mgr, broadcast events, delivery acks, task events,
+%%% and topic-publish events.  All pushed events contain an
+%%% "event" key (e.g. "message", "lock_granted", "broadcast",
+%%% "delivery_ack", "task_assigned", "task_updated") so the client
+%%% can distinguish them from request responses.
+%%%
+%%% On the Python client side, a background daemon thread runs a
+%%% blocking recv loop on the same socket.  Lines with an "event"
+%%% key are dispatched to registered handlers (on_message,
+%%% on_lock_granted, etc.); lines without it are placed on a
+%%% thread-safe queue for the calling thread's blocking requests.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(pluto_session).
@@ -65,9 +98,23 @@ init(Socket) ->
 %%====================================================================
 
 %% @private The main event loop.  Handles three kinds of messages:
-%%   - TCP data from the client socket
-%%   - Internal events pushed by other Pluto modules
-%%   - Socket close / error
+%%   - TCP data from the client socket (request/response path)
+%%   - Internal events pushed by other Pluto modules (server→client push)
+%%   - Socket close / error (cleanup path)
+%%
+%% Request/response path:  {tcp, Sock, Data} arrives, is buffered,
+%% split into complete JSON lines, decoded, and dispatched through
+%% handle_request/2 to the appropriate handler.  The handler sends a
+%% synchronous JSON response back on the same socket.
+%%
+%% Server→client push path:  Other Erlang processes (pluto_msg_hub,
+%% pluto_lock_mgr) send {pluto_event, Event} to this process.  The
+%% event map is JSON-encoded and written to the TCP socket immediately.
+%% This is how messages, lock grants, broadcasts, and task events
+%% reach the connected agent without the agent polling.
+%%
+%% Takeover path:  If the same agent_id reconnects in a new session,
+%% the old session receives {pluto_takeover, _} and shuts down.
 loop(#sess{socket = Sock} = S) ->
     receive
         %% ── Incoming TCP data ───────────────────────────────────
@@ -94,6 +141,13 @@ loop(#sess{socket = Sock} = S) ->
             cleanup(S);
 
         %% ── Async event from Pluto internals ────────────────────
+        %% This is the core push mechanism: pluto_msg_hub, pluto_lock_mgr,
+        %% and other modules send {pluto_event, EventMap} directly to this
+        %% session process via Erlang messaging (Pid ! {pluto_event, ...}).
+        %% The event is serialised as a JSON line and written to the TCP
+        %% socket, arriving at the client without any polling or request.
+        %% Event types include: "message", "broadcast", "lock_granted",
+        %% "delivery_ack", "task_assigned", "task_updated".
         {pluto_event, Event} when is_map(Event) ->
             send_json(Sock, Event),
             loop(S);
@@ -144,6 +198,37 @@ handle_line(Line, #sess{socket = Sock, session_id = SessId} = S) ->
 %%====================================================================
 
 %% @private Route a decoded JSON request to the appropriate handler.
+%%
+%% Handler categories (grouped by registration requirement):
+%%
+%%   No registration required:
+%%     register    — Registers the agent, sets agent_id on the session.
+%%     ping        — Heartbeat / liveness check, returns server timestamp.
+%%     selftest    — Runs internal server self-test suite.
+%%     stats       — Returns global counters and per-agent statistics.
+%%     server_info — Returns server metadata (version, ports, uptime, etc.).
+%%     admin_*     — Admin operations (list locks, force release, etc.).
+%%
+%%   Registration required (agent_id must be set):
+%%     acquire      — Request a lock on a resource; may block (returns "wait").
+%%     try_acquire  — Non-blocking lock probe; returns "unavailable" if held.
+%%     release      — Release a held lock, triggering grant to next waiter.
+%%     renew        — Extend TTL of an existing lock.
+%%     send         — Direct message to another agent (routed by msg_hub).
+%%     broadcast    — Message to all connected agents.
+%%     list_agents  — Enumerate connected agents (optionally detailed).
+%%     find_agents  — Discover agents by attribute filter.
+%%     subscribe    — Subscribe to a named topic channel.
+%%     unsubscribe  — Unsubscribe from a topic channel.
+%%     publish      — Send a message to all subscribers of a topic.
+%%     task_assign  — Create and assign a server-tracked task.
+%%     task_update  — Update status of an assigned task.
+%%     task_list    — Query tasks with optional filters.
+%%     task_batch   — Atomically assign multiple tasks.
+%%     task_progress— Get global task progress overview.
+%%     ack          — Confirm receipt of a delivered message.
+%%     ack_events   — Report highest processed event sequence.
+%%     event_history— Query past events by sequence number.
 handle_request(#{<<"op">> := ?OP_REGISTER} = Msg, S) ->
     pluto_stats:inc(total_requests),
     handle_register(Msg, S);
@@ -258,6 +343,11 @@ handle_request(_, S) ->
 %%====================================================================
 
 %% ── Register ────────────────────────────────────────────────────────
+%% Registers the agent with pluto_msg_hub, which stores the agent_id,
+%% session_id, and this process's pid in ETS.  From this point on, other
+%% agents can send messages to this agent_id and pluto_msg_hub will
+%% deliver them by sending {pluto_event, ...} to this session process.
+%% Returns: session_id, agent_id, heartbeat_interval_ms.
 handle_register(#{<<"agent_id">> := AgentId} = Msg, #sess{socket = Sock,
                                                            session_id = SessId} = S)
   when is_binary(AgentId), AgentId =/= <<>> ->
@@ -317,6 +407,11 @@ handle_ping(#sess{socket = Sock} = S) ->
     S.
 
 %% ── Acquire lock ────────────────────────────────────────────────────
+%% Requests a lock on a named resource via pluto_lock_mgr.  Three
+%% outcomes: (1) granted immediately → returns lock_ref + fencing_token,
+%% (2) resource busy → returns "wait" + wait_ref, and a lock_granted
+%% event is pushed later via {pluto_event, ...} when the lock becomes
+%% available, (3) deadlock detected → returns error with victim flag.
 handle_acquire(Msg, #sess{socket = Sock, session_id = SessId,
                           agent_id = AgentId} = S) ->
     case maps:find(<<"resource">>, Msg) of
@@ -414,10 +509,18 @@ handle_renew(_, #sess{socket = Sock} = S) ->
     S.
 
 %% ── Send direct message ─────────────────────────────────────────────
-%% Supports optional `request_id` field: when present the server will push
-%% a delivery_ack event back to the sender once the target receives the
-%% message, giving reliable end-to-end delivery feedback.
-%% Messages to disconnected-but-known agents are queued in their inbox.
+%% Routes a message from this agent to another via pluto_msg_hub.
+%% The hub looks up the target's session_pid in ETS and delivers the
+%% message as: TargetPid ! {pluto_event, #{"event" => "message", ...}}.
+%% The target's session process then writes it to the TCP socket.
+%%
+%% If the target agent is disconnected but known (registered before),
+%% the message is queued in the agent's inbox ETS table and will be
+%% replayed in order when the agent reconnects.
+%%
+%% Supports optional `request_id` field: when present the server will
+%% push a delivery_ack event back to the sender once the target
+%% receives the message, giving reliable end-to-end delivery feedback.
 handle_send(#{<<"to">> := To, <<"payload">> := Payload} = Msg,
             #sess{socket = Sock, agent_id = From} = S)
   when is_binary(To) ->

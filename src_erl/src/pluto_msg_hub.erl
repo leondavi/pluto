@@ -230,10 +230,25 @@ init([]) ->
 handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
     Policy = pluto_config:get(session_conflict_policy, ?DEFAULT_SESSION_CONFLICT),
     case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{status = connected, session_type = SType}]
+          when (SType =:= http orelse SType =:= stateless), Policy =:= strict ->
+            %% Name taken by an HTTP/stateless agent — check if session is still alive
+            case ets:match_object(?ETS_HTTP_SESSIONS,
+                     #http_session{agent_id = AgentId, _ = '_'}) of
+                [_|_] ->
+                    %% HTTP session still active — assign unique suffix
+                    UniqueId = make_unique_agent_id(AgentId),
+                    do_register(UniqueId, SessionId, SessionPid, Attrs, tcp),
+                    {reply, {ok, SessionId, UniqueId}, State};
+                [] ->
+                    %% HTTP session expired — safe to take the name
+                    do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
+                    {reply, {ok, SessionId}, State}
+            end;
         [#agent{status = connected, session_pid = OldPid}] when Policy =:= strict ->
             case is_pid(OldPid) andalso is_process_alive(OldPid) of
                 true ->
-                    %% Name taken by a live agent — assign a unique suffixed name
+                    %% Name taken by a live TCP agent — assign a unique suffixed name
                     UniqueId = make_unique_agent_id(AgentId),
                     do_register(UniqueId, SessionId, SessionPid, Attrs, tcp),
                     {reply, {ok, SessionId, UniqueId}, State};
@@ -241,12 +256,6 @@ handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
                     do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
                     {reply, {ok, SessionId}, State}
             end;
-        [#agent{status = connected, session_type = SType}]
-          when (SType =:= http orelse SType =:= stateless), Policy =:= strict ->
-            %% Name taken by an HTTP/stateless agent — assign a unique suffixed name
-            UniqueId = make_unique_agent_id(AgentId),
-            do_register(UniqueId, SessionId, SessionPid, Attrs, tcp),
-            {reply, {ok, SessionId, UniqueId}, State};
         [#agent{status = connected, session_pid = OldPid}] when Policy =:= takeover ->
             case is_pid(OldPid) andalso is_process_alive(OldPid) of
                 true  -> OldPid ! {pluto_takeover, AgentId};
@@ -255,7 +264,7 @@ handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
             do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
             {reply, {ok, SessionId}, State};
         [#agent{status = disconnected}] ->
-            %% Agent was disconnected — reconnect within grace period
+            %% Agent was disconnected — safe to reclaim (same agent reconnecting)
             do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
             %% Deliver any queued inbox messages
             self() ! {deliver_inbox_sync, AgentId},

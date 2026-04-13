@@ -229,47 +229,23 @@ init([]) ->
 %% ── register ────────────────────────────────────────────────────────
 handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
     Policy = pluto_config:get(session_conflict_policy, ?DEFAULT_SESSION_CONFLICT),
-    case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{status = connected, session_type = SType}]
-          when (SType =:= http orelse SType =:= stateless), Policy =:= strict ->
-            %% Name taken by an HTTP/stateless agent — check if session is still alive
-            case ets:match_object(?ETS_HTTP_SESSIONS,
-                     #http_session{agent_id = AgentId, _ = '_'}) of
-                [_|_] ->
-                    %% HTTP session still active — assign unique suffix
-                    UniqueId = make_unique_agent_id(AgentId),
-                    do_register(UniqueId, SessionId, SessionPid, Attrs, tcp),
-                    {reply, {ok, SessionId, UniqueId}, State};
-                [] ->
-                    %% HTTP session expired — safe to take the name
-                    do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
-                    {reply, {ok, SessionId}, State}
+    case resolve_name(AgentId, Policy) of
+        {available, FinalId} ->
+            do_register(FinalId, SessionId, SessionPid, Attrs, tcp),
+            case FinalId =:= AgentId of
+                true  -> {reply, {ok, SessionId}, State};
+                false -> {reply, {ok, SessionId, FinalId}, State}
             end;
-        [#agent{status = connected, session_pid = OldPid}] when Policy =:= strict ->
-            case is_pid(OldPid) andalso is_process_alive(OldPid) of
-                true ->
-                    %% Name taken by a live TCP agent — assign a unique suffixed name
-                    UniqueId = make_unique_agent_id(AgentId),
-                    do_register(UniqueId, SessionId, SessionPid, Attrs, tcp),
-                    {reply, {ok, SessionId, UniqueId}, State};
-                false ->
-                    do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
-                    {reply, {ok, SessionId}, State}
-            end;
-        [#agent{status = connected, session_pid = OldPid}] when Policy =:= takeover ->
+        {reconnect, AgentId} ->
+            do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
+            self() ! {deliver_inbox_sync, AgentId},
+            {reply, {ok, SessionId}, State};
+        {takeover, AgentId, OldPid} ->
             case is_pid(OldPid) andalso is_process_alive(OldPid) of
                 true  -> OldPid ! {pluto_takeover, AgentId};
                 false -> ok
             end,
-            do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
-            {reply, {ok, SessionId}, State};
-        [#agent{status = disconnected}] ->
-            %% Agent was disconnected — safe to reclaim (same agent reconnecting)
-            do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
-            %% Deliver any queued inbox messages
-            self() ! {deliver_inbox_sync, AgentId},
-            {reply, {ok, SessionId}, State};
-        [] ->
+            evict_http_sessions(AgentId),
             do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
             {reply, {ok, SessionId}, State}
     end;
@@ -277,35 +253,19 @@ handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
 %% ── register_http — HTTP/stateless session registration ─────────────
 handle_call({register_http, AgentId, Attrs, Mode, TtlMs}, _From, State) ->
     Policy = pluto_config:get(session_conflict_policy, ?DEFAULT_SESSION_CONFLICT),
-    case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{status = connected, session_pid = OldPid}] when Policy =:= strict ->
-            IsAlive = is_pid(OldPid) andalso is_process_alive(OldPid),
-            %% Also check if it's an HTTP session still within TTL
-            IsHttpAlive = case ets:match_object(?ETS_HTTP_SESSIONS,
-                              #http_session{agent_id = AgentId, _ = '_'}) of
-                [_|_] -> true;
-                []    -> false
-            end,
-            case IsAlive orelse IsHttpAlive of
-                true ->
-                    %% Name taken — assign unique suffix
-                    UniqueId = make_unique_agent_id(AgentId),
-                    {Token, SessId} = do_register_http(UniqueId, Attrs, Mode, TtlMs),
-                    {reply, {ok, Token, SessId, UniqueId}, State};
-                false ->
-                    {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
-                    {reply, {ok, Token, SessId}, State}
+    case resolve_name(AgentId, Policy) of
+        {available, FinalId} ->
+            {Token, SessId} = do_register_http(FinalId, Attrs, Mode, TtlMs),
+            case FinalId =:= AgentId of
+                true  -> {reply, {ok, Token, SessId}, State};
+                false -> {reply, {ok, Token, SessId, FinalId}, State}
             end;
-        [#agent{status = connected}] when Policy =:= takeover ->
-            %% Takeover: evict old session (TCP or HTTP)
-            evict_http_sessions(AgentId),
-            {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
-            {reply, {ok, Token, SessId}, State};
-        [#agent{status = disconnected}] ->
+        {reconnect, AgentId} ->
             {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
             self() ! {deliver_inbox_sync, AgentId},
             {reply, {ok, Token, SessId}, State};
-        [] ->
+        {takeover, AgentId, _OldPid} ->
+            evict_http_sessions(AgentId),
             {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
             {reply, {ok, Token, SessId}, State}
     end;
@@ -617,6 +577,61 @@ terminate(_Reason, _State) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+%% @private Centralized name resolution — the SINGLE authority for agent naming.
+%% Called by both TCP and HTTP registration handlers. Decides whether the
+%% requested name is available, needs a suffix, or can be reclaimed.
+%%
+%% Returns:
+%%   {available, FinalId}        — name is free (FinalId = AgentId or suffixed)
+%%   {reconnect, AgentId}        — agent was disconnected, safe to reclaim
+%%   {takeover, AgentId, OldPid} — takeover policy, evict the old session
+%%
+resolve_name(AgentId, Policy) ->
+    case ets:lookup(?ETS_AGENTS, AgentId) of
+        [] ->
+            %% Name not in use at all
+            {available, AgentId};
+        [#agent{status = disconnected}] ->
+            %% Agent disconnected (in grace period) — allow reclaim
+            {reconnect, AgentId};
+        [#agent{status = connected}] when Policy =:= takeover ->
+            %% Takeover policy — evict the old session
+            OldPid = case ets:lookup(?ETS_AGENTS, AgentId) of
+                [#agent{session_pid = P}] -> P;
+                _ -> undefined
+            end,
+            {takeover, AgentId, OldPid};
+        [#agent{status = connected}] when Policy =:= strict ->
+            %% Name is taken by a live agent — check if truly alive
+            case is_name_alive(AgentId) of
+                true ->
+                    %% Name genuinely in use — assign a unique suffix
+                    UniqueId = make_unique_agent_id(AgentId),
+                    {available, UniqueId};
+                false ->
+                    %% Agent record says connected but session is dead — safe to take
+                    {available, AgentId}
+            end
+    end.
+
+%% @private Check if an agent name is genuinely in use by a live session.
+%% Works for both TCP agents (check process liveness) and HTTP agents
+%% (check if an HTTP session record exists in ETS_HTTP_SESSIONS).
+is_name_alive(AgentId) ->
+    case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{session_type = SType, session_pid = Pid}] ->
+            TcpAlive = is_pid(Pid) andalso is_process_alive(Pid),
+            HttpAlive = (SType =:= http orelse SType =:= stateless) andalso
+                case ets:match_object(?ETS_HTTP_SESSIONS,
+                         #http_session{agent_id = AgentId, _ = '_'}) of
+                    [_|_] -> true;
+                    []    -> false
+                end,
+            TcpAlive orelse HttpAlive;
+        [] ->
+            false
+    end.
 
 %% @private Perform the actual registration: insert agent and session records,
 %% update liveness, and broadcast the join event.

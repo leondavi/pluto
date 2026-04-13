@@ -412,7 +412,8 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"session_id">> => SessId,
                                     <<"agent_id">>   => AgentId,
                                     <<"mode">>       => ModeStr,
-                                    <<"ttl_ms">>     => TtlMs}};
+                                    <<"ttl_ms">>     => TtlMs,
+                                    <<"hint">>       => <<"You are using an HTTP session. Use long-poll (GET /agents/poll?token=...&timeout=30) or set up a cron job to poll periodically. Without polling you will not receive messages, tasks, or events.">>}};
                         {ok, SessToken, SessId, ActualAgentId} ->
                             %% Name was taken — got a unique suffix
                             {200, #{<<"status">>     => <<"ok">>,
@@ -421,7 +422,8 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"agent_id">>   => ActualAgentId,
                                     <<"requested_id">> => AgentId,
                                     <<"mode">>       => ModeStr,
-                                    <<"ttl_ms">>     => TtlMs}}
+                                    <<"ttl_ms">>     => TtlMs,
+                                    <<"hint">>       => <<"You are using an HTTP session. Use long-poll (GET /agents/poll?token=...&timeout=30) or set up a cron job to poll periodically. Without polling you will not receive messages, tasks, or events.">>}}
                     end;
                 {error, unauthorized} ->
                     {401, #{<<"status">> => <<"error">>,

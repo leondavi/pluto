@@ -205,14 +205,16 @@ environments, serverless functions). You register via HTTP and receive a
 > **IMPORTANT — How HTTP differs from TCP:**
 > Unlike TCP, the server **cannot push events to you**. You do not have an
 > open socket. Instead, the server queues messages in your inbox and you
-> **must poll** to retrieve them. If you never poll, you will never see
-> messages, task assignments, broadcasts, or lock grants sent to you.
+> **must poll** to retrieve them. Use **long-poll** (`timeout=30`) to block
+> until messages arrive instead of polling every few seconds. If you never
+> poll, you will never see messages, task assignments, broadcasts, or lock
+> grants sent to you.
 
 ### How It Works
 
 ```
 1. REGISTER  →  get a token          (one-time)
-2. POLL      →  fetch queued events  (repeatedly, every few seconds)
+2. POLL      →  fetch queued events  (long-poll with timeout, or periodic)
 3. SEND / BROADCAST / SUBSCRIBE      (as needed)
 4. POLL      →  check for responses  (after every action that expects a reply)
 5. UNREGISTER when done              (or let the TTL expire)
@@ -222,6 +224,11 @@ environments, serverless functions). You register via HTTP and receive a
 assignment, and lock grant addressed to you is queued server-side until you
 poll. Each poll also resets your heartbeat timer, so frequent polling keeps
 your session alive without separate heartbeat calls.
+
+> **v0.2.2:** Use **long-poll** (`?timeout=30`) to block for up to 30 seconds
+> until messages arrive. This eliminates wasteful periodic polling and gives
+> near-instant message delivery. The server also writes signal files to
+> `/tmp/pluto/signals/<agent_id>.signal` when new messages arrive.
 
 ### Recommended Workflow
 
@@ -238,10 +245,11 @@ Step 3 — Subscribe to topics (so those events reach your inbox):
   POST /agents/subscribe  {"token":"...","topic":"code-reviews"}
 
 Step 4 — Do work in a loop:
-  a. GET /agents/poll?token=...        ← POLL: get new messages/events
+  a. GET /agents/poll?token=...&timeout=30  ← LONG-POLL: block until messages arrive
+     (add &ack=true for read receipts, &auto_busy=true to auto-set busy status)
   b. Process each message in the response
-  c. Send replies, assign tasks, acquire locks, etc.
-  d. Go to (a) — poll again in a few seconds
+  c. Send replies, assign tasks, update TTL, etc.
+  d. Go to (a) — long-poll blocks until next message (up to timeout seconds)
 
 Step 5 — When finished:
   POST /agents/unregister  {"token":"..."}
@@ -266,13 +274,41 @@ Custom TTL: add `"ttl_ms":600000` to the request body.
 
 ### Poll Messages (Your Event Loop)
 
-**This is the most important operation for HTTP agents.** Call it frequently
-(every 1–5 seconds, or after sending a message when you expect a reply):
+**This is the most important operation for HTTP agents.**
+
+#### Long-Poll (Recommended)
+
+Block until messages arrive or timeout expires (max 60 seconds):
+
+```bash
+curl -s "http://{{host}}:9001/agents/poll?token=PLUTO-A37...&timeout=30"
+```
+→ `{"status":"ok","count":2,"messages":[{"event":"message","from":"coder-1","payload":{...}},...]}`
+
+The server holds the connection open for up to `timeout` seconds. If a message
+arrives during that time, it responds immediately. If nothing arrives, it
+returns `{"count":0}` after the timeout.
+
+#### Optional Query Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `timeout` | `0` | Long-poll timeout in seconds (max 60). `0` = immediate return. |
+| `ack` | `false` | Send delivery receipts back to message senders. |
+| `auto_busy` | `false` | Auto-set your status to "processing" for 30s after receiving messages. |
+
+Example with all options:
+```bash
+curl -s "http://{{host}}:9001/agents/poll?token=PLUTO-A37...&timeout=30&ack=true&auto_busy=true"
+```
+
+#### Periodic Poll (Fallback)
+
+If you cannot use long-poll, call without timeout every 1–5 seconds:
 
 ```bash
 curl -s "http://{{host}}:9001/agents/poll?token=PLUTO-A37..."
 ```
-→ `{"status":"ok","count":2,"messages":[{"event":"message","from":"coder-1","payload":{...}},...]}`
 
 What you will receive in the `messages` array:
 - Direct messages from other agents (`"event":"message"`)
@@ -286,6 +322,15 @@ Messages are delivered **once** and removed from the inbox after polling.
 If `count` is 0, there are no new events — poll again later.
 
 **Each poll also acts as a heartbeat**, resetting your session TTL timer.
+
+#### Signal Files
+
+When a message is queued for your agent, the server writes a signal file at:
+```
+/tmp/pluto/signals/<agent_id>.signal
+```
+The file is deleted when you poll. You can watch this file to detect new
+messages without polling (useful for shell-based agents with `inotifywait`).
 
 ### Heartbeat
 
@@ -320,6 +365,55 @@ curl -s -X POST http://{{host}}:9001/agents/subscribe \
   -d '{"token":"PLUTO-A37...","topic":"build-status"}'
 ```
 
+### Update TTL
+
+Dynamically extend or shorten your session lifetime:
+
+```bash
+curl -s -X POST http://{{host}}:9001/agents/update_ttl \
+  -H "Content-Type: application/json" \
+  -d '{"token":"PLUTO-A37...","ttl_ms":600000}'
+```
+→ `{"status":"ok","ttl_ms":600000}`
+
+### Set Status
+
+Set a custom status visible to other agents:
+
+```bash
+curl -s -X POST http://{{host}}:9001/agents/set_status \
+  -H "Content-Type: application/json" \
+  -d '{"token":"PLUTO-A37...","custom_status":"reviewing code"}'
+```
+→ `{"status":"ok","custom_status":"reviewing code"}`
+
+### Task Management via HTTP
+
+HTTP agents can now assign, update, and query tasks directly using their token:
+
+```bash
+# Assign a task
+curl -s -X POST http://{{host}}:9001/agents/task_assign \
+  -H "Content-Type: application/json" \
+  -d '{"token":"PLUTO-A37...","assignee":"worker-1","description":"Review PR #42","payload":{"pr":42}}'
+→ {"status":"ok","task_id":"TASK-..."}
+
+# Update a task
+curl -s -X POST http://{{host}}:9001/agents/task_update \
+  -H "Content-Type: application/json" \
+  -d '{"token":"PLUTO-A37...","task_id":"TASK-...","status":"done","result":{"approved":true}}'
+
+# List tasks (optional filters: assignee, status)
+curl -s -X POST http://{{host}}:9001/agents/task_list \
+  -H "Content-Type: application/json" \
+  -d '{"token":"PLUTO-A37...","assignee":"worker-1","status":"pending"}'
+
+# Task progress overview
+curl -s -X POST http://{{host}}:9001/agents/task_progress \
+  -H "Content-Type: application/json" \
+  -d '{"token":"PLUTO-A37..."}'
+```
+
 ### Unregister
 
 ```bash
@@ -352,9 +446,9 @@ curl -s -X POST http://{{host}}:9001/agents/send \
   -H "Content-Type: application/json" \
   -d "{\"token\":\"$TOKEN\",\"to\":\"reviewer-1\",\"payload\":{\"type\":\"review_request\"}}"
 
-# 5. POLL for responses (repeat this periodically)
-curl -s "http://{{host}}:9001/agents/poll?token=$TOKEN"
-#    → process messages, then poll again...
+# 5. POLL for responses (long-poll blocks until messages arrive)
+curl -s "http://{{host}}:9001/agents/poll?token=$TOKEN&timeout=30&ack=true"
+#    → process messages, then long-poll again...
 
 # 6. Done — unregister
 curl -s -X POST http://{{host}}:9001/agents/unregister \
@@ -386,7 +480,7 @@ request body to identify yourself.
 
 ```bash
 GET  /ping                    → {"status":"pong","ts":...}
-GET  /health                  → {"status":"ok","version":"0.2.1"}
+GET  /health                  → {"status":"ok","version":"0.2.2"}
 GET  /agents                  → {"status":"ok","agents":["coder-1",...]}
 GET  /agents/list/detailed    → full agent details with attributes
 GET  /agents/<id>             → single agent status
@@ -493,13 +587,11 @@ wait_msg("agent-b", timeout=30)
 
 ### PlutoHttpClient (HTTP Sessions)
 
-For agents that cannot maintain TCP connections. **You must call `poll()`
-regularly** — this is how you receive messages, task assignments, and all
-other events:
+For agents that cannot maintain TCP connections. Use **`long_poll()`** (v0.2.2)
+to block until messages arrive, or `poll()` for periodic polling:
 
 ```python
 from pluto_client import PlutoHttpClient
-import time
 
 with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as client:
     # Registration happens automatically — token is managed for you
@@ -513,14 +605,34 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
     # Send a message
     client.send("coder-1", {"text": "hello from HTTP"})
 
-    # POLL — this is your event loop. Call it repeatedly.
-    # Every message, broadcast, task, and event sent to you
-    # is queued server-side and delivered here.
+    # LONG-POLL — blocks until messages arrive (up to 30s)
+    # This is the recommended event loop for v0.2.2+
     while working:
-        messages = client.poll()   # also acts as heartbeat
+        messages = client.long_poll(timeout=30, ack=True)  # blocks until msgs arrive
         for msg in messages:
-            handle(msg)            # process each event
-        time.sleep(2)              # poll every few seconds
+            handle(msg)
+
+    # --- Additional v0.2.2 capabilities ---
+
+    # Set your status (visible to other agents)
+    client.set_status("reviewing code")
+
+    # Extend your session TTL dynamically
+    client.update_ttl(ttl_ms=600000)  # 10 minutes
+
+    # Assign a task to another agent
+    task_id = client.task_assign("worker-1", "Review PR #42", {"pr": 42})
+
+    # Update task status
+    client.task_update(task_id, "done", {"approved": True})
+
+    # Query tasks
+    tasks = client.task_list(assignee="worker-1", status="pending")
+    progress = client.task_progress()
+
+    # Check for signal file (alternative to polling)
+    if client.check_signal_file():
+        messages = client.poll()  # messages are waiting
 ```
 
 ### API Quick Reference
@@ -532,10 +644,12 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
 | Message | `send()`, `broadcast()`, `publish()` | `send()`, `broadcast()` |
 | Subscribe | `subscribe()`, `unsubscribe()` | `subscribe()` |
 | Discovery | `find_agents()`, `list_agents()`, `agent_status()` | `list_agents()`, `agent_status()` |
-| Tasks | `task_assign()`, `task_update()`, `task_list()`, `task_batch()`, `task_progress()` | — (use one-shot HTTP) |
-| Status | `set_status()` | — |
-| Events | Push callbacks: `on_message()`, `on_broadcast()`, `on()` | `poll()` |
-| Keepalive | Automatic heartbeat thread | `heartbeat()` or `poll()` |
+| Tasks | `task_assign()`, `task_update()`, `task_list()`, `task_batch()`, `task_progress()` | `task_assign()`, `task_update()`, `task_list()`, `task_progress()` |
+| Status | `set_status()` | `set_status()` |
+| TTL | — | `update_ttl()` |
+| Events | Push callbacks: `on_message()`, `on_broadcast()`, `on()` | `long_poll()`, `poll()` |
+| Keepalive | Automatic heartbeat thread | `heartbeat()`, `poll()`, or `long_poll()` |
+| Signal | — | `check_signal_file()` |
 | Stats | `stats()` | — |
 
 ### CLI
@@ -554,10 +668,10 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
 ## Key Rules
 
 1. **Always release locks.** Use try/finally. Default TTL: 30 s.
-2. **Heartbeat.** TCP: ping every 15 s. HTTP: call heartbeat or poll before TTL expires.
+2. **Heartbeat.** TCP: ping every 15 s. HTTP: call heartbeat, poll, or long_poll before TTL expires. Use `update_ttl()` if you need longer sessions.
 3. **Resource naming.** Use `file:/path/to/file` for files, `workspace:<name>` for logical scopes.
 4. **Prefer topics over broadcast.** Subscribe to specific channels instead of broadcasting everything.
-5. **Use task primitives** for work assignment — they are tracked and generate lifecycle events.
+5. **Use task primitives** for work assignment — they are tracked and generate lifecycle events. HTTP agents can use `task_assign()` and `task_update()` directly.
 6. **Handle `tasks_orphaned` events** — pick up abandoned work when agents disconnect.
 7. **Duplicate names.** If your `agent_id` is taken, the server appends a 6-character suffix. Always use the returned `agent_id`.
 

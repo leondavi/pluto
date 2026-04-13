@@ -561,8 +561,114 @@ class PlutoHttpClient:
         return resp.get("agents", [])
 
     def agent_status(self, agent_id: str) -> dict:
-        """Query a specific agent's status."""
+        """Query a specific agent's status (includes TTL info for HTTP agents)."""
         return self._get(f"/agents/{agent_id}")
+
+    def long_poll(self, timeout: int = 30, ack: bool = True, auto_busy: bool = False) -> List[dict]:
+        """Long-poll for messages. Blocks up to `timeout` seconds until messages arrive.
+
+        Args:
+            timeout: Max seconds to wait (capped at 60 server-side).
+            ack: If True, server sends delivery_ack receipts to message senders.
+            auto_busy: If True, auto-sets agent status to "processing" on receipt.
+
+        Returns:
+            List of messages (may be empty if timed out).
+        """
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        params = f"token={self.token}&timeout={timeout}"
+        if ack:
+            params += "&ack=true"
+        if auto_busy:
+            params += "&auto_busy=true"
+        # Use a longer HTTP timeout than the long-poll timeout
+        old_timeout = self.timeout
+        self.timeout = max(self.timeout, timeout + 10)
+        try:
+            resp = self._get(f"/agents/poll?{params}")
+        finally:
+            self.timeout = old_timeout
+        return resp.get("messages", [])
+
+    def update_ttl(self, ttl_ms: int) -> dict:
+        """Dynamically update the session TTL."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        resp = self._post("/agents/update_ttl", {"token": self.token, "ttl_ms": ttl_ms})
+        if resp.get("status") == "ok":
+            self.ttl_ms = ttl_ms
+        return resp
+
+    def set_status(self, custom_status: str) -> dict:
+        """Set custom agent status (e.g. 'busy', 'idle', 'processing')."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        return self._post("/agents/set_status", {
+            "token": self.token,
+            "custom_status": custom_status,
+        })
+
+    def task_assign(self, assignee: str, description: str = "",
+                    payload: Optional[Dict] = None) -> dict:
+        """Assign a task to another agent via HTTP."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        body = {
+            "token": self.token,
+            "assignee": assignee,
+            "description": description,
+            "payload": payload or {},
+        }
+        return self._post("/agents/task_assign", body)
+
+    def task_update(self, task_id: str, status: str,
+                    result: Optional[Dict] = None) -> dict:
+        """Update task status via HTTP."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        body = {
+            "token": self.token,
+            "task_id": task_id,
+            "status": status,
+            "result": result or {},
+        }
+        return self._post("/agents/task_update", body)
+
+    def task_list(self, assignee: Optional[str] = None,
+                  status: Optional[str] = None) -> List[dict]:
+        """List tasks with optional filters via HTTP."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        body: Dict = {"token": self.token}
+        if assignee:
+            body["assignee"] = assignee
+        if status:
+            body["status"] = status
+        resp = self._post("/agents/task_list", body)
+        return resp.get("tasks", [])
+
+    def task_progress(self) -> dict:
+        """Get task progress overview via HTTP."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        return self._post("/agents/task_progress", {"token": self.token})
+
+    def check_signal_file(self) -> Optional[dict]:
+        """Check if a signal file exists for this agent (file-based notification).
+
+        Returns parsed signal data if file exists, None otherwise.
+        Signal files are written by the server when messages are queued.
+        """
+        import os
+        signal_path = f"/tmp/pluto/signals/{self.agent_id}.signal"
+        if os.path.exists(signal_path):
+            try:
+                with open(signal_path, 'r') as f:
+                    return json.loads(f.read())
+            except (json.JSONDecodeError, IOError):
+                return None
+        return None
 
     def __enter__(self):
         self.register()

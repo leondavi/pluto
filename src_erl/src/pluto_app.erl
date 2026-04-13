@@ -57,6 +57,8 @@ create_ets_tables() ->
     ets:new(?ETS_LIVENESS,   [named_table, set, public]),
     ets:new(?ETS_TASKS,      [named_table, set, public]),
     ets:new(?ETS_MSG_INBOX,  [named_table, ordered_set, public]),
+    ets:new(?ETS_HTTP_SESSIONS, [named_table, set, public,
+                                 {keypos, #http_session.token}]),
     ok.
 
 %% @private Print the Pluto ASCII art banner on startup.

@@ -20,6 +20,7 @@
     start_link/0,
     register_agent/3,
     register_agent/4,
+    register_http_agent/5,
     unregister_agent/1,
     send_msg/3,
     send_msg/4,
@@ -33,7 +34,10 @@
     publish/3,
     agent_status/1,
     set_agent_status/2,
-    deliver_inbox/1
+    deliver_inbox/1,
+    touch_http_agent/1,
+    poll_inbox/1,
+    unregister_http_agent/1
 ]).
 
 %% gen_server callbacks
@@ -144,6 +148,49 @@ set_agent_status(AgentId, CustomStatus) ->
 deliver_inbox(AgentId) ->
     gen_server:cast(?MODULE, {deliver_inbox, AgentId}).
 
+%% @doc Register an agent via HTTP (no persistent TCP session).
+%% Returns `{ok, Token, SessionId}` or `{ok, Token, SessionId, ActualAgentId}`
+%% when the requested name was taken.
+-spec register_http_agent(binary(), map(), http | stateless, non_neg_integer(), map()) ->
+    {ok, binary(), binary()} | {ok, binary(), binary(), binary()}.
+register_http_agent(AgentId, Attrs, Mode, TtlMs, _Opts) ->
+    gen_server:call(?MODULE, {register_http, AgentId, Attrs, Mode, TtlMs}).
+
+%% @doc Touch an HTTP agent's liveness timestamp (heartbeat via HTTP).
+-spec touch_http_agent(binary()) -> ok | {error, not_found}.
+touch_http_agent(Token) ->
+    case ets:lookup(?ETS_HTTP_SESSIONS, Token) of
+        [HS] ->
+            Now = erlang:system_time(millisecond),
+            ets:insert(?ETS_HTTP_SESSIONS, HS#http_session{last_seen = Now}),
+            %% Also update the agent's last_seen
+            case ets:lookup(?ETS_AGENTS, HS#http_session.agent_id) of
+                [Agent] ->
+                    ets:insert(?ETS_AGENTS, Agent#agent{last_seen = Now});
+                [] -> ok
+            end,
+            ok;
+        [] ->
+            {error, not_found}
+    end.
+
+%% @doc Poll and return queued inbox messages for an HTTP agent.
+-spec poll_inbox(binary()) -> {ok, [map()]}.
+poll_inbox(AgentId) ->
+    gen_server:call(?MODULE, {poll_inbox, AgentId}).
+
+%% @doc Unregister an HTTP agent by token.
+-spec unregister_http_agent(binary()) -> ok | {error, not_found}.
+unregister_http_agent(Token) ->
+    case ets:lookup(?ETS_HTTP_SESSIONS, Token) of
+        [#http_session{agent_id = AgentId}] ->
+            ets:delete(?ETS_HTTP_SESSIONS, Token),
+            unregister_agent(AgentId),
+            ok;
+        [] ->
+            {error, not_found}
+    end.
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -157,33 +204,80 @@ handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
     Policy = pluto_config:get(session_conflict_policy, ?DEFAULT_SESSION_CONFLICT),
     case ets:lookup(?ETS_AGENTS, AgentId) of
         [#agent{status = connected, session_pid = OldPid}] when Policy =:= strict ->
-            case is_process_alive(OldPid) of
+            case is_pid(OldPid) andalso is_process_alive(OldPid) of
                 true ->
                     %% Name taken by a live agent — assign a unique suffixed name
                     UniqueId = make_unique_agent_id(AgentId),
-                    do_register(UniqueId, SessionId, SessionPid, Attrs),
+                    do_register(UniqueId, SessionId, SessionPid, Attrs, tcp),
                     {reply, {ok, SessionId, UniqueId}, State};
                 false ->
-                    do_register(AgentId, SessionId, SessionPid, Attrs),
+                    do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
                     {reply, {ok, SessionId}, State}
             end;
+        [#agent{status = connected, session_type = SType}]
+          when (SType =:= http orelse SType =:= stateless), Policy =:= strict ->
+            %% Name taken by an HTTP/stateless agent — assign a unique suffixed name
+            UniqueId = make_unique_agent_id(AgentId),
+            do_register(UniqueId, SessionId, SessionPid, Attrs, tcp),
+            {reply, {ok, SessionId, UniqueId}, State};
         [#agent{status = connected, session_pid = OldPid}] when Policy =:= takeover ->
-            case is_process_alive(OldPid) of
+            case is_pid(OldPid) andalso is_process_alive(OldPid) of
                 true  -> OldPid ! {pluto_takeover, AgentId};
                 false -> ok
             end,
-            do_register(AgentId, SessionId, SessionPid, Attrs),
+            do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
             {reply, {ok, SessionId}, State};
         [#agent{status = disconnected}] ->
             %% Agent was disconnected — reconnect within grace period
-            do_register(AgentId, SessionId, SessionPid, Attrs),
+            do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
             %% Deliver any queued inbox messages
             self() ! {deliver_inbox_sync, AgentId},
             {reply, {ok, SessionId}, State};
         [] ->
-            do_register(AgentId, SessionId, SessionPid, Attrs),
+            do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
             {reply, {ok, SessionId}, State}
     end;
+
+%% ── register_http — HTTP/stateless session registration ─────────────
+handle_call({register_http, AgentId, Attrs, Mode, TtlMs}, _From, State) ->
+    Policy = pluto_config:get(session_conflict_policy, ?DEFAULT_SESSION_CONFLICT),
+    case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{status = connected, session_pid = OldPid}] when Policy =:= strict ->
+            IsAlive = is_pid(OldPid) andalso is_process_alive(OldPid),
+            %% Also check if it's an HTTP session still within TTL
+            IsHttpAlive = case ets:match_object(?ETS_HTTP_SESSIONS,
+                              #http_session{agent_id = AgentId, _ = '_'}) of
+                [_|_] -> true;
+                []    -> false
+            end,
+            case IsAlive orelse IsHttpAlive of
+                true ->
+                    %% Name taken — assign unique suffix
+                    UniqueId = make_unique_agent_id(AgentId),
+                    {Token, SessId} = do_register_http(UniqueId, Attrs, Mode, TtlMs),
+                    {reply, {ok, Token, SessId, UniqueId}, State};
+                false ->
+                    {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
+                    {reply, {ok, Token, SessId}, State}
+            end;
+        [#agent{status = connected}] when Policy =:= takeover ->
+            %% Takeover: evict old session (TCP or HTTP)
+            evict_http_sessions(AgentId),
+            {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
+            {reply, {ok, Token, SessId}, State};
+        [#agent{status = disconnected}] ->
+            {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
+            self() ! {deliver_inbox_sync, AgentId},
+            {reply, {ok, Token, SessId}, State};
+        [] ->
+            {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
+            {reply, {ok, Token, SessId}, State}
+    end;
+
+%% ── poll_inbox — retrieve and clear queued messages ─────────────────
+handle_call({poll_inbox, AgentId}, _From, State) ->
+    Messages = do_poll_inbox(AgentId),
+    {reply, {ok, Messages}, State};
 
 %% ── send direct message (with optional request_id for ack) ──────────
 handle_call({send, From, To, Payload, RequestId}, _From,
@@ -204,7 +298,8 @@ handle_call({send, From, To, Payload, RequestId}, _From,
     %% Log message to event log for auditability
     pluto_event_log:log(message_sent, #{from => From, to => To, msg_id => MsgId}),
     case ets:lookup(?ETS_AGENTS, To) of
-        [#agent{status = connected, session_pid = Pid}] when is_pid(Pid) ->
+        [#agent{status = connected, session_pid = Pid, session_type = SType}]
+          when is_pid(Pid), SType =:= tcp ->
             Pid ! {pluto_event, Event2},
             pluto_stats:inc(messages_sent),
             pluto_stats:inc(messages_received),
@@ -228,6 +323,13 @@ handle_call({send, From, To, Payload, RequestId}, _From,
                         _ -> ok
                     end
             end,
+            {reply, {ok, MsgId}, State#state{msg_seq = NewSeq}};
+        [#agent{status = connected, session_type = SType}]
+          when SType =:= http; SType =:= stateless ->
+            %% HTTP/stateless agent — queue message in inbox for polling
+            queue_inbox_message(To, Event2),
+            pluto_stats:inc(messages_sent),
+            pluto_stats:inc_agent(From, messages_sent),
             {reply, {ok, MsgId}, State#state{msg_seq = NewSeq}};
         [#agent{status = disconnected}] ->
             %% Agent is disconnected — queue message in inbox
@@ -470,7 +572,7 @@ terminate(_Reason, _State) ->
 
 %% @private Perform the actual registration: insert agent and session records,
 %% update liveness, and broadcast the join event.
-do_register(AgentId, SessionId, SessionPid, Attrs) ->
+do_register(AgentId, SessionId, SessionPid, Attrs, SessionType) ->
     Now = pluto_lease:now_ms(),
     SysNow = erlang:system_time(millisecond),
 
@@ -492,7 +594,8 @@ do_register(AgentId, SessionId, SessionPid, Attrs) ->
         attributes    = MergedAttrs,
         last_seen     = SysNow,
         custom_status = <<"online">>,
-        subscriptions = ExistingSubs
+        subscriptions = ExistingSubs,
+        session_type  = SessionType
     },
     ets:insert(?ETS_AGENTS, Agent),
 
@@ -522,11 +625,18 @@ do_register(AgentId, SessionId, SessionPid, Attrs) ->
 
     ok.
 
-%% @private Generate a unique agent_id by appending a unique integer suffix.
+%% @private Generate a unique agent_id by appending a 6-character alphanumeric suffix.
 %% Called when the requested name is already taken by a live agent.
 make_unique_agent_id(BaseId) ->
-    Suffix = integer_to_binary(erlang:unique_integer([positive])),
+    Suffix = generate_alphanum_suffix(6),
     <<BaseId/binary, "-", Suffix/binary>>.
+
+%% @private Generate N random characters from [A-Za-z0-9].
+generate_alphanum_suffix(N) ->
+    Chars = <<"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789">>,
+    Len = byte_size(Chars),
+    Bytes = crypto:strong_rand_bytes(N),
+    << <<(binary:at(Chars, B rem Len))>> || <<B>> <= Bytes >>.
 
 %% @private Send an event to all connected agents except `ExcludeAgentId`.
 broadcast_event(Event, ExcludeAgentId) ->
@@ -615,3 +725,106 @@ orphan_agent_tasks(AgentId) ->
             pluto_event_log:log(tasks_orphaned, #{agent_id => AgentId,
                                                    task_ids => OrphanIds})
     end.
+
+%% @private Register an agent via HTTP. Creates agent record and HTTP session.
+%% Returns {Token, SessionId}.
+do_register_http(AgentId, Attrs, Mode, TtlMs) ->
+    Token = generate_http_token(),
+    SessionId = generate_http_session_id(),
+    Now = pluto_lease:now_ms(),
+    SysNow = erlang:system_time(millisecond),
+
+    %% Preserve existing attributes/subscriptions on reconnect
+    {MergedAttrs, ExistingSubs} = case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{attributes = OldAttrs, subscriptions = OldSubs}] ->
+            {maps:merge(OldAttrs, Attrs), OldSubs};
+        [] ->
+            {Attrs, []}
+    end,
+
+    %% Evict any previous HTTP sessions for this agent
+    evict_http_sessions(AgentId),
+
+    %% Create agent record (no session_pid for HTTP agents)
+    Agent = #agent{
+        agent_id      = AgentId,
+        session_id    = SessionId,
+        session_pid   = undefined,
+        status        = connected,
+        connected_at  = Now,
+        attributes    = MergedAttrs,
+        last_seen     = SysNow,
+        custom_status = <<"online">>,
+        subscriptions = ExistingSubs,
+        session_type  = Mode
+    },
+    ets:insert(?ETS_AGENTS, Agent),
+
+    %% Create HTTP session record
+    HttpSession = #http_session{
+        token      = Token,
+        agent_id   = AgentId,
+        session_id = SessionId,
+        ttl_ms     = TtlMs,
+        last_seen  = SysNow,
+        mode       = Mode
+    },
+    ets:insert(?ETS_HTTP_SESSIONS, HttpSession),
+
+    %% Insert session record
+    Session = #session{
+        session_id  = SessionId,
+        agent_id    = AgentId,
+        session_pid = undefined
+    },
+    ets:insert(?ETS_SESSIONS, Session),
+
+    %% Track stats
+    pluto_stats:inc(agents_registered),
+    pluto_stats:inc_agent(AgentId, registrations),
+
+    %% Broadcast agent_joined
+    broadcast_event(#{
+        <<"event">>    => ?EVT_AGENT_JOINED,
+        <<"agent_id">> => AgentId
+    }, AgentId),
+
+    pluto_event_log:log(agent_registered, #{agent_id => AgentId,
+                                            session_id => SessionId,
+                                            mode => Mode}),
+
+    {Token, SessionId}.
+
+%% @private Generate a cryptographically random HTTP session token.
+generate_http_token() ->
+    Hex = binary:encode_hex(crypto:strong_rand_bytes(24)),
+    <<"PLUTO-", Hex/binary>>.
+
+%% @private Generate an HTTP session ID.
+generate_http_session_id() ->
+    Hex = binary:encode_hex(crypto:strong_rand_bytes(8)),
+    <<"HTTP-SESS-", Hex/binary>>.
+
+%% @private Evict all HTTP sessions for a given agent_id.
+evict_http_sessions(AgentId) ->
+    Sessions = ets:match_object(?ETS_HTTP_SESSIONS,
+                                #http_session{agent_id = AgentId, _ = '_'}),
+    lists:foreach(fun(#http_session{token = T}) ->
+        ets:delete(?ETS_HTTP_SESSIONS, T)
+    end, Sessions).
+
+%% @private Poll inbox: retrieve and delete all queued messages for an agent.
+do_poll_inbox(AgentId) ->
+    Keys = ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}),
+    SortedSeqs = lists:sort([S || [S] <- Keys]),
+    Messages = lists:filtermap(fun(Seq) ->
+        Key = {AgentId, Seq},
+        case ets:lookup(?ETS_MSG_INBOX, Key) of
+            [{_, Event}] ->
+                ets:delete(?ETS_MSG_INBOX, Key),
+                {true, Event};
+            [] ->
+                false
+        end
+    end, SortedSeqs),
+    Messages.

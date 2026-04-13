@@ -24,6 +24,7 @@ PLUTO_LOGO = (
 
 DEFAULT_HOST: str = "localhost"
 DEFAULT_PORT: int = 9000
+DEFAULT_HTTP_PORT: int = 9001
 DEFAULT_TIMEOUT: float = 10.0  # seconds
 DEFAULT_AGENT_ID: str = "pluto-cli"
 

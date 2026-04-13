@@ -93,6 +93,9 @@ handle_info(sweep, #state{sweep_ms = SweepMs, timeout_ms = TimeoutMs} = State) -
         end
     end, AllEntries),
 
+    %% Also sweep HTTP sessions with per-session TTL
+    sweep_http_sessions(Now),
+
     erlang:send_after(SweepMs, self(), sweep),
     {noreply, State};
 
@@ -101,3 +104,25 @@ handle_info(_Info, State) ->
 
 terminate(_Reason, _State) ->
     ok.
+
+%%====================================================================
+%% Internal
+%%====================================================================
+
+%% @private Sweep HTTP sessions that have exceeded their individual TTL.
+sweep_http_sessions(Now) ->
+    AllHttpSessions = ets:tab2list(?ETS_HTTP_SESSIONS),
+    lists:foreach(fun(#http_session{token = Token, agent_id = AgentId,
+                                     session_id = SessId, ttl_ms = TtlMs,
+                                     last_seen = LastSeen}) ->
+        case Now - LastSeen > TtlMs of
+            true ->
+                ?LOG_WARN("HTTP session ~s (agent ~s) expired (TTL ~wms)",
+                          [SessId, AgentId, TtlMs]),
+                ets:delete(?ETS_HTTP_SESSIONS, Token),
+                ets:delete(?ETS_SESSIONS, SessId),
+                pluto_msg_hub:unregister_agent(AgentId);
+            false ->
+                ok
+        end
+    end, AllHttpSessions).

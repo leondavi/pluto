@@ -66,6 +66,7 @@
 %%   last_seen    — System time (ms) of last heartbeat/message
 %%   custom_status— Custom agent status (e.g. <<"busy">>, <<"idle">>)
 %%   subscriptions— List of topic names this agent subscribes to
+%%   session_type — Connection type: 'tcp' | 'http' | 'stateless'
 %%
 -record(agent, {
     agent_id      :: binary(),
@@ -76,7 +77,8 @@
     attributes    :: map(),
     last_seen     :: integer(),
     custom_status :: binary(),
-    subscriptions :: [binary()]
+    subscriptions :: [binary()],
+    session_type  :: tcp | http | stateless
 }).
 
 %% ── Session record ──────────────────────────────────────────────────────────
@@ -90,6 +92,26 @@
     session_id  :: binary(),
     agent_id    :: binary() | undefined,
     session_pid :: pid()
+}).
+
+%% ── HTTP session record ─────────────────────────────────────────────────────
+%% Stored in the ETS_HTTP_SESSIONS table, keyed by token.
+%% Represents a stateless/HTTP agent session maintained via periodic heartbeats.
+%%
+%%   token       — Opaque session token returned at HTTP registration (binary)
+%%   agent_id    — The agent_id bound to this HTTP session (binary)
+%%   session_id  — Server-generated session identifier (binary)
+%%   ttl_ms      — Time-to-live; session expires if no heartbeat within this window
+%%   last_seen   — System time (ms) of last HTTP heartbeat or request
+%%   mode        — 'http' | 'stateless'
+%%
+-record(http_session, {
+    token      :: binary(),
+    agent_id   :: binary(),
+    session_id :: binary(),
+    ttl_ms     :: non_neg_integer(),
+    last_seen  :: integer(),
+    mode       :: http | stateless
 }).
 
 -endif. %% PLUTO_RECORDS_HRL

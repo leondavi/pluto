@@ -37,11 +37,15 @@ import queue
 import socket
 import sys
 import threading
+import time
+import urllib.request
+import urllib.error
 from typing import Callable, Dict, List, Optional
 
 from pluto_client_def import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    DEFAULT_HTTP_PORT,
     DEFAULT_TIMEOUT,
     DEFAULT_AGENT_ID,
     DEFAULT_GUIDE_OUTPUT_PATH,
@@ -423,6 +427,152 @@ class PlutoClient:
                     pass  # don't crash the reader thread on bad handler code
         else:
             self._response_queue.put(msg)
+
+
+# ── HTTP Client ───────────────────────────────────────────────────────────────
+
+class PlutoHttpClient:
+    """
+    HTTP-based client for the Pluto coordination server.
+
+    Unlike PlutoClient (TCP), this client uses stateless HTTP requests and
+    does not maintain a persistent socket. Ideal for CLI agents (like Claude
+    Code) that execute one-shot commands.
+
+    Supports two modes:
+      - "http": Standard HTTP session with token-based auth
+      - "stateless": Declares the agent as stateless with a configurable TTL
+
+    Usage:
+        client = PlutoHttpClient(host="localhost", http_port=9001, agent_id="claude-1")
+        client.register()
+        # ... do work, poll for messages ...
+        client.heartbeat()  # keep alive
+        messages = client.poll()
+        client.unregister()
+    """
+
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        http_port: int = DEFAULT_HTTP_PORT,
+        agent_id: str = DEFAULT_AGENT_ID,
+        timeout: float = DEFAULT_TIMEOUT,
+        attributes: Optional[Dict] = None,
+        mode: str = "http",
+        ttl_ms: int = 300000,
+    ):
+        self.host = host
+        self.http_port = http_port
+        self.agent_id = agent_id
+        self.timeout = timeout
+        self.attributes = attributes or {}
+        self.mode = mode
+        self.ttl_ms = ttl_ms
+        self.base_url = f"http://{host}:{http_port}"
+        self.token: Optional[str] = None
+        self.session_id: Optional[str] = None
+
+    def _post(self, path: str, body: dict) -> dict:
+        """Send a POST request and return the parsed JSON response."""
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _get(self, path: str) -> dict:
+        """Send a GET request and return the parsed JSON response."""
+        req = urllib.request.Request(
+            f"{self.base_url}{path}",
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def register(self) -> dict:
+        """Register this agent via HTTP. Returns server response with token."""
+        body = {
+            "agent_id": self.agent_id,
+            "mode": self.mode,
+            "ttl_ms": self.ttl_ms,
+        }
+        if self.attributes:
+            body["attributes"] = self.attributes
+        resp = self._post("/agents/register", body)
+        if resp.get("status") == "ok":
+            self.token = resp.get("token")
+            self.session_id = resp.get("session_id")
+            # Server may have assigned a different name
+            if resp.get("agent_id"):
+                self.agent_id = resp["agent_id"]
+        return resp
+
+    def heartbeat(self) -> dict:
+        """Send a heartbeat to keep the HTTP session alive."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        return self._post("/agents/heartbeat", {"token": self.token})
+
+    def poll(self) -> List[dict]:
+        """Poll for queued messages. Also acts as a heartbeat."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        resp = self._get(f"/agents/poll?token={self.token}")
+        return resp.get("messages", [])
+
+    def send(self, to: str, payload: dict, request_id: Optional[str] = None) -> dict:
+        """Send a direct message to another agent."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        body = {"token": self.token, "to": to, "payload": payload}
+        if request_id:
+            body["request_id"] = request_id
+        return self._post("/agents/send", body)
+
+    def broadcast(self, payload: dict) -> dict:
+        """Broadcast a message to all agents."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        return self._post("/agents/broadcast", {"token": self.token, "payload": payload})
+
+    def subscribe(self, topic: str) -> dict:
+        """Subscribe to a topic channel."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        return self._post("/agents/subscribe", {"token": self.token, "topic": topic})
+
+    def unregister(self) -> dict:
+        """Unregister and remove the HTTP session."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        resp = self._post("/agents/unregister", {"token": self.token})
+        self.token = None
+        self.session_id = None
+        return resp
+
+    def list_agents(self) -> List[str]:
+        """List all connected agents via HTTP."""
+        resp = self._get("/agents")
+        return resp.get("agents", [])
+
+    def agent_status(self, agent_id: str) -> dict:
+        """Query a specific agent's status."""
+        return self._get(f"/agents/{agent_id}")
+
+    def __enter__(self):
+        self.register()
+        return self
+
+    def __exit__(self, *_):
+        try:
+            self.unregister()
+        except Exception:
+            pass
 
 
 # ── Agent guide generation ────────────────────────────────────────────────────

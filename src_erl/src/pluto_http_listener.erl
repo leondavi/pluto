@@ -363,10 +363,209 @@ route('POST', <<"/agents/find">>, Body) ->
             {400, #{<<"error">> => <<"missing filter map">>}}
     end;
 
+%% ── Detailed agent listing ──────────────────────────────────────────
+route('GET', <<"/agents/list/detailed">>, _Body) ->
+    AgentMaps = pluto_msg_hub:list_agents_detailed(),
+    {200, #{<<"status">> => <<"ok">>, <<"agents">> => AgentMaps}};
+
+%%====================================================================
+%% HTTP Session Registration (Solutions 1, 2, 4)
+%%====================================================================
+%%
+%% POST /agents/register — Register an agent via HTTP, returns a session
+%% token. The session stays alive as long as HTTP heartbeats arrive
+%% within the TTL window.
+%%
+%% Body: {"agent_id": "my-agent", "attributes": {...},
+%%         "mode": "http"|"stateless", "ttl_ms": 300000}
+%%
+%% Returns: {"status":"ok", "token":"PLUTO-...", "session_id":"...",
+%%           "agent_id":"...", "ttl_ms": 300000}
+
+route('POST', <<"/agents/register">>, Body) ->
+    case decode_body(Body) of
+        {ok, #{<<"agent_id">> := AgentId} = Msg}
+          when is_binary(AgentId), AgentId =/= <<>> ->
+            Token = maps:get(<<"token">>, Msg, undefined),
+            Attrs = maps:get(<<"attributes">>, Msg, #{}),
+            ModeStr = maps:get(<<"mode">>, Msg, <<"http">>),
+            Mode = case ModeStr of
+                <<"stateless">> -> stateless;
+                _               -> http
+            end,
+            DefaultTtl = pluto_config:get(http_session_ttl_ms,
+                                          ?DEFAULT_HTTP_SESSION_TTL_MS),
+            TtlMs = maps:get(<<"ttl_ms">>, Msg, DefaultTtl),
+            %% Auth check
+            case pluto_policy:check_auth(AgentId, Token) of
+                ok ->
+                    case pluto_msg_hub:register_http_agent(
+                             AgentId, Attrs, Mode, TtlMs, #{}) of
+                        {ok, SessToken, SessId} ->
+                            {200, #{<<"status">>     => <<"ok">>,
+                                    <<"token">>      => SessToken,
+                                    <<"session_id">> => SessId,
+                                    <<"agent_id">>   => AgentId,
+                                    <<"mode">>       => ModeStr,
+                                    <<"ttl_ms">>     => TtlMs}};
+                        {ok, SessToken, SessId, ActualAgentId} ->
+                            %% Name was taken — got a unique suffix
+                            {200, #{<<"status">>     => <<"ok">>,
+                                    <<"token">>      => SessToken,
+                                    <<"session_id">> => SessId,
+                                    <<"agent_id">>   => ActualAgentId,
+                                    <<"requested_id">> => AgentId,
+                                    <<"mode">>       => ModeStr,
+                                    <<"ttl_ms">>     => TtlMs}}
+                    end;
+                {error, unauthorized} ->
+                    {401, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"unauthorized">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing agent_id">>}}
+    end;
+
+%% POST /agents/heartbeat — Keep HTTP session alive
+%% Body: {"token": "PLUTO-..."}
+route('POST', <<"/agents/heartbeat">>, Body) ->
+    case decode_body(Body) of
+        {ok, #{<<"token">> := Token}} when is_binary(Token) ->
+            case pluto_msg_hub:touch_http_agent(Token) of
+                ok ->
+                    Now = erlang:system_time(millisecond),
+                    {200, #{<<"status">> => <<"ok">>, <<"ts">> => Now}};
+                {error, not_found} ->
+                    {404, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"session_not_found">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing token">>}}
+    end;
+
+%% POST /agents/unregister — Remove HTTP session
+%% Body: {"token": "PLUTO-..."}
+route('POST', <<"/agents/unregister">>, Body) ->
+    case decode_body(Body) of
+        {ok, #{<<"token">> := Token}} when is_binary(Token) ->
+            case pluto_msg_hub:unregister_http_agent(Token) of
+                ok ->
+                    {200, #{<<"status">> => <<"ok">>}};
+                {error, not_found} ->
+                    {404, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"session_not_found">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing token">>}}
+    end;
+
+%% GET /agents/poll?token=... — Poll for queued messages
+route('GET', <<"/agents/poll?", Query/binary>>, _Body) ->
+    Params = parse_query(Query),
+    case maps:find(<<"token">>, Params) of
+        {ok, Token} ->
+            %% Touch session to keep alive
+            case pluto_msg_hub:touch_http_agent(Token) of
+                ok ->
+                    %% Look up agent_id from token
+                    case ets:lookup(?ETS_HTTP_SESSIONS, Token) of
+                        [#http_session{agent_id = AgentId}] ->
+                            {ok, Messages} = pluto_msg_hub:poll_inbox(AgentId),
+                            {200, #{<<"status">> => <<"ok">>,
+                                    <<"messages">> => Messages,
+                                    <<"count">> => length(Messages)}};
+                        [] ->
+                            {404, #{<<"status">> => <<"error">>,
+                                    <<"reason">> => <<"session_not_found">>}}
+                    end;
+                {error, not_found} ->
+                    {404, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"session_not_found">>}}
+            end;
+        error ->
+            {400, #{<<"error">> => <<"missing token query parameter">>}}
+    end;
+
+%% POST /agents/send — Send message as HTTP agent (with token auth)
+%% Body: {"token": "PLUTO-...", "to": "agent-b", "payload": {...}}
+route('POST', <<"/agents/send">>, Body) ->
+    case decode_body(Body) of
+        {ok, #{<<"token">> := Token, <<"to">> := To,
+               <<"payload">> := Payload} = Msg} ->
+            case pluto_msg_hub:touch_http_agent(Token) of
+                ok ->
+                    case ets:lookup(?ETS_HTTP_SESSIONS, Token) of
+                        [#http_session{agent_id = From}] ->
+                            RequestId = maps:get(<<"request_id">>, Msg, undefined),
+                            case pluto_msg_hub:send_msg(From, To, Payload, RequestId) of
+                                {ok, MsgId} ->
+                                    {200, #{<<"status">> => <<"ok">>,
+                                            <<"msg_id">> => MsgId}};
+                                ok ->
+                                    {200, #{<<"status">> => <<"ok">>}};
+                                {error, unknown_target} ->
+                                    {404, #{<<"status">> => <<"error">>,
+                                            <<"reason">> => <<"unknown_target">>}}
+                            end;
+                        [] ->
+                            {404, #{<<"status">> => <<"error">>,
+                                    <<"reason">> => <<"session_not_found">>}}
+                    end;
+                {error, not_found} ->
+                    {404, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"session_not_found">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing token, to, and payload">>}}
+    end;
+
+%% POST /agents/broadcast — Broadcast as HTTP agent (with token)
+%% Body: {"token": "PLUTO-...", "payload": {...}}
+route('POST', <<"/agents/broadcast">>, Body) ->
+    case decode_body(Body) of
+        {ok, #{<<"token">> := Token, <<"payload">> := Payload}} ->
+            case pluto_msg_hub:touch_http_agent(Token) of
+                ok ->
+                    case ets:lookup(?ETS_HTTP_SESSIONS, Token) of
+                        [#http_session{agent_id = From}] ->
+                            pluto_msg_hub:broadcast(From, Payload),
+                            {200, #{<<"status">> => <<"ok">>}};
+                        [] ->
+                            {404, #{<<"status">> => <<"error">>,
+                                    <<"reason">> => <<"session_not_found">>}}
+                    end;
+                {error, not_found} ->
+                    {404, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"session_not_found">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing token and payload">>}}
+    end;
+
+%% POST /agents/subscribe — Subscribe to topic as HTTP agent
+route('POST', <<"/agents/subscribe">>, Body) ->
+    case decode_body(Body) of
+        {ok, #{<<"token">> := Token, <<"topic">> := Topic}} ->
+            case pluto_msg_hub:touch_http_agent(Token) of
+                ok ->
+                    case ets:lookup(?ETS_HTTP_SESSIONS, Token) of
+                        [#http_session{agent_id = AgentId}] ->
+                            pluto_msg_hub:subscribe(AgentId, Topic),
+                            {200, #{<<"status">> => <<"ok">>}};
+                        [] ->
+                            {404, #{<<"status">> => <<"error">>,
+                                    <<"reason">> => <<"session_not_found">>}}
+                    end;
+                {error, not_found} ->
+                    {404, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"session_not_found">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing token and topic">>}}
+    end;
+
 %% ── Agent status query ──────────────────────────────────────────────
-%% Returns connection status, last-seen timestamp, custom status, and
-%% attributes for a specific agent — useful for deciding whether to send
-%% a direct message or fall back to broadcast.
+%% Must come AFTER more specific /agents/* routes to avoid shadowing.
 route('GET', <<"/agents/", AgentId/binary>>, _Body)
   when AgentId =/= <<>> ->
     case pluto_msg_hub:agent_status(AgentId) of
@@ -376,11 +575,6 @@ route('GET', <<"/agents/", AgentId/binary>>, _Body)
             {404, #{<<"status">> => <<"error">>,
                     <<"reason">> => <<"not_found">>}}
     end;
-
-%% ── Detailed agent listing ──────────────────────────────────────────
-route('GET', <<"/agents/list/detailed">>, _Body) ->
-    AgentMaps = pluto_msg_hub:list_agents_detailed(),
-    {200, #{<<"status">> => <<"ok">>, <<"agents">> => AgentMaps}};
 
 %% ── Task management via HTTP ────────────────────────────────────────
 route('GET', <<"/tasks">>, _Body) ->

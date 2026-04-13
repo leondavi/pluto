@@ -16,7 +16,7 @@
 -define(APP, pluto).
 
 %% ── Version ─────────────────────────────────────────────────────────────────
--define(VERSION, "0.2.0").
+-define(VERSION, "0.2.1").
 
 %% ── Default configuration values ────────────────────────────────────────────
 -define(DEFAULT_TCP_PORT,               9000).
@@ -27,6 +27,8 @@
 -define(DEFAULT_HEARTBEAT_TIMEOUT_MS,   30000).
 -define(DEFAULT_RECONNECT_GRACE_MS,     30000).
 -define(DEFAULT_MAX_WAIT_MS,            60000).
+-define(DEFAULT_HTTP_SESSION_TTL_MS,    300000).  %% 5 minutes for HTTP agents
+-define(DEFAULT_HTTP_SESSION_SWEEP_MS,  10000).   %% sweep HTTP sessions every 10s
 -define(DEFAULT_FLUSH_INTERVAL,         60000).
 -define(DEFAULT_PERSISTENCE_DIR,        "/tmp/pluto/state").
 -define(DEFAULT_EVENT_LOG_DIR,          "/tmp/pluto/events").
@@ -42,6 +44,7 @@
 -define(ETS_LIVENESS,   pluto_liveness).    %% session_id -> last_seen_ms
 -define(ETS_TASKS,      pluto_tasks).       %% task_id -> task record
 -define(ETS_MSG_INBOX,  pluto_msg_inbox).   %% {agent_id, seq} -> message map
+-define(ETS_HTTP_SESSIONS, pluto_http_sessions). %% token -> #http_session{}
 
 %% ── Maximum line length for TCP reads (1 MB) ───────────────────────────────
 -define(MAX_LINE_LENGTH, 1048576).

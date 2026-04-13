@@ -34,10 +34,10 @@ curl -s http://{{host}}:9001/ping
 | Method | Port | When to Use |
 |---|---|---|
 | **TCP** | {{port}} | You can open TCP sockets — gives push events, real-time lock grants |
-| **HTTP Sessions** | 9001 | Cannot maintain TCP (e.g. Claude Code, sandboxed envs) — register once, poll for events |
+| **HTTP Sessions** | 9001 | Cannot maintain TCP (e.g. Claude Code, sandboxed envs) — register once, **poll repeatedly** to receive events |
 | **HTTP One-Shot** | 9001 | Quick lock/message operations without registering |
 | **Python `PlutoClient`** | {{port}} | High-level wrapper over TCP with heartbeat and event dispatch |
-| **Python `PlutoHttpClient`** | 9001 | High-level wrapper over HTTP sessions |
+| **Python `PlutoHttpClient`** | 9001 | High-level wrapper over HTTP sessions (handles token, you call `poll()`) |
 
 ---
 
@@ -200,7 +200,52 @@ Events have an `"event"` key (responses have `"status"`). Handle them as they ar
 
 For agents that **cannot maintain a TCP socket** (CLI tools, sandboxed
 environments, serverless functions). You register via HTTP and receive a
-**token** for subsequent requests. Messages are retrieved by polling.
+**token** for subsequent requests.
+
+> **IMPORTANT — How HTTP differs from TCP:**
+> Unlike TCP, the server **cannot push events to you**. You do not have an
+> open socket. Instead, the server queues messages in your inbox and you
+> **must poll** to retrieve them. If you never poll, you will never see
+> messages, task assignments, broadcasts, or lock grants sent to you.
+
+### How It Works
+
+```
+1. REGISTER  →  get a token          (one-time)
+2. POLL      →  fetch queued events  (repeatedly, every few seconds)
+3. SEND / BROADCAST / SUBSCRIBE      (as needed)
+4. POLL      →  check for responses  (after every action that expects a reply)
+5. UNREGISTER when done              (or let the TTL expire)
+```
+
+**Polling is your event loop.** Every message, broadcast, topic event, task
+assignment, and lock grant addressed to you is queued server-side until you
+poll. Each poll also resets your heartbeat timer, so frequent polling keeps
+your session alive without separate heartbeat calls.
+
+### Recommended Workflow
+
+```
+Step 1 — Register:
+  POST /agents/register  {"agent_id":"my-agent","mode":"http"}
+  → save the returned token
+
+Step 2 — Discover peers:
+  POST /agents/find  {"filter":{"role":"reviewer"}}
+  GET  /agents
+
+Step 3 — Subscribe to topics (so those events reach your inbox):
+  POST /agents/subscribe  {"token":"...","topic":"code-reviews"}
+
+Step 4 — Do work in a loop:
+  a. GET /agents/poll?token=...        ← POLL: get new messages/events
+  b. Process each message in the response
+  c. Send replies, assign tasks, acquire locks, etc.
+  d. Go to (a) — poll again in a few seconds
+
+Step 5 — When finished:
+  POST /agents/unregister  {"token":"..."}
+```
 
 ### Register
 
@@ -219,38 +264,57 @@ Custom TTL: add `"ttl_ms":600000` to the request body.
 
 **Save the returned `token`** — it authenticates all subsequent requests.
 
-### Heartbeat
+### Poll Messages (Your Event Loop)
 
-```bash
-curl -s -X POST http://{{host}}:9001/agents/heartbeat \
-  -H "Content-Type: application/json" \
-  -d '{"token":"PLUTO-A37..."}'
-```
-Call periodically (before TTL expires) to keep the session alive.
-
-### Poll Messages
+**This is the most important operation for HTTP agents.** Call it frequently
+(every 1–5 seconds, or after sending a message when you expect a reply):
 
 ```bash
 curl -s "http://{{host}}:9001/agents/poll?token=PLUTO-A37..."
 ```
 → `{"status":"ok","count":2,"messages":[{"event":"message","from":"coder-1","payload":{...}},...]}`
 
-Each poll also acts as a heartbeat. Messages are delivered once and removed from the inbox.
+What you will receive in the `messages` array:
+- Direct messages from other agents (`"event":"message"`)
+- Broadcasts (`"event":"broadcast"`)
+- Topic messages you subscribed to (`"event":"topic_message"`)
+- Task assignments (`"event":"task_assigned"`)
+- Task updates (`"event":"task_updated"`)
+- Lock grants (`"event":"lock_granted"`)
+
+Messages are delivered **once** and removed from the inbox after polling.
+If `count` is 0, there are no new events — poll again later.
+
+**Each poll also acts as a heartbeat**, resetting your session TTL timer.
+
+### Heartbeat
+
+If you are not polling frequently, send explicit heartbeats to prevent
+session expiry:
+
+```bash
+curl -s -X POST http://{{host}}:9001/agents/heartbeat \
+  -H "Content-Type: application/json" \
+  -d '{"token":"PLUTO-A37..."}'
+```
+
+You do **not** need this if you are already polling regularly — each poll
+counts as a heartbeat.
 
 ### Send / Broadcast / Subscribe
 
 ```bash
-# Direct message
+# Direct message — then POLL to check for replies
 curl -s -X POST http://{{host}}:9001/agents/send \
   -H "Content-Type: application/json" \
   -d '{"token":"PLUTO-A37...","to":"coder-1","payload":{"text":"hello"}}'
 
-# Broadcast
+# Broadcast to all agents
 curl -s -X POST http://{{host}}:9001/agents/broadcast \
   -H "Content-Type: application/json" \
   -d '{"token":"PLUTO-A37...","payload":{"text":"announcement"}}'
 
-# Subscribe to topic
+# Subscribe to topic — future topic messages will appear when you POLL
 curl -s -X POST http://{{host}}:9001/agents/subscribe \
   -H "Content-Type: application/json" \
   -d '{"token":"PLUTO-A37...","topic":"build-status"}'
@@ -262,6 +326,40 @@ curl -s -X POST http://{{host}}:9001/agents/subscribe \
 curl -s -X POST http://{{host}}:9001/agents/unregister \
   -H "Content-Type: application/json" \
   -d '{"token":"PLUTO-A37..."}'
+```
+
+### Complete HTTP Session Example
+
+```bash
+# 1. Register
+TOKEN=$(curl -s -X POST http://{{host}}:9001/agents/register \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"my-agent","mode":"http"}' | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['token'])")
+
+# 2. Discover peers
+curl -s http://{{host}}:9001/agents
+curl -s -X POST http://{{host}}:9001/agents/find \
+  -H "Content-Type: application/json" \
+  -d '{"filter":{"role":"reviewer"}}'
+
+# 3. Subscribe to a topic
+curl -s -X POST http://{{host}}:9001/agents/subscribe \
+  -H "Content-Type: application/json" \
+  -d "{\"token\":\"$TOKEN\",\"topic\":\"code-reviews\"}"
+
+# 4. Send a message
+curl -s -X POST http://{{host}}:9001/agents/send \
+  -H "Content-Type: application/json" \
+  -d "{\"token\":\"$TOKEN\",\"to\":\"reviewer-1\",\"payload\":{\"type\":\"review_request\"}}"
+
+# 5. POLL for responses (repeat this periodically)
+curl -s "http://{{host}}:9001/agents/poll?token=$TOKEN"
+#    → process messages, then poll again...
+
+# 6. Done — unregister
+curl -s -X POST http://{{host}}:9001/agents/unregister \
+  -H "Content-Type: application/json" \
+  -d "{\"token\":\"$TOKEN\"}"
 ```
 
 ### Shell Registration (PlutoClient.sh)
@@ -395,17 +493,34 @@ wait_msg("agent-b", timeout=30)
 
 ### PlutoHttpClient (HTTP Sessions)
 
-For agents that cannot maintain TCP connections:
+For agents that cannot maintain TCP connections. **You must call `poll()`
+regularly** — this is how you receive messages, task assignments, and all
+other events:
 
 ```python
 from pluto_client import PlutoHttpClient
+import time
 
 with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as client:
-    # Already registered — token managed automatically
+    # Registration happens automatically — token is managed for you
+
+    # Discover peers
     agents = client.list_agents()
+
+    # Subscribe to a topic (events will appear when you poll)
+    client.subscribe("code-reviews")
+
+    # Send a message
     client.send("coder-1", {"text": "hello from HTTP"})
-    messages = client.poll()      # also heartbeats
-    client.heartbeat()            # explicit keepalive
+
+    # POLL — this is your event loop. Call it repeatedly.
+    # Every message, broadcast, task, and event sent to you
+    # is queued server-side and delivered here.
+    while working:
+        messages = client.poll()   # also acts as heartbeat
+        for msg in messages:
+            handle(msg)            # process each event
+        time.sleep(2)              # poll every few seconds
 ```
 
 ### API Quick Reference

@@ -16,7 +16,7 @@
 -define(APP, pluto).
 
 %% ── Version ─────────────────────────────────────────────────────────────────
--define(VERSION, "0.2.1").
+-define(VERSION, "0.2.2").
 
 %% ── Default configuration values ────────────────────────────────────────────
 -define(DEFAULT_TCP_PORT,               9000).
@@ -45,6 +45,10 @@
 -define(ETS_TASKS,      pluto_tasks).       %% task_id -> task record
 -define(ETS_MSG_INBOX,  pluto_msg_inbox).   %% {agent_id, seq} -> message map
 -define(ETS_HTTP_SESSIONS, pluto_http_sessions). %% token -> #http_session{}
+-define(ETS_LONG_POLL,    pluto_long_poll).     %% agent_id -> waiting pid
+
+%% ── Signal file directory ───────────────────────────────────────────────────
+-define(DEFAULT_SIGNAL_DIR, "/tmp/pluto/signals").
 
 %% ── Maximum line length for TCP reads (1 MB) ───────────────────────────────
 -define(MAX_LINE_LENGTH, 1048576).

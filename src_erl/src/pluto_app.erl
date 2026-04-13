@@ -59,6 +59,10 @@ create_ets_tables() ->
     ets:new(?ETS_MSG_INBOX,  [named_table, ordered_set, public]),
     ets:new(?ETS_HTTP_SESSIONS, [named_table, set, public,
                                  {keypos, #http_session.token}]),
+    ets:new(?ETS_LONG_POLL, [named_table, set, public]),
+    %% Ensure signal directory exists
+    SignalDir = pluto_config:get(signal_dir, ?DEFAULT_SIGNAL_DIR),
+    filelib:ensure_dir(filename:join(SignalDir, "dummy")),
     ok.
 
 %% @private Print the Pluto ASCII art banner on startup.

@@ -37,7 +37,10 @@
     deliver_inbox/1,
     touch_http_agent/1,
     poll_inbox/1,
-    unregister_http_agent/1
+    unregister_http_agent/1,
+    register_long_poll/1,
+    unregister_long_poll/1,
+    update_http_ttl/2
 ]).
 
 %% gen_server callbacks
@@ -186,6 +189,30 @@ unregister_http_agent(Token) ->
         [#http_session{agent_id = AgentId}] ->
             ets:delete(?ETS_HTTP_SESSIONS, Token),
             unregister_agent(AgentId),
+            ok;
+        [] ->
+            {error, not_found}
+    end.
+
+%% @doc Register the calling process as a long-poll waiter for an agent.
+-spec register_long_poll(binary()) -> ok.
+register_long_poll(AgentId) ->
+    ets:insert(?ETS_LONG_POLL, {AgentId, self()}),
+    ok.
+
+%% @doc Unregister the long-poll waiter for an agent.
+-spec unregister_long_poll(binary()) -> ok.
+unregister_long_poll(AgentId) ->
+    ets:delete(?ETS_LONG_POLL, AgentId),
+    ok.
+
+%% @doc Update the TTL for an HTTP session by token.
+-spec update_http_ttl(binary(), non_neg_integer()) -> ok | {error, not_found}.
+update_http_ttl(Token, NewTtlMs) ->
+    case ets:lookup(?ETS_HTTP_SESSIONS, Token) of
+        [HS] ->
+            Now = erlang:system_time(millisecond),
+            ets:insert(?ETS_HTTP_SESSIONS, HS#http_session{ttl_ms = NewTtlMs, last_seen = Now}),
             ok;
         [] ->
             {error, not_found}
@@ -428,15 +455,27 @@ handle_call({agent_status, AgentId}, _From, State) ->
     case ets:lookup(?ETS_AGENTS, AgentId) of
         [#agent{status = Status, last_seen = LastSeen,
                 custom_status = CStatus, attributes = Attrs,
-                subscriptions = Subs}] ->
-            Result = #{
+                subscriptions = Subs, session_type = SType}] ->
+            Result0 = #{
                 <<"agent_id">>      => AgentId,
                 <<"status">>        => atom_to_binary(Status, utf8),
                 <<"last_seen">>     => LastSeen,
                 <<"custom_status">> => CStatus,
                 <<"attributes">>    => Attrs,
-                <<"subscriptions">> => Subs
+                <<"subscriptions">> => Subs,
+                <<"session_type">>  => atom_to_binary(SType, utf8)
             },
+            %% Add TTL info for HTTP/stateless agents
+            Result = case ets:match_object(?ETS_HTTP_SESSIONS,
+                         #http_session{agent_id = AgentId, _ = '_'}) of
+                [#http_session{ttl_ms = TtlMs, last_seen = HLastSeen}] ->
+                    Now = erlang:system_time(millisecond),
+                    ExpiresIn = max(0, TtlMs - (Now - HLastSeen)),
+                    Result0#{<<"ttl_ms">> => TtlMs,
+                             <<"expires_in_ms">> => ExpiresIn};
+                _ ->
+                    Result0
+            end,
             {reply, {ok, Result}, State};
         [] ->
             {reply, {error, not_found}, State}
@@ -671,6 +710,10 @@ queue_inbox_message(AgentId, Event) ->
                 _ -> ok
             end
     end,
+    %% Notify any long-poll waiter
+    notify_long_poll(AgentId),
+    %% Write file-based signal
+    write_signal_file(AgentId),
     ok.
 
 %% @private Deliver all queued inbox messages to a reconnected agent.
@@ -827,4 +870,53 @@ do_poll_inbox(AgentId) ->
                 false
         end
     end, SortedSeqs),
+    %% Delete the signal file since inbox is now drained
+    delete_signal_file(AgentId),
     Messages.
+
+%% @private Notify a waiting long-poll process that a message arrived.
+notify_long_poll(AgentId) ->
+    case ets:lookup(?ETS_LONG_POLL, AgentId) of
+        [{_, Pid}] ->
+            ?LOG_INFO("notify_long_poll: notifying ~p for agent ~s", [Pid, AgentId]),
+            Pid ! {long_poll_notify, AgentId},
+            ok;
+        [] ->
+            ok
+    end.
+
+%% @private Write a signal file indicating messages are waiting.
+write_signal_file(AgentId) ->
+    SignalDir = pluto_config:get(signal_dir, ?DEFAULT_SIGNAL_DIR),
+    %% Sanitize agent_id for filesystem safety
+    SafeId = sanitize_filename(AgentId),
+    FilePath = filename:join(SignalDir, <<SafeId/binary, ".signal">>),
+    Now = erlang:system_time(millisecond),
+    %% Count pending messages
+    Keys = ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}),
+    Count = length(Keys),
+    Content = pluto_protocol_json:encode(#{
+        <<"agent_id">> => AgentId,
+        <<"pending_messages">> => Count,
+        <<"timestamp">> => Now
+    }),
+    file:write_file(FilePath, Content).
+
+%% @private Delete the signal file for an agent (inbox drained).
+delete_signal_file(AgentId) ->
+    SignalDir = pluto_config:get(signal_dir, ?DEFAULT_SIGNAL_DIR),
+    SafeId = sanitize_filename(AgentId),
+    FilePath = filename:join(SignalDir, <<SafeId/binary, ".signal">>),
+    file:delete(FilePath).
+
+%% @private Sanitize a binary for use as a filename (replace unsafe chars).
+sanitize_filename(Bin) ->
+    << <<(case C of
+        C when C >= $a, C =< $z -> C;
+        C when C >= $A, C =< $Z -> C;
+        C when C >= $0, C =< $9 -> C;
+        $- -> C;
+        $_ -> C;
+        $. -> C;
+        _ -> $_
+    end)>> || <<C>> <= Bin >>.

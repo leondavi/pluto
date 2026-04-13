@@ -86,7 +86,13 @@ v022_test_() ->
 
           %% Set status via HTTP
           {"http set agent status",
-           fun() -> t_http_set_status(HttpPort) end}
+           fun() -> t_http_set_status(HttpPort) end},
+
+          %% Duplicate name prevention (cross-type)
+          {"http then tcp duplicate name gets suffix",
+           fun() -> t_http_then_tcp_dup_name(TcpPort, HttpPort) end},
+          {"tcp then http duplicate name gets suffix",
+           fun() -> t_tcp_then_http_dup_name(TcpPort, HttpPort) end}
          ]
      end}.
 
@@ -473,6 +479,66 @@ t_http_set_status(HttpPort) ->
     AgentInfo = maps:get(<<"agent">>, StatusResp),
     ?assertEqual(<<"busy">>, maps:get(<<"custom_status">>, AgentInfo)),
 
+    http_post(HttpPort, "/agents/unregister", #{<<"token">> => Token}).
+
+%%====================================================================
+%% Duplicate name prevention tests
+%%====================================================================
+
+%% HTTP agent registers first, then TCP agent tries the same name — must get a suffix
+t_http_then_tcp_dup_name(TcpPort, HttpPort) ->
+    Agent = rand_agent(),
+    %% Register via HTTP first
+    {ok, RegResp} = http_post(HttpPort, "/agents/register",
+                              #{<<"agent_id">> => Agent}),
+    Token = maps:get(<<"token">>, RegResp),
+    ?assertEqual(Agent, maps:get(<<"agent_id">>, RegResp)),
+
+    %% Now register via TCP with the same name
+    {ok, Sock} = gen_tcp:connect({127,0,0,1}, TcpPort,
+                                 [binary, {active, false}, {packet, line}], 2000),
+    RegMsg = pluto_protocol_json:encode_line(#{
+        <<"op">> => <<"register">>,
+        <<"agent_id">> => Agent
+    }),
+    ok = gen_tcp:send(Sock, RegMsg),
+    {ok, RawResp} = gen_tcp:recv(Sock, 0, 5000),
+    {ok, TcpResp} = pluto_protocol_json:decode(string:trim(RawResp)),
+    ?assertEqual(<<"ok">>, maps:get(<<"status">>, TcpResp)),
+    %% Must have received a different agent_id (suffixed)
+    TcpAgent = maps:get(<<"agent_id">>, TcpResp),
+    ?assertNotEqual(Agent, TcpAgent),
+
+    %% Cleanup
+    gen_tcp:close(Sock),
+    http_post(HttpPort, "/agents/unregister", #{<<"token">> => Token}).
+
+%% TCP agent registers first, then HTTP agent tries the same name — must get a suffix
+t_tcp_then_http_dup_name(TcpPort, HttpPort) ->
+    Agent = rand_agent(),
+    %% Register via TCP first
+    {ok, Sock} = gen_tcp:connect({127,0,0,1}, TcpPort,
+                                 [binary, {active, false}, {packet, line}], 2000),
+    RegMsg = pluto_protocol_json:encode_line(#{
+        <<"op">> => <<"register">>,
+        <<"agent_id">> => Agent
+    }),
+    ok = gen_tcp:send(Sock, RegMsg),
+    {ok, RawResp} = gen_tcp:recv(Sock, 0, 5000),
+    {ok, TcpResp} = pluto_protocol_json:decode(string:trim(RawResp)),
+    ?assertEqual(<<"ok">>, maps:get(<<"status">>, TcpResp)),
+    ?assertEqual(Agent, maps:get(<<"agent_id">>, TcpResp)),
+
+    %% Now register via HTTP with the same name — should get a suffix
+    {ok, HttpResp} = http_post(HttpPort, "/agents/register",
+                               #{<<"agent_id">> => Agent}),
+    ?assertEqual(<<"ok">>, maps:get(<<"status">>, HttpResp)),
+    HttpAgent = maps:get(<<"agent_id">>, HttpResp),
+    ?assertNotEqual(Agent, HttpAgent),
+
+    %% Cleanup
+    gen_tcp:close(Sock),
+    Token = maps:get(<<"token">>, HttpResp),
     http_post(HttpPort, "/agents/unregister", #{<<"token">> => Token}).
 
 %%====================================================================

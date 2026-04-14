@@ -92,7 +92,11 @@ v022_test_() ->
           {"http then tcp duplicate name gets suffix",
            fun() -> t_http_then_tcp_dup_name(TcpPort, HttpPort) end},
           {"tcp then http duplicate name gets suffix",
-           fun() -> t_tcp_then_http_dup_name(TcpPort, HttpPort) end}
+           fun() -> t_tcp_then_http_dup_name(TcpPort, HttpPort) end},
+
+          %% Concurrent 8-agent same-name registration (4 TCP + 2 HTTP + 2 stateless)
+          {"8 concurrent agents same name all get unique ids",
+           fun() -> t_8agent_concurrent_same_name(TcpPort, HttpPort) end}
          ]
      end}.
 
@@ -540,6 +544,151 @@ t_tcp_then_http_dup_name(TcpPort, HttpPort) ->
     gen_tcp:close(Sock),
     Token = maps:get(<<"token">>, HttpResp),
     http_post(HttpPort, "/agents/unregister", #{<<"token">> => Token}).
+
+%%====================================================================
+%% Concurrent 8-agent same-name stress test
+%%====================================================================
+
+%% 8 agents all try to register with the SAME name concurrently:
+%%   4 TCP, 2 HTTP (mode=http), 2 stateless (mode=stateless).
+%% All 8 must end up with unique agent_ids — no duplicates allowed.
+t_8agent_concurrent_same_name(TcpPort, HttpPort) ->
+    BaseName = <<"clash-agent-", (rand_id())/binary>>,
+    Parent = self(),
+    Barrier = make_ref(),
+    DoneRef = make_ref(),
+
+    %% Spawn 4 TCP registrars
+    TcpPids = [spawn_link(fun() ->
+        %% Wait for barrier
+        receive {go, Barrier} -> ok end,
+        Result = register_tcp_agent(TcpPort, BaseName),
+        Parent ! {result, self(), tcp, Result},
+        %% Keep alive until parent says done (so socket stays open)
+        receive {done, DoneRef} -> ok end
+    end) || _ <- lists:seq(1, 4)],
+
+    %% Spawn 2 HTTP registrars (mode=http)
+    HttpPids = [spawn_link(fun() ->
+        receive {go, Barrier} -> ok end,
+        Result = register_http_agent_mode(HttpPort, BaseName, <<"http">>),
+        Parent ! {result, self(), http, Result},
+        receive {done, DoneRef} -> ok end
+    end) || _ <- lists:seq(1, 2)],
+
+    %% Spawn 2 stateless registrars (mode=stateless)
+    StatelessPids = [spawn_link(fun() ->
+        receive {go, Barrier} -> ok end,
+        Result = register_http_agent_mode(HttpPort, BaseName, <<"stateless">>),
+        Parent ! {result, self(), stateless, Result},
+        receive {done, DoneRef} -> ok end
+    end) || _ <- lists:seq(1, 2)],
+
+    AllPids = TcpPids ++ HttpPids ++ StatelessPids,
+    8 = length(AllPids),
+
+    %% Fire! Release all 8 at once
+    [Pid ! {go, Barrier} || Pid <- AllPids],
+
+    %% Collect all 8 results
+    Results = [receive
+        {result, P, Type, Res} -> {Type, Res}
+    after 10000 ->
+        error({timeout_waiting_for, P})
+    end || P <- AllPids],
+
+    %% Extract agent_ids
+    AgentIds = lists:map(fun({Type, Res}) ->
+        case Res of
+            {ok, AgentId, _SockOrToken} ->
+                AgentId;
+            {error, Reason} ->
+                error({registration_failed, Type, Reason})
+        end
+    end, Results),
+
+    %% CRITICAL CHECK: all 8 agent_ids must be unique
+    Unique = lists:usort(AgentIds),
+    ?assertEqual(8, length(Unique),
+        lists:flatten(io_lib:format(
+            "Expected 8 unique agent_ids but got ~p unique out of ~p: ~p",
+            [length(Unique), length(AgentIds), AgentIds]))),
+
+    %% Verify exactly one agent got the base name
+    BaseCount = length([Id || Id <- AgentIds, Id =:= BaseName]),
+    ?assertEqual(1, BaseCount,
+        lists:flatten(io_lib:format(
+            "Expected exactly 1 agent with base name ~s, got ~p",
+            [BaseName, BaseCount]))),
+
+    %% Verify all 8 are listed in the server
+    Listed = pluto_msg_hub:list_agents(),
+    lists:foreach(fun(Id) ->
+        ?assert(lists:member(Id, Listed),
+            lists:flatten(io_lib:format("Agent ~s not found in server list", [Id])))
+    end, AgentIds),
+
+    %% Cleanup: unregister HTTP agents, then signal all processes to exit
+    lists:foreach(fun({Type, Res}) ->
+        case {Type, Res} of
+            {http, {ok, _AgId, Token}} ->
+                http_post(HttpPort, "/agents/unregister",
+                          #{<<"token">> => Token});
+            {stateless, {ok, _AgId, Token}} ->
+                http_post(HttpPort, "/agents/unregister",
+                          #{<<"token">> => Token});
+            _ -> ok
+        end
+    end, Results),
+    %% Now signal all spawned processes to exit (closes TCP sockets)
+    [Pid ! {done, DoneRef} || Pid <- AllPids],
+    timer:sleep(100),
+    ok.
+
+%% @private Register via TCP and return {ok, AgentId, Socket} or {error, Reason}.
+register_tcp_agent(TcpPort, AgentId) ->
+    case gen_tcp:connect({127,0,0,1}, TcpPort,
+                         [binary, {active, false}, {packet, line}], 5000) of
+        {ok, Sock} ->
+            RegMsg = pluto_protocol_json:encode_line(#{
+                <<"op">> => <<"register">>,
+                <<"agent_id">> => AgentId
+            }),
+            ok = gen_tcp:send(Sock, RegMsg),
+            case gen_tcp:recv(Sock, 0, 5000) of
+                {ok, RawResp} ->
+                    case pluto_protocol_json:decode(string:trim(RawResp)) of
+                        {ok, #{<<"status">> := <<"ok">>} = Resp} ->
+                            FinalId = maps:get(<<"agent_id">>, Resp, AgentId),
+                            {ok, FinalId, Sock};
+                        {ok, Resp} ->
+                            gen_tcp:close(Sock),
+                            {error, {unexpected_response, Resp}};
+                        {error, DecErr} ->
+                            gen_tcp:close(Sock),
+                            {error, {decode, DecErr}}
+                    end;
+                {error, RecvErr} ->
+                    gen_tcp:close(Sock),
+                    {error, {recv, RecvErr}}
+            end;
+        {error, ConnErr} ->
+            {error, {connect, ConnErr}}
+    end.
+
+%% @private Register via HTTP with given mode and return {ok, AgentId, Token}.
+register_http_agent_mode(HttpPort, AgentId, Mode) ->
+    Body = #{<<"agent_id">> => AgentId, <<"mode">> => Mode},
+    case http_post(HttpPort, "/agents/register", Body) of
+        {ok, #{<<"status">> := <<"ok">>} = Resp} ->
+            FinalId = maps:get(<<"agent_id">>, Resp, AgentId),
+            Token = maps:get(<<"token">>, Resp),
+            {ok, FinalId, Token};
+        {ok, Resp} ->
+            {error, {unexpected_response, Resp}};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 %%====================================================================
 %% HTTP helpers

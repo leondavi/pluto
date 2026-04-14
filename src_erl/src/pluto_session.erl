@@ -363,7 +363,8 @@ handle_register(#{<<"agent_id">> := AgentId} = Msg, #sess{socket = Sock,
                         <<"status">>               => ?STATUS_OK,
                         <<"session_id">>           => SessId,
                         <<"agent_id">>             => AgentId,
-                        <<"heartbeat_interval_ms">> => HbMs
+                        <<"heartbeat_interval_ms">> => HbMs,
+                        <<"guide">>                => tcp_registration_guide(HbMs)
                     }),
                     pluto_event_log:log(agent_registered, #{agent_id => AgentId,
                                                             session_id => SessId}),
@@ -376,7 +377,8 @@ handle_register(#{<<"agent_id">> := AgentId} = Msg, #sess{socket = Sock,
                         <<"status">>               => ?STATUS_OK,
                         <<"session_id">>           => SessId,
                         <<"agent_id">>             => ActualAgentId,
-                        <<"heartbeat_interval_ms">> => HbMs
+                        <<"heartbeat_interval_ms">> => HbMs,
+                        <<"guide">>                => tcp_registration_guide(HbMs)
                     }),
                     pluto_event_log:log(agent_registered, #{agent_id => ActualAgentId,
                                                             requested_id => AgentId,
@@ -1150,3 +1152,76 @@ check_line_length(Buf) ->
         true  -> too_long;
         false -> ok
     end.
+
+%%====================================================================
+%% Registration guide — included in TCP register responses
+%%====================================================================
+
+tcp_registration_guide(HbMs) ->
+    HbSec = HbMs div 1000,
+    HbDesc = iolist_to_binary(io_lib:format(
+        "Send {\"op\":\"ping\"} every ~w seconds to stay alive. "
+        "Sessions expire after ~w seconds of silence.",
+        [HbSec, HbSec * 2])),
+    [
+        #{<<"step">> => 1,
+          <<"title">> => <<"Save Registration Details">>,
+          <<"description">> => <<"From the response you just received, save: session_id (your session identifier) and agent_id (may differ from requested if the name was taken — server appends a suffix). Always use the returned agent_id for subsequent operations.">>
+        },
+        #{<<"step">> => 2,
+          <<"title">> => <<"Send Heartbeat">>,
+          <<"description">> => HbDesc,
+          <<"command">> => #{<<"op">> => <<"ping">>}
+        },
+        #{<<"step">> => 3,
+          <<"title">> => <<"Listen for Push Events">>,
+          <<"description">> => <<"Your TCP connection is bidirectional. The server pushes events (messages, lock grants, broadcasts) directly to your socket as newline-delimited JSON. Read from the socket continuously in a background thread/loop.">>,
+          <<"push_events">> => [
+              <<"message — Direct message from another agent">>,
+              <<"broadcast — Broadcast from another agent">>,
+              <<"lock_granted — A queued lock request has been granted">>,
+              <<"lock_expired — A held lock expired (TTL elapsed without renewal)">>,
+              <<"agent_joined — A new agent connected">>,
+              <<"agent_left — An agent disconnected">>,
+              <<"deadlock_detected — Circular wait detected, victim is notified">>,
+              <<"task_assigned — A task was assigned to you">>
+          ]
+        },
+        #{<<"step">> => 4,
+          <<"title">> => <<"Discovery & Status">>,
+          <<"description">> => <<"Find other agents and set your status.">>,
+          <<"commands">> => [
+              #{<<"op">> => <<"list_agents">>, <<"description">> => <<"List all connected agents">>},
+              #{<<"op">> => <<"find_agents">>, <<"filter">> => #{<<"role">> => <<"<role>">>}, <<"description">> => <<"Find agents by attribute">>},
+              #{<<"op">> => <<"agent_status">>, <<"agent_id">> => <<"<id>">>, <<"description">> => <<"Get status of a specific agent">>},
+              #{<<"op">> => <<"agent_status">>, <<"custom_status">> => <<"ready">>, <<"description">> => <<"Set your own status">>}
+          ]
+        },
+        #{<<"step">> => 5,
+          <<"title">> => <<"Send Messages">>,
+          <<"description">> => <<"Send direct or broadcast messages to other agents.">>,
+          <<"commands">> => [
+              #{<<"op">> => <<"send">>, <<"to">> => <<"<agent-id>">>, <<"payload">> => #{<<"type">> => <<"request">>}, <<"description">> => <<"Direct message">>},
+              #{<<"op">> => <<"broadcast">>, <<"payload">> => #{<<"type">> => <<"update">>}, <<"description">> => <<"Broadcast to all agents">>}
+          ]
+        },
+        #{<<"step">> => 6,
+          <<"title">> => <<"Lock Resources">>,
+          <<"description">> => <<"Acquire exclusive (write) or shared (read) locks on resources. If the resource is busy, you get a wait_ref and will receive a lock_granted push event when available.">>,
+          <<"commands">> => [
+              #{<<"op">> => <<"acquire">>, <<"resource">> => <<"file:/path">>, <<"mode">> => <<"write">>, <<"ttl_ms">> => 30000, <<"description">> => <<"Acquire lock">>},
+              #{<<"op">> => <<"release">>, <<"lock_ref">> => <<"LOCK-N">>, <<"description">> => <<"Release lock">>},
+              #{<<"op">> => <<"renew">>, <<"lock_ref">> => <<"LOCK-N">>, <<"ttl_ms">> => 30000, <<"description">> => <<"Renew lock TTL">>}
+          ]
+        },
+        #{<<"step">> => 7,
+          <<"title">> => <<"Key Rules">>,
+          <<"rules">> => [
+              <<"Heartbeat: Send ping at the interval shown above or your session will be killed.">>,
+              <<"Push events: Read from your socket continuously — messages, lock grants, and broadcasts arrive as push events.">>,
+              <<"Always release locks when done, or they expire after the TTL.">>,
+              <<"Handle lock_granted events — if a resource is busy, you get a WAIT-* reference and the lock arrives later as a push event.">>,
+              <<"Use the agent_id from this response, not the one you requested.">>
+          ]
+        }
+    ].

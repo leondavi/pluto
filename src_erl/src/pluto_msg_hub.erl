@@ -228,45 +228,49 @@ init([]) ->
 
 %% ── register ────────────────────────────────────────────────────────
 handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
-    Policy = pluto_config:get(session_conflict_policy, ?DEFAULT_SESSION_CONFLICT),
-    case resolve_name(AgentId, Policy) of
-        {available, FinalId} ->
+    case pluto_name_registry:reserve_name(AgentId, SessionPid, tcp) of
+        {ok, FinalId} ->
+            IsReconnect = case ets:lookup(?ETS_AGENTS, FinalId) of
+                [#agent{status = disconnected}] -> true;
+                _ -> false
+            end,
             do_register(FinalId, SessionId, SessionPid, Attrs, tcp),
+            case IsReconnect of
+                true  -> self() ! {deliver_inbox_sync, FinalId};
+                false -> ok
+            end,
             case FinalId =:= AgentId of
                 true  -> {reply, {ok, SessionId}, State};
                 false -> {reply, {ok, SessionId, FinalId}, State}
             end;
-        {reconnect, AgentId} ->
-            do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
-            self() ! {deliver_inbox_sync, AgentId},
-            {reply, {ok, SessionId}, State};
-        {takeover, AgentId, OldPid} ->
-            case is_pid(OldPid) andalso is_process_alive(OldPid) of
-                true  -> OldPid ! {pluto_takeover, AgentId};
-                false -> ok
-            end,
-            evict_http_sessions(AgentId),
-            do_register(AgentId, SessionId, SessionPid, Attrs, tcp),
+        {ok, FinalId, evicted} ->
+            evict_http_sessions(FinalId),
+            do_register(FinalId, SessionId, SessionPid, Attrs, tcp),
             {reply, {ok, SessionId}, State}
     end;
 
 %% ── register_http — HTTP/stateless session registration ─────────────
 handle_call({register_http, AgentId, Attrs, Mode, TtlMs}, _From, State) ->
-    Policy = pluto_config:get(session_conflict_policy, ?DEFAULT_SESSION_CONFLICT),
-    case resolve_name(AgentId, Policy) of
-        {available, FinalId} ->
-            {Token, SessId} = do_register_http(FinalId, Attrs, Mode, TtlMs),
+    %% Pre-generate the token so we can use it as the owner reference
+    PreToken = generate_http_token(),
+    case pluto_name_registry:reserve_name(AgentId, PreToken, Mode) of
+        {ok, FinalId} ->
+            IsReconnect = case ets:lookup(?ETS_AGENTS, FinalId) of
+                [#agent{status = disconnected}] -> true;
+                _ -> false
+            end,
+            {Token, SessId} = do_register_http_with_token(FinalId, PreToken, Attrs, Mode, TtlMs),
+            case IsReconnect of
+                true  -> self() ! {deliver_inbox_sync, FinalId};
+                false -> ok
+            end,
             case FinalId =:= AgentId of
                 true  -> {reply, {ok, Token, SessId}, State};
                 false -> {reply, {ok, Token, SessId, FinalId}, State}
             end;
-        {reconnect, AgentId} ->
-            {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
-            self() ! {deliver_inbox_sync, AgentId},
-            {reply, {ok, Token, SessId}, State};
-        {takeover, AgentId, _OldPid} ->
-            evict_http_sessions(AgentId),
-            {Token, SessId} = do_register_http(AgentId, Attrs, Mode, TtlMs),
+        {ok, FinalId, evicted} ->
+            evict_http_sessions(FinalId),
+            {Token, SessId} = do_register_http_with_token(FinalId, PreToken, Attrs, Mode, TtlMs),
             {reply, {ok, Token, SessId}, State}
     end;
 
@@ -495,6 +499,8 @@ handle_cast({unregister, AgentId}, State) ->
             }),
             pluto_stats:inc(agents_disconnected),
             pluto_stats:inc_agent(AgentId, disconnections),
+            %% Release from centralized name registry
+            pluto_name_registry:release_name(AgentId),
             %% Remove the session record
             ets:delete(?ETS_SESSIONS, SessId),
             %% Notify other agents
@@ -560,6 +566,8 @@ handle_info({grace_expired, AgentId}, State) ->
             end, Locks),
             %% Remove the agent from the registry entirely
             ets:delete(?ETS_AGENTS, AgentId),
+            %% Release from centralized name registry (belt and suspenders)
+            pluto_name_registry:release_name(AgentId),
             %% Clean up inbox
             clear_inbox(AgentId);
         _ ->
@@ -577,61 +585,6 @@ terminate(_Reason, _State) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
-
-%% @private Centralized name resolution — the SINGLE authority for agent naming.
-%% Called by both TCP and HTTP registration handlers. Decides whether the
-%% requested name is available, needs a suffix, or can be reclaimed.
-%%
-%% Returns:
-%%   {available, FinalId}        — name is free (FinalId = AgentId or suffixed)
-%%   {reconnect, AgentId}        — agent was disconnected, safe to reclaim
-%%   {takeover, AgentId, OldPid} — takeover policy, evict the old session
-%%
-resolve_name(AgentId, Policy) ->
-    case ets:lookup(?ETS_AGENTS, AgentId) of
-        [] ->
-            %% Name not in use at all
-            {available, AgentId};
-        [#agent{status = disconnected}] ->
-            %% Agent disconnected (in grace period) — allow reclaim
-            {reconnect, AgentId};
-        [#agent{status = connected}] when Policy =:= takeover ->
-            %% Takeover policy — evict the old session
-            OldPid = case ets:lookup(?ETS_AGENTS, AgentId) of
-                [#agent{session_pid = P}] -> P;
-                _ -> undefined
-            end,
-            {takeover, AgentId, OldPid};
-        [#agent{status = connected}] when Policy =:= strict ->
-            %% Name is taken by a live agent — check if truly alive
-            case is_name_alive(AgentId) of
-                true ->
-                    %% Name genuinely in use — assign a unique suffix
-                    UniqueId = make_unique_agent_id(AgentId),
-                    {available, UniqueId};
-                false ->
-                    %% Agent record says connected but session is dead — safe to take
-                    {available, AgentId}
-            end
-    end.
-
-%% @private Check if an agent name is genuinely in use by a live session.
-%% Works for both TCP agents (check process liveness) and HTTP agents
-%% (check if an HTTP session record exists in ETS_HTTP_SESSIONS).
-is_name_alive(AgentId) ->
-    case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{session_type = SType, session_pid = Pid}] ->
-            TcpAlive = is_pid(Pid) andalso is_process_alive(Pid),
-            HttpAlive = (SType =:= http orelse SType =:= stateless) andalso
-                case ets:match_object(?ETS_HTTP_SESSIONS,
-                         #http_session{agent_id = AgentId, _ = '_'}) of
-                    [_|_] -> true;
-                    []    -> false
-                end,
-            TcpAlive orelse HttpAlive;
-        [] ->
-            false
-    end.
 
 %% @private Perform the actual registration: insert agent and session records,
 %% update liveness, and broadcast the join event.
@@ -687,19 +640,6 @@ do_register(AgentId, SessionId, SessionPid, Attrs, SessionType) ->
     }, AgentId),
 
     ok.
-
-%% @private Generate a unique agent_id by appending a 6-character alphanumeric suffix.
-%% Called when the requested name is already taken by a live agent.
-make_unique_agent_id(BaseId) ->
-    Suffix = generate_alphanum_suffix(6),
-    <<BaseId/binary, "-", Suffix/binary>>.
-
-%% @private Generate N random characters from [A-Za-z0-9].
-generate_alphanum_suffix(N) ->
-    Chars = <<"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789">>,
-    Len = byte_size(Chars),
-    Bytes = crypto:strong_rand_bytes(N),
-    << <<(binary:at(Chars, B rem Len))>> || <<B>> <= Bytes >>.
 
 %% @private Send an event to all connected agents except `ExcludeAgentId`.
 broadcast_event(Event, ExcludeAgentId) ->
@@ -795,8 +735,8 @@ orphan_agent_tasks(AgentId) ->
 
 %% @private Register an agent via HTTP. Creates agent record and HTTP session.
 %% Returns {Token, SessionId}.
-do_register_http(AgentId, Attrs, Mode, TtlMs) ->
-    Token = generate_http_token(),
+%% @private Register an HTTP agent using a pre-generated token.
+do_register_http_with_token(AgentId, Token, Attrs, Mode, TtlMs) ->
     SessionId = generate_http_session_id(),
     Now = pluto_lease:now_ms(),
     SysNow = erlang:system_time(millisecond),

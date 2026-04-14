@@ -6,6 +6,7 @@
 %%%   ├── pluto_persistence   (started first — loads snapshots)
 %%%   ├── pluto_event_log     (durable event history writer)
 %%%   ├── pluto_lock_mgr      (lock management gen_server)
+%%%   ├── pluto_name_registry (centralized agent name authority)
 %%%   ├── pluto_msg_hub       (messaging & registry gen_server)
 %%%   ├── pluto_heartbeat     (liveness sweeper gen_server)
 %%%   └── pluto_listener_sup  (supervisor for TCP listeners)
@@ -88,7 +89,16 @@ init([]) ->
             type     => worker,
             modules  => [pluto_lock_mgr]
         },
-        %% 4) Message hub — agent registration, messaging, broadcast
+        %% 4) Name registry — centralized agent name authority (before msg_hub)
+        #{
+            id       => pluto_name_registry,
+            start    => {pluto_name_registry, start_link, []},
+            restart  => permanent,
+            shutdown => 5000,
+            type     => worker,
+            modules  => [pluto_name_registry]
+        },
+        %% 5) Message hub — agent registration, messaging, broadcast
         #{
             id       => pluto_msg_hub,
             start    => {pluto_msg_hub, start_link, []},

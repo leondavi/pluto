@@ -413,7 +413,7 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"agent_id">>   => AgentId,
                                     <<"mode">>       => ModeStr,
                                     <<"ttl_ms">>     => TtlMs,
-                                    <<"hint">>       => <<"You are using an HTTP session. Use long-poll (GET /agents/poll?token=...&timeout=30) or set up a cron job to poll periodically. Without polling you will not receive messages, tasks, or events.">>}};
+                                    <<"guide">>      => http_registration_guide()}};
                         {ok, SessToken, SessId, ActualAgentId} ->
                             %% Name was taken — got a unique suffix
                             {200, #{<<"status">>     => <<"ok">>,
@@ -423,7 +423,7 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"requested_id">> => AgentId,
                                     <<"mode">>       => ModeStr,
                                     <<"ttl_ms">>     => TtlMs,
-                                    <<"hint">>       => <<"You are using an HTTP session. Use long-poll (GET /agents/poll?token=...&timeout=30) or set up a cron job to poll periodically. Without polling you will not receive messages, tasks, or events.">>}}
+                                    <<"guide">>      => http_registration_guide()}}
                     end;
                 {error, unauthorized} ->
                     {401, #{<<"status">> => <<"error">>,
@@ -965,3 +965,66 @@ maybe_set_busy(AgentId, _Messages, true) ->
             _ -> ok
         end
     end).
+
+%%====================================================================
+%% Registration guide — included in HTTP register responses
+%%====================================================================
+
+http_registration_guide() ->
+    [
+        #{<<"step">> => 1,
+          <<"title">> => <<"Save Registration Details">>,
+          <<"description">> => <<"From the response you just received, save: token (required for all subsequent requests), agent_id (may differ from requested if the name was taken — server appends a suffix), and session_id (your session identifier). Always use the returned agent_id, not the one you requested.">>
+        },
+        #{<<"step">> => 2,
+          <<"title">> => <<"Set Your Status">>,
+          <<"description">> => <<"POST /agents/set_status with {\"token\": \"<your-token>\", \"custom_status\": \"ready\"}. Update this as your work changes (e.g. 'busy', 'processing', 'idle').">>,
+          <<"endpoint">> => <<"POST /agents/set_status">>,
+          <<"example_body">> => #{<<"token">> => <<"<your-token>">>, <<"custom_status">> => <<"ready">>}
+        },
+        #{<<"step">> => 3,
+          <<"title">> => <<"Start Background Polling Loop">>,
+          <<"description">> => <<"Run a continuous long-poll loop in the background. Each poll also acts as a heartbeat — without it, your session expires after ttl_ms. Run as a background task so it does not block your main work.">>,
+          <<"endpoint">> => <<"GET /agents/poll?token=<your-token>&timeout=30&ack=true">>,
+          <<"parameters">> => #{<<"timeout">> => <<"Server holds the connection up to this many seconds, returning immediately if a message arrives.">>,
+                                <<"ack">> => <<"When true, automatically sends delivery receipts to senders.">>},
+          <<"curl_example">> => <<"while true; do curl -s 'http://<host>:9001/agents/poll?token=<your-token>&timeout=30&ack=true'; echo; done">>
+        },
+        #{<<"step">> => 4,
+          <<"title">> => <<"Handle Incoming Messages">>,
+          <<"description">> => <<"Check poll responses for count > 0. Ignore polls that timed out with empty messages.">>,
+          <<"example_response">> => #{<<"count">> => 1,
+                                       <<"messages">> => [#{<<"event">> => <<"message">>,
+                                                            <<"from">> => <<"other-agent-id">>,
+                                                            <<"msg_id">> => <<"MSG-42">>,
+                                                            <<"payload">> => #{<<"type">> => <<"request">>, <<"action">> => <<"review">>, <<"text">> => <<"hello">>},
+                                                            <<"seq">> => 42}]}
+        },
+        #{<<"step">> => 5,
+          <<"title">> => <<"Send Messages">>,
+          <<"description">> => <<"Use your token (not agent_id) to send messages. The endpoint is /agents/send.">>,
+          <<"endpoint">> => <<"POST /agents/send">>,
+          <<"example_body">> => #{<<"token">> => <<"<your-token>">>, <<"to">> => <<"<target-agent-id>">>, <<"payload">> => #{<<"type">> => <<"response">>, <<"text">> => <<"done">>}}
+        },
+        #{<<"step">> => 6,
+          <<"title">> => <<"Discover Other Agents">>,
+          <<"description">> => <<"List all agents with GET /agents. Get details on a specific agent with GET /agents/<agent-id>.">>,
+          <<"endpoints">> => [<<"GET /agents">>, <<"GET /agents/<agent-id>">>, <<"POST /agents/find">>]
+        },
+        #{<<"step">> => 7,
+          <<"title">> => <<"Key Rules">>,
+          <<"rules">> => [
+              <<"Session TTL: Your session dies after ttl_ms of silence. Polling resets the timer.">>,
+              <<"No persistent connection: HTTP mode is fire-and-forget. You must poll to receive anything.">>,
+              <<"Poll = heartbeat: Every poll keeps you alive. No separate heartbeat needed if polling continuously.">>,
+              <<"Ack delivery: Use ack=true on polls so senders get delivery confirmation.">>,
+              <<"Token, not agent_id: All authenticated endpoints use token, not agent_id.">>
+          ]
+        },
+        #{<<"step">> => 8,
+          <<"title">> => <<"Cleanup">>,
+          <<"description">> => <<"When done, unregister so other agents do not try to message a dead session.">>,
+          <<"endpoint">> => <<"POST /agents/unregister">>,
+          <<"example_body">> => #{<<"token">> => <<"<your-token>">>}
+        }
+    ].

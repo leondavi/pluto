@@ -122,6 +122,9 @@ Examples:
   ${GREEN}# Register via HTTP (for CLI agents like Claude Code)${NC}
   $(basename "$0") register --http --agent-id claude-workspace
 
+  ${GREEN}# Register with positional agent ID (same as --agent-id)${NC}
+  $(basename "$0") register claude-workspace
+
   ${GREEN}# Register as stateless with 5-min TTL${NC}
   $(basename "$0") register --stateless --ttl 300 --agent-id my-agent
 
@@ -175,9 +178,9 @@ handle_register() {
     local mode=""
     local daemon=false
     local ttl=300
-    local args=()
 
     # Parse global options and register-specific flags
+    local positional_id=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --host)     host="$2"; shift 2 ;;
@@ -189,9 +192,33 @@ handle_register() {
             --stateless) mode="stateless"; shift ;;
             --ttl)      ttl="$2"; shift 2 ;;
             register)   shift ;;  # skip the command itself
-            *)          args+=("$1"); shift ;;
+            -*)
+                err "Unknown option: $1"
+                err "Run '$(basename "$0") --help' for usage."
+                exit 1
+                ;;
+            *)
+                # Treat first positional arg as agent_id
+                if [[ -z "$positional_id" ]]; then
+                    positional_id="$1"
+                else
+                    err "Unexpected argument: $1"
+                    err "Run '$(basename "$0") --help' for usage."
+                    exit 1
+                fi
+                shift
+                ;;
         esac
     done
+
+    # Positional agent_id takes effect (--agent-id flag wins if both given)
+    if [[ -n "$positional_id" ]]; then
+        if [[ "$agent_id" != "pluto-cli" ]]; then
+            warn "Both --agent-id '${agent_id}' and positional '${positional_id}' given; using --agent-id."
+        else
+            agent_id="$positional_id"
+        fi
+    fi
 
     if [[ "$daemon" == true ]]; then
         # Solution 3: Spawn a background daemon that maintains TCP connection
@@ -302,9 +329,50 @@ main()
         return 0
     fi
 
-    # Default: TCP registration (foreground, exits when done)
-    info "Registering agent '${agent_id}' via TCP..."
-    exec python "${PYTHON_SCRIPT}" --host "$host" --port "$port" --agent-id "$agent_id" ping
+    # Default: TCP registration (foreground, maintains heartbeat until Ctrl-C)
+    info "Registering agent '${agent_id}' via TCP (foreground)..."
+    info "Press Ctrl-C to disconnect."
+    exec python -c "
+import sys, socket, json, signal, time
+
+HOST = '${host}'
+PORT = int('${port}')
+AGENT_ID = '${agent_id}'
+HB_INTERVAL = 10  # seconds
+
+def main():
+    def cleanup(sig, frame):
+        print(f'\n[pluto] Disconnecting {AGENT_ID}...', flush=True)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    sock = socket.create_connection((HOST, PORT), timeout=5)
+    msg = json.dumps({'op': 'register', 'agent_id': AGENT_ID}) + '\\n'
+    sock.sendall(msg.encode())
+    sock.settimeout(5)
+    resp = sock.recv(4096)
+    data = json.loads(resp.decode().strip())
+    if data.get('status') != 'ok':
+        print(f'[pluto] Registration failed: {data}', file=sys.stderr)
+        sys.exit(1)
+    print(f'[pluto] Registered as {AGENT_ID} (session={data.get(\"session_id\",\"?\")})', flush=True)
+    print(f'[pluto] Sending heartbeat every {HB_INTERVAL}s...', flush=True)
+
+    while True:
+        time.sleep(HB_INTERVAL)
+        try:
+            ping = json.dumps({'op': 'ping'}) + '\\n'
+            sock.sendall(ping.encode())
+            pong = sock.recv(4096)
+            if not pong:
+                break
+        except Exception as e:
+            print(f'[pluto] Connection lost: {e}', file=sys.stderr)
+            sys.exit(1)
+
+main()
+"
 }
 
 # Check if register subcommand is being used

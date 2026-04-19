@@ -20,9 +20,10 @@
          terminate/2]).
 
 -record(state, {
-    sweep_ms    :: non_neg_integer(),
-    timeout_ms  :: non_neg_integer(),
-    reminder_ms :: non_neg_integer()
+    sweep_ms       :: non_neg_integer(),
+    timeout_ms     :: non_neg_integer(),
+    reminder_ms    :: non_neg_integer(),
+    inbox_sweep_ms :: non_neg_integer()
 }).
 
 %%====================================================================
@@ -46,14 +47,17 @@ touch(SessionId) ->
 %%====================================================================
 
 init([]) ->
-    SweepMs    = pluto_config:get(heartbeat_sweep_ms,    ?DEFAULT_HEARTBEAT_SWEEP_MS),
-    TimeoutMs  = pluto_config:get(heartbeat_timeout_ms,  ?DEFAULT_HEARTBEAT_TIMEOUT_MS),
-    ReminderMs = pluto_config:get(heartbeat_reminder_ms, ?DEFAULT_HEARTBEAT_REMINDER_MS),
+    SweepMs      = pluto_config:get(heartbeat_sweep_ms,    ?DEFAULT_HEARTBEAT_SWEEP_MS),
+    TimeoutMs    = pluto_config:get(heartbeat_timeout_ms,  ?DEFAULT_HEARTBEAT_TIMEOUT_MS),
+    ReminderMs   = pluto_config:get(heartbeat_reminder_ms, ?DEFAULT_HEARTBEAT_REMINDER_MS),
+    InboxSweepMs = pluto_config:get(inbox_sweep_ms,        ?DEFAULT_INBOX_SWEEP_MS),
     erlang:send_after(SweepMs, self(), sweep),
     erlang:send_after(ReminderMs, self(), remind),
-    ?LOG_INFO("pluto_heartbeat started (sweep=~wms, timeout=~wms, reminder=~wms)",
-              [SweepMs, TimeoutMs, ReminderMs]),
-    {ok, #state{sweep_ms = SweepMs, timeout_ms = TimeoutMs, reminder_ms = ReminderMs}}.
+    erlang:send_after(InboxSweepMs, self(), sweep_inbox),
+    ?LOG_INFO("pluto_heartbeat started (sweep=~wms, timeout=~wms, reminder=~wms, inbox_sweep=~wms)",
+              [SweepMs, TimeoutMs, ReminderMs, InboxSweepMs]),
+    {ok, #state{sweep_ms = SweepMs, timeout_ms = TimeoutMs,
+                reminder_ms = ReminderMs, inbox_sweep_ms = InboxSweepMs}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
@@ -114,6 +118,11 @@ handle_info(remind, #state{reminder_ms = ReminderMs} = State) ->
                            "all its locks.">>
     }),
     erlang:send_after(ReminderMs, self(), remind),
+    {noreply, State};
+
+handle_info(sweep_inbox, #state{inbox_sweep_ms = InboxSweepMs} = State) ->
+    pluto_msg_hub:sweep_inbox(),
+    erlang:send_after(InboxSweepMs, self(), sweep_inbox),
     {noreply, State};
 
 handle_info(_Info, State) ->

@@ -40,7 +40,10 @@
     unregister_http_agent/1,
     register_long_poll/1,
     unregister_long_poll/1,
-    update_http_ttl/2
+    update_http_ttl/2,
+    sweep_inbox/0,
+    peek_inbox/1,
+    peek_inbox/2
 ]).
 
 %% gen_server callbacks
@@ -218,6 +221,20 @@ update_http_ttl(Token, NewTtlMs) ->
             {error, not_found}
     end.
 
+%% @doc Sweep expired inbox messages across all agents.
+-spec sweep_inbox() -> ok.
+sweep_inbox() ->
+    gen_server:cast(?MODULE, sweep_inbox).
+
+%% @doc Peek at inbox messages for an agent without consuming them.
+-spec peek_inbox(binary()) -> {ok, [map()]}.
+peek_inbox(AgentId) ->
+    peek_inbox(AgentId, 0).
+
+-spec peek_inbox(binary(), non_neg_integer()) -> {ok, [map()]}.
+peek_inbox(AgentId, SinceToken) ->
+    gen_server:call(?MODULE, {peek_inbox, AgentId, SinceToken}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -228,21 +245,34 @@ init([]) ->
 
 %% ── register ────────────────────────────────────────────────────────
 handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
+    %% Extract optional resume_session_id from Attrs (added by session handler)
+    ResumeSessionId = maps:get(resume_session_id, Attrs, undefined),
+    CleanAttrs = maps:without([resume_session_id], Attrs),
     case pluto_name_registry:reserve_name(AgentId, SessionPid, tcp) of
         {ok, FinalId} ->
-            IsReconnect = case ets:lookup(?ETS_AGENTS, FinalId) of
-                [#agent{status = disconnected}] -> true;
-                _ -> false
+            {IsReconnect, ExistingSessId} = case ets:lookup(?ETS_AGENTS, FinalId) of
+                [#agent{status = disconnected, session_id = ESessId}] -> {true, ESessId};
+                _ -> {false, undefined}
             end,
-            do_register(FinalId, SessionId, SessionPid, Attrs, tcp),
+            %% Determine if this is a session resumption
+            IsResumed = IsReconnect andalso
+                        ResumeSessionId =/= undefined andalso
+                        ResumeSessionId =:= ExistingSessId,
+            ActualSessId = case IsResumed of
+                true  -> ResumeSessionId;
+                false -> SessionId
+            end,
+            do_register(FinalId, ActualSessId, SessionPid, CleanAttrs, tcp),
             case IsReconnect of
                 true  -> self() ! {deliver_inbox_sync, FinalId};
                 false -> ok
             end,
-            case FinalId =:= AgentId of
-                true  -> {reply, {ok, SessionId}, State};
-                false -> {reply, {ok, SessionId, FinalId}, State}
-            end;
+            Reply = case {FinalId =:= AgentId, IsResumed} of
+                {_, true}  -> {ok, ActualSessId, resumed};
+                {true, _}  -> {ok, ActualSessId};
+                {false, _} -> {ok, ActualSessId, FinalId}
+            end,
+            {reply, Reply, State};
         {ok, FinalId, evicted} ->
             evict_http_sessions(FinalId),
             do_register(FinalId, SessionId, SessionPid, Attrs, tcp),
@@ -464,6 +494,25 @@ handle_call({set_agent_status, AgentId, CustomStatus}, _From, State) ->
             {reply, {error, not_found}, State}
     end;
 
+handle_call({peek_inbox, AgentId, SinceToken}, _From, State) ->
+    InboxTtlMs = pluto_config:get(inbox_msg_ttl_ms, ?DEFAULT_INBOX_MSG_TTL_MS),
+    NowMs = erlang:system_time(millisecond),
+    Keys = ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}),
+    FilteredSeqs = lists:filter(fun(S) -> S > SinceToken end,
+                                lists:sort([S || [S] <- Keys])),
+    Messages = lists:filtermap(fun(Seq) ->
+        Key = {AgentId, Seq},
+        case ets:lookup(?ETS_MSG_INBOX, Key) of
+            [{_, {Event, InsertedAt}}] when NowMs - InsertedAt =< InboxTtlMs ->
+                {true, Event#{<<"seq_token">> => Seq}};
+            [{_, {_Event, _InsertedAt}}] ->
+                ets:delete(?ETS_MSG_INBOX, Key),
+                false;
+            [] -> false
+        end
+    end, FilteredSeqs),
+    {reply, {ok, Messages}, State};
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
@@ -512,7 +561,8 @@ handle_cast({unregister, AgentId}, State) ->
             orphan_agent_tasks(AgentId),
             %% Start the grace-period timer
             GraceMs = pluto_config:get(reconnect_grace_ms, ?DEFAULT_RECONNECT_GRACE_MS),
-            erlang:send_after(GraceMs, self(), {grace_expired, AgentId}),
+            TRef = erlang:send_after(GraceMs, self(), {grace_expired, AgentId}),
+            ets:insert(?ETS_GRACE_TIMERS, {AgentId, TRef}),
             ok;
         [] ->
             ok
@@ -543,6 +593,10 @@ handle_cast({publish, From, Topic, Payload}, State) ->
 %% ── deliver_inbox (async) ───────────────────────────────────────────
 handle_cast({deliver_inbox, AgentId}, State) ->
     do_deliver_inbox(AgentId),
+    {noreply, State};
+
+handle_cast(sweep_inbox, State) ->
+    do_sweep_inbox(),
     {noreply, State};
 
 handle_cast(_Msg, State) ->
@@ -591,6 +645,14 @@ terminate(_Reason, _State) ->
 do_register(AgentId, SessionId, SessionPid, Attrs, SessionType) ->
     Now = pluto_lease:now_ms(),
     SysNow = erlang:system_time(millisecond),
+
+    %% Cancel any pending grace timer for this agent
+    case ets:lookup(?ETS_GRACE_TIMERS, AgentId) of
+        [{_, TRef}] ->
+            erlang:cancel_timer(TRef),
+            ets:delete(?ETS_GRACE_TIMERS, AgentId);
+        [] -> ok
+    end,
 
     %% Preserve existing attributes/subscriptions on reconnect
     {MergedAttrs, ExistingSubs} = case ets:lookup(?ETS_AGENTS, AgentId) of
@@ -659,9 +721,10 @@ queue_inbox_message(AgentId, Event) ->
     %% Count current inbox size
     Pattern = {{AgentId, '_'}, '_'},
     CurrentSize = length(ets:match(?ETS_MSG_INBOX, Pattern)),
+    InsertedAt = erlang:system_time(millisecond),
     case CurrentSize < MaxInbox of
         true ->
-            ets:insert(?ETS_MSG_INBOX, {Key, Event});
+            ets:insert(?ETS_MSG_INBOX, {Key, {Event, InsertedAt}});
         false ->
             %% Inbox full — drop oldest
             case ets:match(?ETS_MSG_INBOX, Pattern) of
@@ -670,7 +733,7 @@ queue_inbox_message(AgentId, Event) ->
                     %% ordered_set so first match is oldest
                     OldestKey = {AgentId, lists:min([S || [S] <- ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'})])},
                     ets:delete(?ETS_MSG_INBOX, OldestKey),
-                    ets:insert(?ETS_MSG_INBOX, {Key, Event});
+                    ets:insert(?ETS_MSG_INBOX, {Key, {Event, InsertedAt}});
                 _ -> ok
             end
     end,
@@ -682,17 +745,21 @@ queue_inbox_message(AgentId, Event) ->
 
 %% @private Deliver all queued inbox messages to a reconnected agent.
 do_deliver_inbox(AgentId) ->
+    InboxTtlMs = pluto_config:get(inbox_msg_ttl_ms, ?DEFAULT_INBOX_MSG_TTL_MS),
+    NowMs = erlang:system_time(millisecond),
     case ets:lookup(?ETS_AGENTS, AgentId) of
         [#agent{status = connected, session_pid = Pid}] when is_pid(Pid) ->
-            %% Get all inbox messages in order
             Keys = ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}),
             SortedSeqs = lists:sort([S || [S] <- Keys]),
             lists:foreach(fun(Seq) ->
                 Key = {AgentId, Seq},
                 case ets:lookup(?ETS_MSG_INBOX, Key) of
-                    [{_, Event}] ->
-                        Pid ! {pluto_event, Event},
-                        ets:delete(?ETS_MSG_INBOX, Key);
+                    [{_, {Event, InsertedAt}}] ->
+                        ets:delete(?ETS_MSG_INBOX, Key),
+                        case NowMs - InsertedAt > InboxTtlMs of
+                            true  -> ok; %% expired, skip
+                            false -> Pid ! {pluto_event, Event}
+                        end;
                     [] -> ok
                 end
             end, SortedSeqs);
@@ -822,14 +889,19 @@ evict_http_sessions(AgentId) ->
 
 %% @private Poll inbox: retrieve and delete all queued messages for an agent.
 do_poll_inbox(AgentId) ->
+    InboxTtlMs = pluto_config:get(inbox_msg_ttl_ms, ?DEFAULT_INBOX_MSG_TTL_MS),
+    NowMs = erlang:system_time(millisecond),
     Keys = ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}),
     SortedSeqs = lists:sort([S || [S] <- Keys]),
     Messages = lists:filtermap(fun(Seq) ->
         Key = {AgentId, Seq},
         case ets:lookup(?ETS_MSG_INBOX, Key) of
-            [{_, Event}] ->
+            [{_, {Event, InsertedAt}}] ->
                 ets:delete(?ETS_MSG_INBOX, Key),
-                {true, Event};
+                case NowMs - InsertedAt > InboxTtlMs of
+                    true  -> false; %% expired
+                    false -> {true, Event}
+                end;
             [] ->
                 false
         end
@@ -884,3 +956,19 @@ sanitize_filename(Bin) ->
         $. -> C;
         _ -> $_
     end)>> || <<C>> <= Bin >>.
+
+%% @private Sweep all expired inbox messages across all agents.
+do_sweep_inbox() ->
+    InboxTtlMs = pluto_config:get(inbox_msg_ttl_ms, ?DEFAULT_INBOX_MSG_TTL_MS),
+    NowMs = erlang:system_time(millisecond),
+    AllEntries = ets:tab2list(?ETS_MSG_INBOX),
+    Expired = lists:filter(fun({_Key, {_Event, InsertedAt}}) ->
+        NowMs - InsertedAt > InboxTtlMs
+    end, AllEntries),
+    lists:foreach(fun({Key, _}) ->
+        ets:delete(?ETS_MSG_INBOX, Key)
+    end, Expired),
+    case length(Expired) of
+        0 -> ok;
+        N -> ?LOG_INFO("inbox sweep: deleted ~w expired messages", [N])
+    end.

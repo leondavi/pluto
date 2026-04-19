@@ -58,7 +58,13 @@ If `my-agent` is already taken, the server assigns a unique name (e.g.
 
 ### Heartbeat
 
-Send `{"op":"ping"}` every 15 s. Sessions expire after 30 s of silence.
+Send `{"op":"ping"}` every 15 s for the **entire lifetime of the session** —
+continuously, not just once. Only stop when the user explicitly requests a
+disconnect or removal of the agent's registration. Sessions expire after 30 s
+of silence; the server will drop the connection and release all held locks.
+
+**Never stop heartbeating** because the agent is idle or has no active work.
+Silence is indistinguishable from a crash.
 
 ### Discovery
 
@@ -173,7 +179,8 @@ Events have an `"event"` key (responses have `"status"`). Handle them as they ar
 3. {"op":"subscribe","topic":"..."}        — for each relevant topic
 4. {"op":"task_list","assignee":"<you>","status":"pending"}
 5. {"op":"agent_status","custom_status":"ready"}
-6. Begin work — process tasks, respond to messages, ping every 15s
+6. Begin work — process tasks, respond to messages, ping every 15 s until
+   the user explicitly requests a disconnect or deregistration
 ```
 
 ### Session Example
@@ -333,6 +340,11 @@ The file is deleted when you poll. You can watch this file to detect new
 messages without polling (useful for shell-based agents with `inotifywait`).
 
 ### Heartbeat
+
+Keep the session alive for its **entire lifetime** — send heartbeats (or poll)
+continuously until the user explicitly requests a disconnect or removal of the
+agent's registration. If you stop, the server treats it as a crash and evicts
+the agent.
 
 If you are not polling frequently, send explicit heartbeats to prevent
 session expiry:
@@ -668,7 +680,7 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
 ## Key Rules
 
 1. **Always release locks.** Use try/finally. Default TTL: 30 s.
-2. **Heartbeat.** TCP: ping every 15 s. HTTP: call heartbeat, poll, or long_poll before TTL expires. Use `update_ttl()` if you need longer sessions.
+2. **Heartbeat continuously.** Keep sending pings (TCP) or polls/heartbeats (HTTP) for the entire session lifetime. Only stop when the user explicitly requests a disconnect or deregistration — silence is treated as a crash and the server will evict the agent and release all its locks.
 3. **Resource naming.** Use `file:/path/to/file` for files, `workspace:<name>` for logical scopes.
 4. **Prefer topics over broadcast.** Subscribe to specific channels instead of broadcasting everything.
 5. **Use task primitives** for work assignment — they are tracked and generate lifecycle events. HTTP agents can use `task_assign()` and `task_update()` directly.

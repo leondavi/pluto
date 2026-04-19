@@ -25,6 +25,7 @@
 -define(DEFAULT_HEARTBEAT_INTERVAL_MS,  15000).
 -define(DEFAULT_HEARTBEAT_SWEEP_MS,     5000).
 -define(DEFAULT_HEARTBEAT_TIMEOUT_MS,   30000).
+-define(DEFAULT_HEARTBEAT_REMINDER_MS,  600000). %% broadcast reminder every 10 min
 -define(DEFAULT_RECONNECT_GRACE_MS,     30000).
 -define(DEFAULT_MAX_WAIT_MS,            60000).
 -define(DEFAULT_HTTP_SESSION_TTL_MS,    300000).  %% 5 minutes for HTTP agents

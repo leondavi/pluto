@@ -422,11 +422,19 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
             DefaultTtl = pluto_config:get(http_session_ttl_ms,
                                           ?DEFAULT_HTTP_SESSION_TTL_MS),
             TtlMs = maps:get(<<"ttl_ms">>, Msg, DefaultTtl),
+            %% Extract optional session_id for session resumption
+            ResumeSessionId = maps:get(<<"session_id">>, Msg, undefined),
+            Opts = case ResumeSessionId of
+                undefined -> #{};
+                SId when is_binary(SId), SId =/= <<>> ->
+                    #{resume_session_id => SId};
+                _ -> #{}
+            end,
             %% Auth check
             case pluto_policy:check_auth(AgentId, Token) of
                 ok ->
                     case pluto_msg_hub:register_http_agent(
-                             AgentId, Attrs, Mode, TtlMs, #{}) of
+                             AgentId, Attrs, Mode, TtlMs, Opts) of
                         {ok, SessToken, SessId} ->
                             ReclaimedLocks = http_reclaim_locks(AgentId),
                             {200, #{<<"status">>         => <<"ok">>,
@@ -435,6 +443,18 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"agent_id">>       => AgentId,
                                     <<"mode">>           => ModeStr,
                                     <<"ttl_ms">>         => TtlMs,
+                                    <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"guide">>          => http_registration_guide()}};
+                        {ok, SessToken, SessId, resumed} ->
+                            %% Session resumed — same session_id preserved
+                            ReclaimedLocks = http_reclaim_locks(AgentId),
+                            {200, #{<<"status">>         => <<"ok">>,
+                                    <<"token">>          => SessToken,
+                                    <<"session_id">>     => SessId,
+                                    <<"agent_id">>       => AgentId,
+                                    <<"mode">>           => ModeStr,
+                                    <<"ttl_ms">>         => TtlMs,
+                                    <<"resumed">>        => true,
                                     <<"reclaimed_locks">> => ReclaimedLocks,
                                     <<"guide">>          => http_registration_guide()}};
                         {ok, SessToken, SessId, ActualAgentId} ->

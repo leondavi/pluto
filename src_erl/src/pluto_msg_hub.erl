@@ -155,12 +155,14 @@ deliver_inbox(AgentId) ->
     gen_server:cast(?MODULE, {deliver_inbox, AgentId}).
 
 %% @doc Register an agent via HTTP (no persistent TCP session).
-%% Returns `{ok, Token, SessionId}` or `{ok, Token, SessionId, ActualAgentId}`
-%% when the requested name was taken.
+%% Returns `{ok, Token, SessionId}`, `{ok, Token, SessionId, resumed}` when
+%% the agent reconnects within grace period and provides the matching session_id,
+%% or `{ok, Token, SessionId, ActualAgentId}` when the requested name was taken.
 -spec register_http_agent(binary(), map(), http | stateless, non_neg_integer(), map()) ->
-    {ok, binary(), binary()} | {ok, binary(), binary(), binary()}.
-register_http_agent(AgentId, Attrs, Mode, TtlMs, _Opts) ->
-    gen_server:call(?MODULE, {register_http, AgentId, Attrs, Mode, TtlMs}).
+    {ok, binary(), binary()} | {ok, binary(), binary(), resumed} |
+    {ok, binary(), binary(), binary()}.
+register_http_agent(AgentId, Attrs, Mode, TtlMs, Opts) ->
+    gen_server:call(?MODULE, {register_http, AgentId, Attrs, Mode, TtlMs, Opts}).
 
 %% @doc Touch an HTTP agent's liveness timestamp (heartbeat via HTTP).
 -spec touch_http_agent(binary()) -> ok | {error, not_found}.
@@ -280,24 +282,34 @@ handle_call({register, AgentId, SessionId, SessionPid, Attrs}, _From, State) ->
     end;
 
 %% ── register_http — HTTP/stateless session registration ─────────────
-handle_call({register_http, AgentId, Attrs, Mode, TtlMs}, _From, State) ->
+handle_call({register_http, AgentId, Attrs, Mode, TtlMs, Opts}, _From, State) ->
+    ResumeSessionId = maps:get(resume_session_id, Opts, undefined),
     %% Pre-generate the token so we can use it as the owner reference
     PreToken = generate_http_token(),
     case pluto_name_registry:reserve_name(AgentId, PreToken, Mode) of
         {ok, FinalId} ->
-            IsReconnect = case ets:lookup(?ETS_AGENTS, FinalId) of
-                [#agent{status = disconnected}] -> true;
-                _ -> false
+            {IsReconnect, ExistingSessId} = case ets:lookup(?ETS_AGENTS, FinalId) of
+                [#agent{status = disconnected, session_id = ESessId}] -> {true, ESessId};
+                _ -> {false, undefined}
             end,
-            {Token, SessId} = do_register_http_with_token(FinalId, PreToken, Attrs, Mode, TtlMs),
+            %% Determine if this is a session resumption (same session_id provided)
+            IsResumed = IsReconnect andalso
+                        ResumeSessionId =/= undefined andalso
+                        ResumeSessionId =:= ExistingSessId,
+            {Token, SessId} = case IsResumed of
+                true  -> do_register_http_with_session(FinalId, PreToken, Attrs, Mode, TtlMs, ResumeSessionId);
+                false -> do_register_http_with_token(FinalId, PreToken, Attrs, Mode, TtlMs)
+            end,
             case IsReconnect of
                 true  -> self() ! {deliver_inbox_sync, FinalId};
                 false -> ok
             end,
-            case FinalId =:= AgentId of
-                true  -> {reply, {ok, Token, SessId}, State};
-                false -> {reply, {ok, Token, SessId, FinalId}, State}
-            end;
+            Reply = case {FinalId =:= AgentId, IsResumed} of
+                {_, true}  -> {ok, Token, SessId, resumed};
+                {true, _}  -> {ok, Token, SessId};
+                {false, _} -> {ok, Token, SessId, FinalId}
+            end,
+            {reply, Reply, State};
         {ok, FinalId, evicted} ->
             evict_http_sessions(FinalId),
             {Token, SessId} = do_register_http_with_token(FinalId, PreToken, Attrs, Mode, TtlMs),
@@ -878,6 +890,58 @@ generate_http_token() ->
 generate_http_session_id() ->
     Hex = binary:encode_hex(crypto:strong_rand_bytes(8)),
     <<"HTTP-SESS-", Hex/binary>>.
+
+%% @private Re-register an HTTP agent preserving the existing session_id (session resumption).
+%% Used when the client provides the old session_id and the agent was disconnected.
+do_register_http_with_session(AgentId, Token, Attrs, Mode, TtlMs, OldSessionId) ->
+    Now = pluto_lease:now_ms(),
+    SysNow = erlang:system_time(millisecond),
+    {MergedAttrs, ExistingSubs} = case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{attributes = OldAttrs, subscriptions = OldSubs}] ->
+            {maps:merge(OldAttrs, Attrs), OldSubs};
+        [] ->
+            {Attrs, []}
+    end,
+    evict_http_sessions(AgentId),
+    Agent = #agent{
+        agent_id      = AgentId,
+        session_id    = OldSessionId,
+        session_pid   = undefined,
+        status        = connected,
+        connected_at  = Now,
+        attributes    = MergedAttrs,
+        last_seen     = SysNow,
+        custom_status = <<"online">>,
+        subscriptions = ExistingSubs,
+        session_type  = Mode
+    },
+    ets:insert(?ETS_AGENTS, Agent),
+    HttpSession = #http_session{
+        token      = Token,
+        agent_id   = AgentId,
+        session_id = OldSessionId,
+        ttl_ms     = TtlMs,
+        last_seen  = SysNow,
+        mode       = Mode
+    },
+    ets:insert(?ETS_HTTP_SESSIONS, HttpSession),
+    Session = #session{
+        session_id  = OldSessionId,
+        agent_id    = AgentId,
+        session_pid = undefined
+    },
+    ets:insert(?ETS_SESSIONS, Session),
+    pluto_stats:inc(agents_registered),
+    pluto_stats:inc_agent(AgentId, registrations),
+    broadcast_event(#{
+        <<"event">>    => ?EVT_AGENT_JOINED,
+        <<"agent_id">> => AgentId
+    }, AgentId),
+    pluto_event_log:log(agent_registered, #{agent_id => AgentId,
+                                            session_id => OldSessionId,
+                                            mode => Mode,
+                                            resumed => true}),
+    {Token, OldSessionId}.
 
 %% @private Evict all HTTP sessions for a given agent_id.
 evict_http_sessions(AgentId) ->

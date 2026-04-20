@@ -93,7 +93,25 @@ Or install manually:
 ./PlutoServer.sh --kill
 ```
 
-### 3. Use the Client
+### 3. Launch an Agent with PlutoAgentFriend
+
+The simplest way to start a coordinated AI agent — wraps Claude Code, Copilot CLI, Aider, or any custom command with Pluto messaging automatically:
+
+```bash
+# Auto-detect installed agent framework
+./PlutoAgentFriend.sh --agent-id coder-1
+
+# Target a specific framework
+./PlutoAgentFriend.sh --agent-id coder-1 --framework claude
+./PlutoAgentFriend.sh --agent-id coder-1 --framework copilot
+
+# Wrap a custom command
+./PlutoAgentFriend.sh --agent-id worker-1 -- python3 my_agent.py
+```
+
+> See the [PlutoAgentFriend guide](docs/guide/pluto-agent-friend.md) for full options, injection modes, and advanced configuration.
+
+### 4. Verify & Inspect with the Client
 
 ```bash
 # Test connectivity
@@ -102,11 +120,16 @@ Or install manually:
 # List connected agents
 ./PlutoClient.sh list
 
+# Show live statistics
+./PlutoClient.sh stats
+
 # Generate agent guide file
 ./PlutoClient.sh guide --output ./agent_guide.md
 ```
 
-### 4. From Python Code
+> See the [PlutoClient guide](docs/guide/pluto-client.md) for all commands and options.
+
+### 5. From Python Code
 
 ```python
 from pluto_client import PlutoClient
@@ -132,50 +155,32 @@ with PlutoClient(host="localhost", port=9000, agent_id="coder-1") as client:
 
 ## Starting an Agent with Pluto
 
-To build an agent that coordinates through Pluto, follow these steps:
+There are three ways to connect an agent to Pluto. **PlutoAgentFriend is the recommended path** — it requires zero protocol code in your agent.
 
-### Step 1 — Start the server
+| Method | Best for | Guide |
+|--------|----------|-------|
+| **PlutoAgentFriend.sh** (recommended) | Wrapping an existing AI CLI (Claude, Copilot, Aider…) | [docs/guide/pluto-agent-friend.md](docs/guide/pluto-agent-friend.md) |
+| **Python client library** | Custom Python agents | [docs/guide/tcp-connection.md](docs/guide/tcp-connection.md) |
+| **Raw TCP / HTTP** | Any language, maximum control | [docs/guide/tcp-connection.md](docs/guide/tcp-connection.md) |
+
+### Recommended — PlutoAgentFriend.sh
 
 ```bash
-./PlutoServer.sh --daemon      # start in background
-./PlutoClient.sh ping           # verify it's reachable
+# 1. Start the server
+./PlutoServer.sh --daemon
+./PlutoClient.sh ping
+
+# 2. Launch your agent wrapped by Pluto
+./PlutoAgentFriend.sh --agent-id coder-1 --framework claude
 ```
 
-### Step 2 — Generate the agent guide
+PlutoAgentFriend registers the agent, injects incoming Pluto messages as natural-language prompts when the agent is idle, and handles all heartbeating — no protocol changes needed in your agent.
 
-```bash
-./PlutoClient.sh guide --output agent_guide.md
-```
+> Full reference: [docs/guide/pluto-agent-friend.md](docs/guide/pluto-agent-friend.md)
 
-This produces a comprehensive protocol reference your agent can use. Feed it to your AI agent as context or read it yourself.
+### Alternative — Python client library
 
-### Step 3 — Connect and register
-
-Open a TCP connection to `localhost:9000` and send:
-
-```json
-{"op": "register", "agent_id": "my-agent"}
-```
-
-The server responds with a session ID and the heartbeat interval:
-
-```json
-{"status": "ok", "session_id": "sess-...", "heartbeat_interval_ms": 15000}
-```
-
-### Step 4 — Coordinate
-
-| What | How |
-|------|-----|
-| **Lock a resource** | `{"op": "acquire", "resource": "file:/src/main.py", "mode": "write", "ttl_ms": 30000}` |
-| **Release a lock** | `{"op": "release", "lock_ref": "LOCK-42"}` |
-| **Send a message** | `{"op": "send", "to": "other-agent", "payload": {...}}` |
-| **Broadcast** | `{"op": "broadcast", "payload": {...}}` |
-| **Stay alive** | Send `{"op": "ping"}` every 15 seconds |
-
-### Step 5 — Use the Python client (optional)
-
-If your agent is in Python, use the included client library:
+If your agent is written in Python, use the built-in client:
 
 ```python
 from pluto_client import PlutoClient
@@ -191,6 +196,26 @@ client.send("peer-agent", {"status": "done"})
 client.disconnect()
 ```
 
+> Full reference: [docs/guide/tcp-connection.md](docs/guide/tcp-connection.md)
+
+### Alternative — Raw TCP / HTTP
+
+Any language can talk to Pluto directly. Open a TCP connection to `localhost:9000` and send newline-delimited JSON:
+
+```json
+{"op": "register", "agent_id": "my-agent"}
+```
+
+| What | How |
+|------|-----|
+| **Lock a resource** | `{"op": "acquire", "resource": "file:/src/main.py", "mode": "write", "ttl_ms": 30000}` |
+| **Release a lock** | `{"op": "release", "lock_ref": "LOCK-42"}` |
+| **Send a message** | `{"op": "send", "to": "other-agent", "payload": {...}}` |
+| **Broadcast** | `{"op": "broadcast", "payload": {...}}` |
+| **Stay alive** | `{"op": "ping"}` every 15 seconds |
+
+> Full reference: [docs/guide/tcp-connection.md](docs/guide/tcp-connection.md)
+
 ### Tips
 
 - **Always release locks** when done — or they'll expire after the TTL.
@@ -199,6 +224,8 @@ client.disconnect()
 - **Check `./PlutoClient.sh stats`** to monitor activity in real time.
 
 ## PlutoAgentFriend — Agent Wrapper
+
+> **Guide:** [docs/guide/pluto-agent-friend.md](docs/guide/pluto-agent-friend.md)
 
 PlutoAgentFriend wraps any AI agent CLI (Claude, Copilot, Aider, etc.) in a PTY proxy that transparently injects Pluto messages when the agent is idle. No protocol changes needed — the agent sees natural-language input.
 
@@ -471,6 +498,8 @@ VM-level settings are in `src_erl/config/vm.args`:
 ```
 
 ## Server Management
+
+> **Guide:** [docs/guide/pluto-server.md](docs/guide/pluto-server.md)
 
 ```bash
 ./PlutoServer.sh              # Build + start foreground

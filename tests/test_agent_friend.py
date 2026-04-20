@@ -233,6 +233,43 @@ class TestStateDetection(unittest.TestCase):
         d._user_typing_time = 0.0
         self.assertTrue(d.is_ready_for_injection())
 
+    def test_ink_redraw_does_not_reset_silence_timer(self):
+        """Ink-style screen redraws (same visible text) must not restart
+        the silence timer, otherwise is_ready_for_injection() never fires."""
+        d = self._make_detector()
+        d.analyse_output(b"Describe a task to get started.\n> ")
+        first_time = d._last_output_time
+        # Feed the exact same content again (simulates Ink screen redraw)
+        d.analyse_output(b"Describe a task to get started.\n> ")
+        self.assertEqual(d._last_output_time, first_time,
+                         "Silence timer should NOT reset on identical content")
+
+    def test_new_content_does_reset_silence_timer(self):
+        """Genuinely new output must still update the silence timer."""
+        d = self._make_detector()
+        d.analyse_output(b"Hello world\n")
+        old_time = d._last_output_time
+        d._last_output_time -= 5.0  # pretend time passed
+        old_time = d._last_output_time
+        d.analyse_output(b"Something new happened\n")
+        self.assertGreater(d._last_output_time, old_time,
+                           "Silence timer should reset on new content")
+
+    def test_pure_ansi_chunk_ignored(self):
+        """Chunks containing only ANSI escape sequences (cursor moves,
+        colors with no visible text) should be completely ignored."""
+        d = self._make_detector()
+        d.analyse_output(b"Initial output\n")
+        d.state = AGENT_STATE_READY
+        d._last_output_time -= 5.0
+        old_time = d._last_output_time
+        # Feed pure ANSI (cursor move + style reset, no visible text)
+        d.analyse_output(b"\x1b[2;1H\x1b[0m\x1b[K")
+        self.assertEqual(d._last_output_time, old_time,
+                         "Pure ANSI should not update timer")
+        # State should remain unchanged (READY — not flipped to BUSY)
+        self.assertEqual(d.state, AGENT_STATE_READY)
+
 
 class TestMessageFormatting(unittest.TestCase):
     """Test MessageFormatter output for each event type."""

@@ -185,7 +185,10 @@ class TerminalProxy:
 
         self._child_pid, self._master_fd = pty.fork()
         if self._child_pid == 0:
-            # --- child process ---
+            # --- child process: set Pluto env vars for agent discovery ---
+            if hasattr(self, '_pluto_env'):
+                for k, v in self._pluto_env.items():
+                    os.environ[k] = v
             os.execvp(self.cmd[0], self.cmd)
             os._exit(127)  # only reached if execvp fails
 
@@ -493,6 +496,10 @@ class AgentStateDetector:
         self._last_output_time: float = time.monotonic()
         self._last_output_line: str = ""
         self._user_typing_time: float = 0.0
+        # Track the last visible content so Ink-style screen redraws
+        # (cursor repositioning with identical text) don't restart the
+        # silence timer.
+        self._prev_content: str = ""
         # Latched True once the ready_pattern has matched at least once.
         # Used by the startup guide injector — Ink-based TUIs keep redrawing
         # the cursor/footer so silence_timeout never fires, but the banner
@@ -507,14 +514,25 @@ class AgentStateDetector:
 
         Call this with every chunk read from the PTY master fd.
         """
-        self._last_output_time = time.monotonic()
-
         try:
             text = data.decode("utf-8", errors="replace")
         except Exception:
             return
 
         clean = strip_ansi(text)
+        content = clean.strip()
+
+        # Only restart the silence timer when visible content actually
+        # changes.  Ink-based TUIs (Copilot, etc.) continuously redraw
+        # the fixed screen (cursor positioning, status bar).  These
+        # redraws carry no new information and should not prevent the
+        # silence timeout from firing.
+        if content and content != self._prev_content:
+            self._last_output_time = time.monotonic()
+            self._prev_content = content
+        elif not content:
+            # Empty chunk (pure ANSI) — ignore completely.
+            return
 
         # --- Check each line for "asking user" patterns ---
         for line in clean.split("\n"):
@@ -897,6 +915,14 @@ class PlutoAgentFriend(TerminalProxy):
                 f"Connected to Pluto at {self.pluto.host}:{self.pluto.http_port} "
                 f"(token: {self.pluto.token}...)"
             )
+            # Set env vars so the agent can discover its identity.
+            self._pluto_env = {
+                "PLUTO_AGENT_ID": self.pluto.agent_id,
+                "PLUTO_TOKEN": self.pluto.full_token,
+                "PLUTO_HOST": str(self.pluto.host),
+                "PLUTO_HTTP_PORT": str(self.pluto.http_port),
+                "PLUTO_WRAPPER": "PlutoAgentFriend",
+            }
         else:
             self._info("Starting without Pluto (messages won't be injected)")
 
@@ -909,6 +935,10 @@ class PlutoAgentFriend(TerminalProxy):
         self.enter_raw_mode()
 
         # --- Background threads ---
+        # Set _running before starting threads so they don't exit the
+        # ``while self._running`` loop before copy_loop() begins.
+        self._running = True
+
         if self.pluto.connected:
             self.pluto.start_polling()
             self._injection_thread = threading.Thread(
@@ -1014,6 +1044,8 @@ class PlutoAgentFriend(TerminalProxy):
         Background thread: periodically check for pending Pluto messages
         and inject them when the agent is ready.
         """
+        if self.verbose:
+            logger.debug("Injection loop started")
         while self._running:
             time.sleep(0.5)
 
@@ -1021,6 +1053,13 @@ class PlutoAgentFriend(TerminalProxy):
                 continue
 
             if not self.detector.is_ready_for_injection():
+                if self.verbose:
+                    logger.debug(
+                        "Messages waiting but agent not ready "
+                        "(state=%s, silence=%.1fs)",
+                        self.detector.state,
+                        time.monotonic() - self.detector._last_output_time,
+                    )
                 continue
 
             messages = self.pluto.drain_messages()
@@ -1296,6 +1335,35 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # ── Show banner ───────────────────────────────────────────────────────
+    DKGRAY = "\033[1;30m"
+    print(
+        f"\n"
+        f"                    {GREEN}.am######mp.{NC}\n"
+        f"                {GREEN}.a################a.{NC}\n"
+        f"             {GREEN}.a######################a.{NC}\n"
+        f"            {GREEN}a##########################a{NC}\n"
+        f"           {GREEN}####                      ####{NC}\n"
+        f"          {GREEN}###  {DKGRAY}########{GREEN}    {DKGRAY}########{GREEN}  ###{NC}\n"
+        f"          {GREEN}##  {DKGRAY}##########{GREEN}  {DKGRAY}##########{GREEN}  ##{NC}\n"
+        f"          {GREEN}###  {DKGRAY}########{GREEN}    {DKGRAY}########{GREEN}  ###{NC}\n"
+        f"           {GREEN}####                      ####{NC}\n"
+        f"            {GREEN}######    {DKGRAY}._____{GREEN}.   ######{NC}\n"
+        f"             {GREEN}.a######################a.{NC}\n"
+        f"                {GREEN}a################a{NC}\n"
+        f"                   {GREEN}7##########7{NC}\n"
+        f"                      {GREEN}'####'{NC}\n"
+        f"                        {GREEN}''{NC}\n"
+        f"\n"
+        f"    {CYAN}╔═══════════════════════════════════════════════╗{NC}\n"
+        f"    {CYAN}║{NC}                                               {CYAN}║{NC}\n"
+        f"    {CYAN}║{NC}   {GREEN}★{NC}  {BOLD}PlutoAgentFriend{NC}                         {CYAN}║{NC}\n"
+        f"    {CYAN}║{NC}      AI Agent + Pluto Coordination Wrapper    {CYAN}║{NC}\n"
+        f"    {CYAN}║{NC}                                               {CYAN}║{NC}\n"
+        f"    {CYAN}╚═══════════════════════════════════════════════╝{NC}\n",
+        file=sys.stderr,
+    )
 
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG, format="%(name)s: %(message)s")

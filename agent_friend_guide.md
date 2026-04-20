@@ -75,32 +75,39 @@ Work on this task. When done, update it with pluto_task_update("TASK-7", "comple
 You are an AI agent running inside a terminal.  You **cannot** call the
 Pluto API directly (there is no SDK in your session).  Instead:
 
+> **Important:** PlutoAgentFriend **already registered you** with the Pluto
+> server when it launched.  **Do NOT register again** — that would create a
+> duplicate session.  Your agent ID and session token are provided in the
+> startup prompt.  Use the token in `curl` calls that require authentication
+> (e.g. `/agents/send`, `/agents/broadcast`).  Incoming messages are
+> delivered to you automatically by the wrapper — you do not need to poll.
+
 ### Option A — Use shell commands (recommended)
 
 The Pluto server exposes an HTTP API on `localhost:9001`.  Use `curl` to
-interact with it.  Your session token is managed by PlutoAgentFriend, but
-you can make unauthenticated one-shot calls for most operations:
+interact with it.  Use your session token (provided in the startup prompt)
+for authenticated calls like sending messages:
 
 ```bash
-# Send a message to another agent
-curl -s -X POST http://localhost:9001/message \
+# Send a message to another agent (use YOUR token from the startup prompt)
+curl -s -X POST http://localhost:9001/agents/send \
   -H "Content-Type: application/json" \
-  -d '{"from":"your-agent-id","to":"other-agent","payload":{"type":"done","file":"main.py"}}'
+  -d '{"token":"YOUR-TOKEN-HERE","to":"other-agent","payload":{"type":"done","file":"main.py"}}'
 
 # Broadcast to all agents
-curl -s -X POST http://localhost:9001/broadcast \
+curl -s -X POST http://localhost:9001/agents/broadcast \
   -H "Content-Type: application/json" \
-  -d '{"from":"your-agent-id","payload":{"text":"build complete"}}'
+  -d '{"token":"YOUR-TOKEN-HERE","payload":{"text":"build complete"}}'
 
 # Acquire an exclusive lock on a resource
-curl -s -X POST http://localhost:9001/lock \
+curl -s -X POST http://localhost:9001/locks/acquire \
   -H "Content-Type: application/json" \
   -d '{"agent_id":"your-agent-id","resource":"file:/src/main.py","mode":"write","ttl_ms":30000}'
 
 # Release a lock
-curl -s -X POST http://localhost:9001/release \
+curl -s -X POST http://localhost:9001/locks/release \
   -H "Content-Type: application/json" \
-  -d '{"lock_ref":"LOCK-42"}'
+  -d '{"lock_ref":"LOCK-42","agent_id":"your-agent-id"}'
 
 # List connected agents
 curl -s http://localhost:9001/agents

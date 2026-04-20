@@ -754,6 +754,13 @@ class PlutoConnection:
             return self._client.token[:12]
         return "?"
 
+    @property
+    def full_token(self) -> str:
+        """Return the full session token (for agent API calls)."""
+        if self._client and self._client.token:
+            return self._client.token
+        return ""
+
     # ── Polling ───────────────────────────────────────────────────────────
 
     def start_polling(self) -> None:
@@ -977,16 +984,24 @@ class PlutoAgentFriend(TerminalProxy):
         self._guide_injected = True
 
         guide_basename = os.path.basename(self.guide_file)
+        # Use the actual server-assigned agent_id and token.
+        actual_id = self.pluto.agent_id if self.pluto.connected else self.agent_id
+        token = self.pluto.full_token if self.pluto.connected else ""
+        token_part = (
+            f" You are already registered — the wrapper handles registration "
+            f"and message polling automatically. Your session token for "
+            f"sending messages via curl is: {token}"
+        ) if token else ""
         prompt = (
             f"Read the file {guide_basename} in this project root. "
             f"This is your skill guide for working with PlutoAgentFriend "
             f"— the coordination wrapper you are currently running inside. "
-            f"Your agent ID is \"{self.agent_id}\" — use this as your "
-            f"identity when sending messages, acquiring locks, and "
-            f"interacting with the Pluto server. "
-            f"Internalize the instructions so you know how to receive Pluto "
-            f"messages, lock resources, send messages to other agents, and "
-            f"update tasks. Confirm briefly when done."
+            f"Your agent ID is \"{actual_id}\". "
+            f"Use this as your identity when interacting with the Pluto server."
+            f"{token_part} "
+            f"Do NOT register again — the wrapper already did it for you. "
+            f"Incoming messages will be injected into your input automatically. "
+            f"Confirm briefly when done."
         )
         self._info(f"Injecting startup guide: {guide_basename}")
         self.inject_and_submit(prompt)

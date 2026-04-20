@@ -20,8 +20,10 @@
          terminate/2]).
 
 -record(state, {
-    sweep_ms   :: non_neg_integer(),
-    timeout_ms :: non_neg_integer()
+    sweep_ms       :: non_neg_integer(),
+    timeout_ms     :: non_neg_integer(),
+    reminder_ms    :: non_neg_integer(),
+    inbox_sweep_ms :: non_neg_integer()
 }).
 
 %%====================================================================
@@ -45,12 +47,17 @@ touch(SessionId) ->
 %%====================================================================
 
 init([]) ->
-    SweepMs   = pluto_config:get(heartbeat_sweep_ms,  ?DEFAULT_HEARTBEAT_SWEEP_MS),
-    TimeoutMs = pluto_config:get(heartbeat_timeout_ms, ?DEFAULT_HEARTBEAT_TIMEOUT_MS),
+    SweepMs      = pluto_config:get(heartbeat_sweep_ms,    ?DEFAULT_HEARTBEAT_SWEEP_MS),
+    TimeoutMs    = pluto_config:get(heartbeat_timeout_ms,  ?DEFAULT_HEARTBEAT_TIMEOUT_MS),
+    ReminderMs   = pluto_config:get(heartbeat_reminder_ms, ?DEFAULT_HEARTBEAT_REMINDER_MS),
+    InboxSweepMs = pluto_config:get(inbox_sweep_ms,        ?DEFAULT_INBOX_SWEEP_MS),
     erlang:send_after(SweepMs, self(), sweep),
-    ?LOG_INFO("pluto_heartbeat started (sweep=~wms, timeout=~wms)",
-              [SweepMs, TimeoutMs]),
-    {ok, #state{sweep_ms = SweepMs, timeout_ms = TimeoutMs}}.
+    erlang:send_after(ReminderMs, self(), remind),
+    erlang:send_after(InboxSweepMs, self(), sweep_inbox),
+    ?LOG_INFO("pluto_heartbeat started (sweep=~wms, timeout=~wms, reminder=~wms, inbox_sweep=~wms)",
+              [SweepMs, TimeoutMs, ReminderMs, InboxSweepMs]),
+    {ok, #state{sweep_ms = SweepMs, timeout_ms = TimeoutMs,
+                reminder_ms = ReminderMs, inbox_sweep_ms = InboxSweepMs}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
@@ -97,6 +104,25 @@ handle_info(sweep, #state{sweep_ms = SweepMs, timeout_ms = TimeoutMs} = State) -
     sweep_http_sessions(Now),
 
     erlang:send_after(SweepMs, self(), sweep),
+    {noreply, State};
+
+%% ── Periodic heartbeat reminder ─────────────────────────────────────
+handle_info(remind, #state{reminder_ms = ReminderMs} = State) ->
+    pluto_msg_hub:broadcast(<<"pluto">>, #{
+        <<"type">>    => <<"heartbeat_reminder">>,
+        <<"message">> => <<"Keep sending pings every 15 s for the entire "
+                           "session lifetime. Only stop when the user "
+                           "explicitly requests a disconnect or "
+                           "deregistration. Silence is treated as a crash "
+                           "and the server will evict the agent and release "
+                           "all its locks.">>
+    }),
+    erlang:send_after(ReminderMs, self(), remind),
+    {noreply, State};
+
+handle_info(sweep_inbox, #state{inbox_sweep_ms = InboxSweepMs} = State) ->
+    pluto_msg_hub:sweep_inbox(),
+    erlang:send_after(InboxSweepMs, self(), sweep_inbox),
     {noreply, State};
 
 handle_info(_Info, State) ->

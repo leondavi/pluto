@@ -352,38 +352,67 @@ handle_register(#{<<"agent_id">> := AgentId} = Msg, #sess{socket = Sock,
                                                            session_id = SessId} = S)
   when is_binary(AgentId), AgentId =/= <<>> ->
     Token = maps:get(<<"token">>, Msg, undefined),
-    Attrs = maps:get(<<"attributes">>, Msg, #{}),
+    Attrs0 = maps:get(<<"attributes">>, Msg, #{}),
+    %% Pass optional session_id from client as resume_session_id hint
+    Attrs = case maps:find(<<"session_id">>, Msg) of
+        {ok, RSessId} when is_binary(RSessId), RSessId =/= <<>> ->
+            Attrs0#{resume_session_id => RSessId};
+        _ ->
+            Attrs0
+    end,
     case pluto_policy:check_auth(AgentId, Token) of
         ok ->
             case pluto_msg_hub:register_agent(AgentId, SessId, self(), Attrs) of
-                {ok, SessId} ->
+                {ok, RetSessId} ->
                     HbMs = pluto_config:get(heartbeat_interval_ms,
                                             ?DEFAULT_HEARTBEAT_INTERVAL_MS),
+                    ReclaimedLocks = reclaim_locks(AgentId),
                     send_json(Sock, #{
                         <<"status">>               => ?STATUS_OK,
-                        <<"session_id">>           => SessId,
+                        <<"session_id">>           => RetSessId,
                         <<"agent_id">>             => AgentId,
                         <<"heartbeat_interval_ms">> => HbMs,
+                        <<"reclaimed_locks">>       => ReclaimedLocks,
                         <<"guide">>                => tcp_registration_guide(HbMs)
                     }),
                     pluto_event_log:log(agent_registered, #{agent_id => AgentId,
-                                                            session_id => SessId}),
-                    S#sess{agent_id = AgentId};
-                {ok, SessId, ActualAgentId} ->
+                                                            session_id => RetSessId}),
+                    S#sess{agent_id = AgentId, session_id = RetSessId};
+                {ok, RetSessId, resumed} ->
+                    %% Session resumed — reuse old session_id
+                    HbMs = pluto_config:get(heartbeat_interval_ms,
+                                            ?DEFAULT_HEARTBEAT_INTERVAL_MS),
+                    ReclaimedLocks = reclaim_locks(AgentId),
+                    send_json(Sock, #{
+                        <<"status">>               => ?STATUS_OK,
+                        <<"session_id">>           => RetSessId,
+                        <<"agent_id">>             => AgentId,
+                        <<"heartbeat_interval_ms">> => HbMs,
+                        <<"resumed">>              => true,
+                        <<"reclaimed_locks">>       => ReclaimedLocks,
+                        <<"guide">>                => tcp_registration_guide(HbMs)
+                    }),
+                    pluto_event_log:log(agent_registered, #{agent_id => AgentId,
+                                                            session_id => RetSessId,
+                                                            resumed => true}),
+                    S#sess{agent_id = AgentId, session_id = RetSessId};
+                {ok, RetSessId, ActualAgentId} ->
                     %% Name was taken — server assigned a unique suffixed name
                     HbMs = pluto_config:get(heartbeat_interval_ms,
                                             ?DEFAULT_HEARTBEAT_INTERVAL_MS),
+                    ReclaimedLocks = reclaim_locks(ActualAgentId),
                     send_json(Sock, #{
                         <<"status">>               => ?STATUS_OK,
-                        <<"session_id">>           => SessId,
+                        <<"session_id">>           => RetSessId,
                         <<"agent_id">>             => ActualAgentId,
                         <<"heartbeat_interval_ms">> => HbMs,
+                        <<"reclaimed_locks">>       => ReclaimedLocks,
                         <<"guide">>                => tcp_registration_guide(HbMs)
                     }),
                     pluto_event_log:log(agent_registered, #{agent_id => ActualAgentId,
                                                             requested_id => AgentId,
-                                                            session_id => SessId}),
-                    S#sess{agent_id = ActualAgentId}
+                                                            session_id => RetSessId}),
+                    S#sess{agent_id = ActualAgentId, session_id = RetSessId}
             end;
         {error, unauthorized} ->
             pluto_event_log:log(auth_failure, #{agent_id => AgentId, reason => bad_token}),
@@ -559,7 +588,8 @@ handle_broadcast(_, #sess{socket = Sock} = S) ->
 %% agent attributes, and subscriptions for each agent.
 handle_list_agents(Msg, #sess{socket = Sock} = S) ->
     Detailed = maps:get(<<"detailed">>, Msg, false),
-    case Detailed of
+    IncludeOffline = maps:get(<<"include_offline">>, Msg, false),
+    case Detailed orelse IncludeOffline of
         true ->
             AgentMaps = pluto_msg_hub:list_agents_detailed(),
             send_json(Sock, #{<<"status">> => ?STATUS_OK,
@@ -1134,6 +1164,14 @@ generate_session_id() ->
 parse_mode(?MODE_WRITE) -> write;
 parse_mode(?MODE_READ)  -> read;
 parse_mode(_)           -> write.  %% Default to write (exclusive)
+
+%% @private Format reclaimed locks for a register response.
+reclaim_locks(AgentId) ->
+    Locks = pluto_lock_mgr:locks_for_agent(AgentId),
+    [#{<<"lock_ref">>      => L#lock.lock_ref,
+       <<"resource">>      => L#lock.resource,
+       <<"mode">>          => atom_to_binary(L#lock.mode, utf8),
+       <<"fencing_token">> => L#lock.fencing_token} || L <- Locks].
 
 %% @private Generate a unique task ID in the form `TASK-<hex>`.
 generate_task_id() ->

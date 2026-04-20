@@ -215,6 +215,16 @@ route('GET', <<"/ping">>, _Body, _Sock) ->
 route('GET', <<"/agents">>, _Body, _Sock) ->
     Agents = pluto_msg_hub:list_agents(),
     {200, #{<<"status">> => <<"ok">>, <<"agents">> => Agents}};
+route('GET', <<"/agents?", Query/binary>>, _Body, _Sock) ->
+    Params = parse_query(Query),
+    case maps:get(<<"include_offline">>, Params, <<"false">>) of
+        <<"true">> ->
+            AgentMaps = pluto_msg_hub:list_agents_detailed(),
+            {200, #{<<"status">> => <<"ok">>, <<"agents">> => AgentMaps}};
+        _ ->
+            Agents = pluto_msg_hub:list_agents(),
+            {200, #{<<"status">> => <<"ok">>, <<"agents">> => Agents}}
+    end;
 
 %% ── Locks ───────────────────────────────────────────────────────────
 route('GET', <<"/locks">>, _Body, _Sock) ->
@@ -288,9 +298,20 @@ route('GET', <<"/events">>, _Body, _Sock) ->
     route_events(0, 100);
 route('GET', <<"/events?", Query/binary>>, _Body, _Sock) ->
     Params = parse_query(Query),
-    SinceSeq = maps:get(<<"since_token">>, Params, 0),
-    Limit = maps:get(<<"limit">>, Params, 100),
-    route_events(to_int(SinceSeq, 0), to_int(Limit, 100));
+    case maps:find(<<"agent_id">>, Params) of
+        {ok, AgentId} when is_binary(AgentId), AgentId =/= <<>> ->
+            SinceToken = to_int(maps:get(<<"since_token">>, Params, 0), 0),
+            {ok, Messages} = pluto_msg_hub:peek_inbox(AgentId, SinceToken),
+            {200, #{<<"status">>      => <<"ok">>,
+                    <<"agent_id">>    => AgentId,
+                    <<"messages">>    => Messages,
+                    <<"count">>       => length(Messages),
+                    <<"since_token">> => SinceToken}};
+        _ ->
+            SinceSeq = maps:get(<<"since_token">>, Params, 0),
+            Limit = maps:get(<<"limit">>, Params, 100),
+            route_events(to_int(SinceSeq, 0), to_int(Limit, 100))
+    end;
 
 %% ── Admin ── Fencing Seq ────────────────────────────────────────────
 route('GET', <<"/admin/fencing_seq">>, _Body, _Sock) ->
@@ -401,29 +422,53 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
             DefaultTtl = pluto_config:get(http_session_ttl_ms,
                                           ?DEFAULT_HTTP_SESSION_TTL_MS),
             TtlMs = maps:get(<<"ttl_ms">>, Msg, DefaultTtl),
+            %% Extract optional session_id for session resumption
+            ResumeSessionId = maps:get(<<"session_id">>, Msg, undefined),
+            Opts = case ResumeSessionId of
+                undefined -> #{};
+                SId when is_binary(SId), SId =/= <<>> ->
+                    #{resume_session_id => SId};
+                _ -> #{}
+            end,
             %% Auth check
             case pluto_policy:check_auth(AgentId, Token) of
                 ok ->
                     case pluto_msg_hub:register_http_agent(
-                             AgentId, Attrs, Mode, TtlMs, #{}) of
+                             AgentId, Attrs, Mode, TtlMs, Opts) of
                         {ok, SessToken, SessId} ->
-                            {200, #{<<"status">>     => <<"ok">>,
-                                    <<"token">>      => SessToken,
-                                    <<"session_id">> => SessId,
-                                    <<"agent_id">>   => AgentId,
-                                    <<"mode">>       => ModeStr,
-                                    <<"ttl_ms">>     => TtlMs,
-                                    <<"guide">>      => http_registration_guide()}};
+                            ReclaimedLocks = http_reclaim_locks(AgentId),
+                            {200, #{<<"status">>         => <<"ok">>,
+                                    <<"token">>          => SessToken,
+                                    <<"session_id">>     => SessId,
+                                    <<"agent_id">>       => AgentId,
+                                    <<"mode">>           => ModeStr,
+                                    <<"ttl_ms">>         => TtlMs,
+                                    <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"guide">>          => http_registration_guide()}};
+                        {ok, SessToken, SessId, resumed} ->
+                            %% Session resumed — same session_id preserved
+                            ReclaimedLocks = http_reclaim_locks(AgentId),
+                            {200, #{<<"status">>         => <<"ok">>,
+                                    <<"token">>          => SessToken,
+                                    <<"session_id">>     => SessId,
+                                    <<"agent_id">>       => AgentId,
+                                    <<"mode">>           => ModeStr,
+                                    <<"ttl_ms">>         => TtlMs,
+                                    <<"resumed">>        => true,
+                                    <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"guide">>          => http_registration_guide()}};
                         {ok, SessToken, SessId, ActualAgentId} ->
                             %% Name was taken — got a unique suffix
-                            {200, #{<<"status">>     => <<"ok">>,
-                                    <<"token">>      => SessToken,
-                                    <<"session_id">> => SessId,
-                                    <<"agent_id">>   => ActualAgentId,
-                                    <<"requested_id">> => AgentId,
-                                    <<"mode">>       => ModeStr,
-                                    <<"ttl_ms">>     => TtlMs,
-                                    <<"guide">>      => http_registration_guide()}}
+                            ReclaimedLocks = http_reclaim_locks(ActualAgentId),
+                            {200, #{<<"status">>         => <<"ok">>,
+                                    <<"token">>          => SessToken,
+                                    <<"session_id">>     => SessId,
+                                    <<"agent_id">>       => ActualAgentId,
+                                    <<"requested_id">>   => AgentId,
+                                    <<"mode">>           => ModeStr,
+                                    <<"ttl_ms">>         => TtlMs,
+                                    <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"guide">>          => http_registration_guide()}}
                     end;
                 {error, unauthorized} ->
                     {401, #{<<"status">> => <<"error">>,
@@ -807,6 +852,14 @@ route(_Method, _Path, _Body, _Sock) ->
 %% Internal helpers
 %%====================================================================
 
+%% @private Format reclaimed locks for an HTTP register response.
+http_reclaim_locks(AgentId) ->
+    Locks = pluto_lock_mgr:locks_for_agent(AgentId),
+    [#{<<"lock_ref">>      => L#lock.lock_ref,
+       <<"resource">>      => L#lock.resource,
+       <<"mode">>          => atom_to_binary(L#lock.mode, utf8),
+       <<"fencing_token">> => L#lock.fencing_token} || L <- Locks].
+
 route_events(SinceSeq, Limit) ->
     Events = pluto_event_log:query(SinceSeq, Limit),
     {200, #{<<"status">> => <<"ok">>, <<"events">> => Events}}.
@@ -903,14 +956,19 @@ do_long_poll(Sock, AgentId, Token, TimeoutMs, SendAck, AutoBusy) ->
 %% @private Poll inbox directly via ETS without going through gen_server.
 %% Used by long-poll to avoid potential ordering issues.
 direct_poll_inbox(AgentId) ->
+    InboxTtlMs = pluto_config:get(inbox_msg_ttl_ms, ?DEFAULT_INBOX_MSG_TTL_MS),
+    NowMs = erlang:system_time(millisecond),
     Keys = ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}),
     SortedSeqs = lists:sort([S || [S] <- Keys]),
     lists:filtermap(fun(Seq) ->
         Key = {AgentId, Seq},
         case ets:lookup(?ETS_MSG_INBOX, Key) of
-            [{_, Event}] ->
+            [{_, {Event, InsertedAt}}] ->
                 ets:delete(?ETS_MSG_INBOX, Key),
-                {true, Event};
+                case NowMs - InsertedAt > InboxTtlMs of
+                    true  -> false;
+                    false -> {true, Event}
+                end;
             [] ->
                 false
         end

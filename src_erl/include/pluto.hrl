@@ -25,6 +25,7 @@
 -define(DEFAULT_HEARTBEAT_INTERVAL_MS,  15000).
 -define(DEFAULT_HEARTBEAT_SWEEP_MS,     5000).
 -define(DEFAULT_HEARTBEAT_TIMEOUT_MS,   30000).
+-define(DEFAULT_HEARTBEAT_REMINDER_MS,  600000). %% broadcast reminder every 10 min
 -define(DEFAULT_RECONNECT_GRACE_MS,     30000).
 -define(DEFAULT_MAX_WAIT_MS,            60000).
 -define(DEFAULT_HTTP_SESSION_TTL_MS,    300000).  %% 5 minutes for HTTP agents
@@ -34,6 +35,8 @@
 -define(DEFAULT_EVENT_LOG_DIR,          "/tmp/pluto/events").
 -define(DEFAULT_SESSION_CONFLICT,       strict).   %% strict | takeover
 -define(DEFAULT_MAX_INBOX_SIZE,         1000).     %% max offline messages per agent
+-define(DEFAULT_INBOX_MSG_TTL_MS,    86400000).  %% 24 hours
+-define(DEFAULT_INBOX_SWEEP_MS,      3600000).   %% sweep inbox hourly
 
 %% ── ETS table names ────────────────────────────────────────────────────────
 -define(ETS_LOCKS,      pluto_locks).       %% Active lock entries
@@ -46,6 +49,7 @@
 -define(ETS_MSG_INBOX,  pluto_msg_inbox).   %% {agent_id, seq} -> message map
 -define(ETS_HTTP_SESSIONS, pluto_http_sessions). %% token -> #http_session{}
 -define(ETS_LONG_POLL,    pluto_long_poll).     %% agent_id -> waiting pid
+-define(ETS_GRACE_TIMERS, pluto_grace_timers). %% agent_id -> grace timer ref
 
 %% ── Signal file directory ───────────────────────────────────────────────────
 -define(DEFAULT_SIGNAL_DIR, "/tmp/pluto/signals").

@@ -321,9 +321,23 @@ class TestMessageFormatting(unittest.TestCase):
         self.assertIn("from b", result)
 
     def test_format_unknown_event(self):
-        messages = [{"event": "custom_event", "data": "hello"}]
+        """Unknown/infrastructure events are silently skipped."""
+        messages = [{"event": "delivery_ack", "data": "hello"}]
         result = MessageFormatter.format(messages)
-        self.assertIn("custom_event", result)
+        self.assertNotIn("delivery_ack", result)
+        # Only the header should remain
+        self.assertIn("Pluto coordination messages", result)
+
+    def test_format_filters_ack_keeps_real(self):
+        """Formatter skips acks but keeps actionable messages."""
+        messages = [
+            {"event": "delivery_ack", "msg_id": "123"},
+            {"event": "message", "from": "alice", "payload": {"text": "hi"}},
+            {"event": "delivery_ack", "msg_id": "456"},
+        ]
+        result = MessageFormatter.format(messages)
+        self.assertIn("alice", result)
+        self.assertNotIn("delivery_ack", result)
 
 
 class TestPlutoConfig(unittest.TestCase):

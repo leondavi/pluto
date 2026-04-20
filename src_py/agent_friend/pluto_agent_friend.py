@@ -661,11 +661,8 @@ class MessageFormatter:
                     f"{json.dumps(payload, indent=2)}"
                 )
             else:
-                # Unknown event type — show the raw JSON.
-                parts.append(
-                    f"[Pluto Event: {event}]\n"
-                    f"{json.dumps(msg, indent=2)}"
-                )
+                # Unknown/infrastructure event — skip silently.
+                continue
 
         header = (
             "You have received the following Pluto coordination messages. "
@@ -789,6 +786,11 @@ class PlutoConnection:
         )
         self._poll_thread.start()
 
+    # Events that carry actionable content for the agent.
+    _ACTIONABLE_EVENTS = {
+        "message", "broadcast", "task_assigned", "topic_message",
+    }
+
     def _poll_loop(self) -> None:
         """Background: repeatedly long-poll the server for new messages."""
         while self._running and self._client:
@@ -797,10 +799,21 @@ class PlutoConnection:
                     timeout=self.poll_timeout, ack=True
                 )
                 if msgs:
-                    with self._lock:
-                        self._messages.extend(msgs)
+                    # Drop infrastructure events (delivery_ack, status_update,
+                    # heartbeat, etc.) — they are noise for the agent.
+                    actionable = [
+                        m for m in msgs
+                        if m.get("event", "message") in self._ACTIONABLE_EVENTS
+                    ]
+                    dropped = len(msgs) - len(actionable)
+                    if actionable:
+                        with self._lock:
+                            self._messages.extend(actionable)
                     if self.verbose:
-                        logger.debug("Received %d Pluto message(s)", len(msgs))
+                        logger.debug(
+                            "Received %d Pluto message(s) (%d actionable, %d dropped)",
+                            len(msgs), len(actionable), dropped,
+                        )
             except (PlutoError, Exception) as exc:
                 logger.warning("Pluto poll error: %s", exc)
                 time.sleep(5)
@@ -1065,6 +1078,16 @@ class PlutoAgentFriend(TerminalProxy):
             messages = self.pluto.drain_messages()
             if not messages:
                 continue
+
+            # Cap batch size — injecting too many messages at once
+            # overwhelms the agent and produces unusable output.
+            MAX_INJECT = 10
+            if len(messages) > MAX_INJECT:
+                logger.warning(
+                    "Dropping %d excess messages (keeping latest %d)",
+                    len(messages) - MAX_INJECT, MAX_INJECT,
+                )
+                messages = messages[-MAX_INJECT:]
 
             if self.mode == "auto":
                 self._do_inject(messages)

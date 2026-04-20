@@ -46,20 +46,30 @@ When multiple agents operate concurrently, they run into:
 │  pluto_sup (supervisor)                                  │
 │  ├── pluto_persistence    — state snapshots              │
 │  ├── pluto_lock_mgr       — lock & lease management      │
-│  ├── pluto_msg_hub        — agent registry & routing      │
-│  ├── pluto_heartbeat      — liveness detection            │
-│  └── pluto_listener_sup   — connection accept pool        │
-│       ├── pluto_tcp_listener  — TCP sessions              │
-│       │    └── pluto_session  — one process per conn      │
-│       └── pluto_http_listener — REST/HTTP API             │
+│  ├── pluto_msg_hub        — agent registry & routing     │
+│  ├── pluto_heartbeat      — liveness detection           │
+│  └── pluto_listener_sup   — connection accept pool       │
+│       ├── pluto_tcp_listener  — TCP sessions             │
+│       │    └── pluto_session  — one process per conn     │
+│       └── pluto_http_listener — REST/HTTP API            │
 └──────────┬─────────────────────────┬────────────────────┘
            │  JSON over TCP (:9000)  │  REST/HTTP (:9001)
-     ┌─────┼─────────┐              │
-     │     │         │         ┌────┴────┐
-┌────┴──┐ ┌┴──────┐ ┌┴──────┐ │Dashboard│
-│Agent A│ │Agent B│ │Agent C│ │  / CLI  │
-│(Python│ │(Python│ │ (any) │ │ (curl)  │
-└───────┘ └───────┘ └───────┘ └─────────┘
+     ┌─────┼─────────┐         ┌────┴────────────────────┐
+     │     │         │         │                          │
+┌────┴──┐ ┌┴──────┐ ┌┴──────┐ │ ┌──────────────────────┐ │
+│Agent A│ │Agent B│ │Agent C│ │ │  PlutoAgentFriend.sh  │ │
+│(Python│ │(Python│ │ (any) │ │ │ ┌────────────────────┐│ │
+└───────┘ └───────┘ └───────┘ │ │ │   Agent CLI (PTY)  ││ │
+                               │ │ │ Claude / Copilot / ││ │
+                               │ │ │  Aider / custom    ││ │
+                               │ │ └─────────↑──────────┘│ │
+                               │ │    stdin injection     │ │
+                               │ └──────────────────────┘ │
+                               │ ┌──────────────────────┐ │
+                               │ │   Dashboard / CLI     │ │
+                               │ │       (curl)          │ │
+                               │ └──────────────────────┘ │
+                               └──────────────────────────┘
 ```
 
 Agents connect via **TCP** (port 9000, newline-delimited JSON) for persistent sessions with heartbeat and push events. A **REST/HTTP API** (port 9001) provides stateless access for dashboards, CLIs, and one-shot operations. A Python client library is included, but any language can participate.

@@ -11,3 +11,4 @@ rebar.lock
 /tmp/
 agent/
 agent_guide.md
+nohup.out

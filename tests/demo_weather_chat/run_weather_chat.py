@@ -191,7 +191,7 @@ def run_direct(host, port, work_dir):
 
 def run_copilot(host, port, work_dir):
     """Launch agents as real Copilot CLI processes via AgentWrapper."""
-    from agent_wrapper import AgentWrapper
+    from agent_friend import AgentWrapper
 
     wrapper = AgentWrapper(host=host, port=port)
     agents = [

@@ -198,6 +198,80 @@ client.disconnect()
 - **Handle `lock_granted` events** — if a resource is busy, you'll get a `WAIT-*` reference and the lock arrives later as a push event.
 - **Check `./PlutoClient.sh stats`** to monitor activity in real time.
 
+## PlutoAgentFriend — Agent Wrapper
+
+PlutoAgentFriend wraps any AI agent CLI (Claude, Copilot, Aider, etc.) in a PTY proxy that transparently injects Pluto messages when the agent is idle. No protocol changes needed — the agent sees natural-language input.
+
+### Architecture & Design
+
+```
+User terminal  ←→  TerminalProxy  ←→  Agent CLI (via PTY)
+                        │
+                AgentStateDetector   (parses stdout → BUSY / ASKING / READY)
+                        │
+                PlutoConnection      (long-polls Pluto server for messages)
+                        │
+                MessageFormatter     (formats messages as natural-language)
+                        │
+                InjectionGate        (decides when/how to inject)
+```
+
+**Class hierarchy** (`src_py/agent_friend/pluto_agent_friend.py`):
+
+| Class | Responsibility |
+|-------|---------------|
+| `TerminalProxy` | Low-level PTY management, raw mode, non-blocking buffered I/O loop (modelled after Python's `pty.spawn()`). Sets master fd to non-blocking so writes never stall the event loop. |
+| `AgentStateDetector` | Watches agent output and classifies state: **BUSY** (producing output), **ASKING_USER** (waiting for human answer), or **READY** (idle, safe to inject). Uses configurable regex patterns + silence timeout. |
+| `MessageFormatter` | Converts Pluto protocol messages (JSON dicts) into natural-language prompts any LLM agent can process. Handles message, broadcast, task_assigned, topic_message, and unknown event types. |
+| `PlutoConnection` | Manages HTTP session with Pluto: register, background long-poll, thread-safe message queue, graceful unregister. |
+| `PlutoAgentFriend` | Top-level orchestrator (inherits `TerminalProxy`). Composes all the above, owns the `run()` lifecycle, and coordinates injection timing. |
+
+### How It Works
+
+1. `PlutoAgentFriend.run()` prints a banner and connects to Pluto (or continues standalone)
+2. The agent CLI is spawned inside a PTY via `TerminalProxy.spawn()`
+3. The terminal is set to raw mode and the non-blocking I/O copy loop starts
+4. A background thread long-polls Pluto for incoming messages (`PlutoConnection`)
+5. An injection thread checks `AgentStateDetector.is_ready_for_injection()` every 0.5 s
+6. When ready, `MessageFormatter.format()` converts messages to text and `inject_input()` enqueues it
+
+### Injection Modes
+
+| Mode | Behaviour |
+|------|-----------|
+| `auto` | Inject as soon as the agent is idle (default) |
+| `confirm` | Show notification, auto-inject after 10 seconds if still idle |
+| `manual` | Show notification only — user handles input |
+
+### Quick Start
+
+```bash
+# Auto-detect installed agent framework
+./PlutoAgentFriend.sh --agent-id coder-1
+
+# Use a specific framework
+./PlutoAgentFriend.sh --agent-id coder-1 --framework claude
+./PlutoAgentFriend.sh --agent-id coder-1 --framework copilot
+
+# Custom agent command
+./PlutoAgentFriend.sh --agent-id coder-1 -- python3 my_agent.py
+
+# Confirm mode (show before injecting)
+./PlutoAgentFriend.sh --agent-id reviewer-1 --framework claude --mode confirm
+
+# Full help
+./PlutoAgentFriend.sh --help
+```
+
+The wrapper reads Pluto server settings from `config/pluto_config.json` automatically.
+
+### Safety Rules
+
+- **User always wins** — user input takes priority over injections; the non-blocking I/O loop never stalls on writes
+- **No injection during questions** — if the agent is asking the user something, messages are held
+- **Transparency** — every injection is announced with `[pluto-friend]` in the terminal
+- **No injection while typing** — a 5-second cooldown after the last keystroke prevents interrupting the user
+
 ## Protocol Reference
 
 All communication uses newline-delimited JSON over TCP.
@@ -416,7 +490,10 @@ Builds are placed under `/tmp/pluto/build` to keep the source tree clean. The re
 pluto/
 ├── PlutoServer.sh          # Server build & run wrapper
 ├── PlutoClient.sh          # Python client CLI wrapper
+├── PlutoAgentFriend.sh     # Agent wrapper — injects Pluto messages into agent CLIs
 ├── PlutoInstall.sh         # Automated installer (macOS / Debian / Ubuntu)
+├── config/
+│   └── pluto_config.json   # Server IP/port configuration
 ├── assets/
 │   └── pluto.png           # Project logo
 ├── src_erl/                # Erlang server source
@@ -434,9 +511,12 @@ pluto/
 │   └── test/               # EUnit tests (58 tests)
 ├── src_py/                 # Python client
 │   ├── pluto_client.py     # Client library + CLI
-│   └── pluto_client_def.py # Client definitions
-└── agent/                  # Agent integration docs
-    └── README.md
+│   ├── pluto_client_def.py # Client definitions
+│   └── agent_friend/       # Agent integration tools
+│       ├── pluto_agent_friend.py # PTY wrapper (used by PlutoAgentFriend.sh)
+│       ├── agent_wrapper.py      # Copilot agent launcher
+│       └── flow_runner.py        # JSON flow executor
+└── tests/                  # Integration & demo tests
 ```
 
 ## License

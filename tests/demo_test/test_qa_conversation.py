@@ -31,7 +31,7 @@ if _SRC_PY not in sys.path:
 if _TESTS not in sys.path:
     sys.path.insert(0, _TESTS)
 
-from agent_wrapper import AgentWrapper
+from agent_friend import AgentWrapper
 from pluto_client import PlutoClient
 from pluto_test_server import PlutoTestServer
 

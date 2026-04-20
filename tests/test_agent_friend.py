@@ -339,6 +339,32 @@ class TestMessageFormatting(unittest.TestCase):
         self.assertIn("alice", result)
         self.assertNotIn("delivery_ack", result)
 
+    def test_format_filters_ack_wrapped_as_message(self):
+        """Delivery acks wrapped as regular messages (server behaviour)
+        must be filtered out by checking the payload."""
+        messages = [
+            {
+                "event": "message",
+                "from": "keren",
+                "payload": {
+                    "event": "delivery_ack",
+                    "msg_id": "MSG-123",
+                    "to": "keren",
+                    "delivered": True,
+                    "acked_at": 1776691754861,
+                },
+            },
+            {
+                "event": "message",
+                "from": "keren",
+                "payload": {"text": "Hello david!"},
+            },
+        ]
+        result = MessageFormatter.format(messages)
+        self.assertNotIn("delivery_ack", result)
+        self.assertNotIn("MSG-123", result)
+        self.assertIn("Hello david!", result)
+
 
 class TestPlutoConfig(unittest.TestCase):
     """Test config loading."""

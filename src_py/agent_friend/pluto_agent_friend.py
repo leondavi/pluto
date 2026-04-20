@@ -633,6 +633,11 @@ class MessageFormatter:
             payload = msg.get("payload", {})
 
             if event == "message":
+                # Skip delivery_ack wrapped as regular message.
+                if isinstance(payload, dict) and payload.get("event") in (
+                    "delivery_ack", "status_update", "heartbeat",
+                ):
+                    continue
                 parts.append(
                     f"[Pluto Message from {sender}]\n"
                     f"{json.dumps(payload, indent=2)}"
@@ -786,24 +791,47 @@ class PlutoConnection:
         )
         self._poll_thread.start()
 
+    # Events that the agent should never see.
+    _NOISE_PAYLOAD_EVENTS = {
+        "delivery_ack", "status_update", "heartbeat",
+    }
+
     # Events that carry actionable content for the agent.
     _ACTIONABLE_EVENTS = {
         "message", "broadcast", "task_assigned", "topic_message",
     }
+
+    @classmethod
+    def _is_noise(cls, msg: dict) -> bool:
+        """Return True if *msg* is infrastructure noise (delivery_ack etc.)
+
+        The Pluto server wraps delivery_ack receipts as regular ``message``
+        events (top-level ``event`` is ``"message"``) with the ack details
+        inside the ``payload``.  We must therefore check both levels.
+        """
+        # Top-level event check.
+        top_event = msg.get("event", "message")
+        if top_event not in cls._ACTIONABLE_EVENTS:
+            return True
+        # Payload-level check (server wraps ack as message + ack payload).
+        payload = msg.get("payload") or {}
+        if isinstance(payload, dict):
+            if payload.get("event") in cls._NOISE_PAYLOAD_EVENTS:
+                return True
+        return False
 
     def _poll_loop(self) -> None:
         """Background: repeatedly long-poll the server for new messages."""
         while self._running and self._client:
             try:
                 msgs = self._client.long_poll(
-                    timeout=self.poll_timeout, ack=True
+                    timeout=self.poll_timeout, ack=False
                 )
                 if msgs:
                     # Drop infrastructure events (delivery_ack, status_update,
                     # heartbeat, etc.) — they are noise for the agent.
                     actionable = [
-                        m for m in msgs
-                        if m.get("event", "message") in self._ACTIONABLE_EVENTS
+                        m for m in msgs if not self._is_noise(m)
                     ]
                     dropped = len(msgs) - len(actionable)
                     if actionable:

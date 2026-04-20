@@ -1,0 +1,7 @@
+{
+  "pluto_server": {
+    "host_ip": "127.0.0.1",
+    "host_tcp_port": 9000,
+    "host_http_port": 9001
+  }
+}

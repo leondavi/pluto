@@ -22,6 +22,7 @@
 %% is invoked.  We create all shared ETS tables here (before any child
 %% process tries to read them) and then hand control to the supervisor.
 start(_StartType, _StartArgs) ->
+    pluto_config:load_json_config(),
     print_banner(),
     create_ets_tables(),
     case pluto_sup:start_link() of

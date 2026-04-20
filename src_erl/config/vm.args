@@ -1,5 +1,5 @@
-## Name of the node
--sname pluto
+## Name of the node — use long name with explicit IP to avoid hostname resolution issues
+-name pluto@127.0.0.1
 
 ## Cookie for distributed erlang (not used in v1, but set for safety)
 -setcookie pluto_secret

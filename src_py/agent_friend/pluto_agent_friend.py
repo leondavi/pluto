@@ -406,15 +406,24 @@ class TerminalProxy:
         TUI frameworks like Ink (used by Copilot CLI) process stdin in
         ``data`` events.  If the text and Enter arrive in the same chunk,
         the Enter is consumed as text content rather than triggering a
-        submit action.  This method injects the text first, waits for
-        *delay* seconds (allowing the I/O loop to flush the text and the
-        TUI to process it), then writes ``\\r`` directly to the PTY
-        master fd — guaranteeing it arrives as a separate write/data event.
+        submit action.  This method injects the text first, **waits for
+        it to be fully flushed** to the PTY, adds an extra settling delay,
+        then writes ``\\r`` directly to the PTY master fd — guaranteeing
+        it arrives as a separate write/data event.
 
         Runs synchronously — call from a background thread.
         """
         self._ibuf += text.encode("utf-8")
+
+        # Wait for the copy_loop to flush all text to the PTY master fd.
+        # For long messages this may take multiple select() iterations.
+        flush_deadline = time.monotonic() + 10.0
+        while self._ibuf and time.monotonic() < flush_deadline:
+            time.sleep(0.05)
+
+        # Extra settling time — lets the TUI process the text before \r.
         time.sleep(delay)
+
         # Write \r directly to the PTY master fd so it is guaranteed to
         # be a separate os.write() call, never bundled with the text.
         try:

@@ -24,8 +24,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WRAP_SCRIPT="${SCRIPT_DIR}/src_py/agent_friend/pluto_agent_friend.py"
 CONFIG_FILE="${SCRIPT_DIR}/config/pluto_config.json"
-VENV_DIR="/tmp/pluto/.venv"
-
+VENV_DIR="/tmp/pluto/.venv"PLUTO_VERSION="$(cat "${SCRIPT_DIR}/VERSION.md" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')"
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -269,10 +268,10 @@ main() {
         banner_shown=true
         echo ""
         echo -e "${CYAN}"
-        cat <<'BANNER'
+        cat <<BANNER
     ╔═══════════════════════════════════════════════╗
     ║                                               ║
-    ║   ★  PlutoAgentFriend                         ║
+    ║   ★  PlutoAgentFriend  ${PLUTO_VERSION}              ║
     ║      AI Agent + Pluto Coordination Wrapper    ║
     ║                                               ║
     ╚═══════════════════════════════════════════════╝
@@ -362,10 +361,10 @@ BANNER
     if [[ "${banner_shown}" != "true" ]]; then
         echo ""
         echo -e "${CYAN}"
-        cat <<'BANNER'
+        cat <<BANNER
     ╔═══════════════════════════════════════════════╗
     ║                                               ║
-    ║   ★  PlutoAgentFriend                         ║
+    ║   ★  PlutoAgentFriend  ${PLUTO_VERSION}              ║
     ║      AI Agent + Pluto Coordination Wrapper    ║
     ║                                               ║
     ╚═══════════════════════════════════════════════╝

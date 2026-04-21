@@ -83,6 +83,24 @@ _SRC_PY = os.path.abspath(os.path.join(_THIS_DIR, ".."))
 if _SRC_PY not in sys.path:
     sys.path.insert(0, _SRC_PY)
 
+# ── Version (loaded from VERSION.md at the project root) ─────────────────────
+def _read_version() -> str:
+    """Read the version string from VERSION.md two levels above this file."""
+    for candidate in (
+        os.path.join(_THIS_DIR, "..", "..", "VERSION.md"),
+        os.path.join(_THIS_DIR, "..", "VERSION.md"),
+    ):
+        try:
+            with open(os.path.normpath(candidate)) as _f:
+                v = _f.read().strip()
+                if v:
+                    return v
+        except OSError:
+            pass
+    return "unknown"
+
+__version__: str = _read_version()
+
 from pluto_client import PlutoHttpClient, PlutoError  # noqa: E402
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -163,6 +181,15 @@ class TerminalProxy:
         # Internal I/O buffers (stdin→master and master→stdout).
         self._ibuf = b""   # input  buffer: user keystrokes → agent
         self._obuf = b""   # output buffer: agent output   → terminal
+
+        # Rolling tail of agent output, used for deterministic
+        # echo-confirmation when injecting prompts.  We keep a bounded
+        # tail plus a monotonic byte counter so callers can ask
+        # "what has the agent emitted since marker N?" even after the
+        # tail has been truncated.
+        self._echo_buf: bytes = b""
+        self._echo_total: int = 0
+        self._echo_buf_max: int = 65536
 
         # Focus event handling: when the child enables focus tracking
         # (\x1b[?1004h), we intercept it so the outer terminal never sends
@@ -354,6 +381,7 @@ class TerminalProxy:
                         break  # child closed its side → exit loop
                     data = self._filter_agent_output(data)
                     self._obuf += data
+                    self._record_echo(data)
                     self.on_agent_output(data)
 
                 # --- Write user keystrokes to the agent PTY ---
@@ -399,7 +427,128 @@ class TerminalProxy:
         """
         self._ibuf += text.encode("utf-8")
 
-    def inject_and_submit(self, text: str, delay: float = 0.3) -> None:
+    # ── Echo-detection helpers ─────────────────────────────────────────────
+
+    def _record_echo(self, data: bytes) -> None:
+        """Append agent output to the rolling echo buffer."""
+        self._echo_total += len(data)
+        if len(data) >= self._echo_buf_max:
+            self._echo_buf = data[-self._echo_buf_max:]
+        else:
+            self._echo_buf = (self._echo_buf + data)[-self._echo_buf_max:]
+
+    def _echo_since(self, marker: int) -> bytes:
+        """
+        Return agent output bytes received since ``marker``.
+
+        ``marker`` is a value previously read from ``self._echo_total``.
+        If the rolling buffer has rotated past the marker, the oldest
+        retained bytes are returned (best-effort).
+        """
+        available_start = self._echo_total - len(self._echo_buf)
+        if marker <= available_start:
+            return self._echo_buf
+        offset = marker - available_start
+        return self._echo_buf[offset:]
+
+    @staticmethod
+    def _normalize_for_echo(data: bytes) -> bytes:
+        """
+        Strip ANSI escape sequences and collapse all whitespace so an
+        echoed prompt can be matched even when the TUI inserts cursor
+        positioning between characters or wraps long input visually.
+        """
+        try:
+            text = data.decode("utf-8", errors="replace")
+        except Exception:
+            return b""
+        text = strip_ansi(text)
+        return "".join(text.split()).encode("utf-8")
+
+    def inject_and_submit_when_echoed(
+        self,
+        text: str,
+        sentinel: str | None = None,
+        hard_deadline: float = 15.0,
+        poll_interval: float = 0.05,
+        submit_on_timeout: bool = True,
+    ) -> bool:
+        """
+        Deterministic injection: write *text* to the PTY, wait until the
+        agent has actually rendered the text into its input field
+        (i.e. echoed it back through the master fd), then send Enter.
+
+        This avoids the timing race where ``\\r`` arrives before an
+        Ink-based TUI's React reconciler has placed the pasted text into
+        its input state — which would otherwise submit an empty line.
+
+        Parameters
+        ----------
+        text : str
+            The prompt to inject.
+        sentinel : str | None
+            A substring whose appearance in the agent's output confirms
+            the echo.  Defaults to the last printable ASCII tail of
+            *text* (whitespace ignored).  Provide an explicit value if
+            *text* itself is unlikely to be rendered verbatim.
+        hard_deadline : float
+            Maximum total seconds to wait for flush + echo.
+        poll_interval : float
+            How often to re-scan the echo buffer.
+        submit_on_timeout : bool
+            If ``True`` (default) Enter is sent even when the echo was
+            never confirmed (best-effort fallback).  Set to ``False``
+            when the caller plans to retry on failure — sending Enter
+            blindly into a TUI that did not absorb the text would just
+            submit a stale/empty input line.
+
+        Returns
+        -------
+        bool
+            ``True`` if the echo was confirmed before the deadline,
+            ``False`` if the deadline expired.
+        """
+        # Build a normalised sentinel (ASCII printable, no whitespace).
+        if sentinel is None:
+            printable = "".join(c for c in text if 0x20 <= ord(c) < 0x7f)
+            sentinel = printable[-32:] if len(printable) >= 8 else printable
+        sentinel_norm = "".join(sentinel.split()).encode("utf-8")
+
+        # Snapshot the current output position so we only search NEW output.
+        marker = self._echo_total
+
+        # Send the text.
+        self._ibuf += text.encode("utf-8")
+
+        deadline = time.monotonic() + hard_deadline
+
+        # Phase 1: wait for the buffer to be fully flushed to the PTY.
+        while self._ibuf and time.monotonic() < deadline:
+            time.sleep(poll_interval)
+
+        # Phase 2: wait for the agent to echo the sentinel back.
+        detected = False
+        if sentinel_norm:
+            while time.monotonic() < deadline:
+                new_bytes = self._echo_since(marker)
+                if sentinel_norm in self._normalize_for_echo(new_bytes):
+                    detected = True
+                    break
+                time.sleep(poll_interval)
+
+        # Phase 3: submit.  On confirmed echo we always send Enter.
+        # On timeout we only send Enter if the caller opted in via
+        # ``submit_on_timeout`` — otherwise blindly pressing Enter into
+        # a TUI that did not absorb the text would submit a stale or
+        # empty input line.
+        if detected or submit_on_timeout:
+            try:
+                os.write(self._master_fd, b"\r")
+            except OSError:
+                self._ibuf += b"\r"
+        return detected
+
+    def inject_and_submit(self, text: str, delay: float | None = None) -> None:
         """
         Inject *text* followed by Enter (``\\r``), with a delay between them.
 
@@ -413,6 +562,9 @@ class TerminalProxy:
 
         Runs synchronously — call from a background thread.
         """
+        if delay is None:
+            delay = INJECT_SUBMIT_DELAY_S
+
         self._ibuf += text.encode("utf-8")
 
         # Wait for the copy_loop to flush all text to the PTY master fd.
@@ -422,6 +574,8 @@ class TerminalProxy:
             time.sleep(0.05)
 
         # Extra settling time — lets the TUI process the text before \r.
+        # On slow machines Ink's React reconciler needs more time to render
+        # the pasted text into its input buffer before Enter triggers submit.
         time.sleep(delay)
 
         # Write \r directly to the PTY master fd so it is guaranteed to
@@ -465,6 +619,18 @@ DEFAULT_ASK_PATTERNS = [
 
 # How long after last output before considering the agent "idle" (fallback).
 SILENCE_TIMEOUT_S = 3.0
+
+# ── Guide-injection timing defaults ────────────────────────────────────────
+# These can all be overridden via CLI flags or environment variables.
+# On slower machines (CI runners, low-end laptops, remote VMs) the TUI takes
+# longer to finish initialising, so the previous hard-coded values
+# (2 s / 0.5 s / 0.3 s) often resulted in lost guide injections.
+GUIDE_STARTUP_DELAY_S = float(os.environ.get("PLUTO_GUIDE_STARTUP_DELAY", 3.0))
+GUIDE_READY_GRACE_S = float(os.environ.get("PLUTO_GUIDE_READY_GRACE", 1.5))
+GUIDE_MAX_WAIT_S = float(os.environ.get("PLUTO_GUIDE_MAX_WAIT", 60.0))
+GUIDE_RETRIES = int(os.environ.get("PLUTO_GUIDE_RETRIES", 2))
+GUIDE_RETRY_DELAY_S = float(os.environ.get("PLUTO_GUIDE_RETRY_DELAY", 4.0))
+INJECT_SUBMIT_DELAY_S = float(os.environ.get("PLUTO_INJECT_SUBMIT_DELAY", 0.6))
 
 
 class AgentStateDetector:
@@ -914,6 +1080,12 @@ class PlutoAgentFriend(TerminalProxy):
         poll_timeout: int = 15,
         silence_timeout: float = SILENCE_TIMEOUT_S,
         guide_file: str | None = None,
+        guide_startup_delay: float = GUIDE_STARTUP_DELAY_S,
+        guide_ready_grace: float = GUIDE_READY_GRACE_S,
+        guide_max_wait: float = GUIDE_MAX_WAIT_S,
+        guide_retries: int = GUIDE_RETRIES,
+        guide_retry_delay: float = GUIDE_RETRY_DELAY_S,
+        inject_submit_delay: float = INJECT_SUBMIT_DELAY_S,
         verbose: bool = False,
     ):
         super().__init__(cmd)
@@ -922,6 +1094,12 @@ class PlutoAgentFriend(TerminalProxy):
         self.mode = mode
         self.verbose = verbose
         self.guide_file = guide_file
+        self.guide_startup_delay = guide_startup_delay
+        self.guide_ready_grace = guide_ready_grace
+        self.guide_max_wait = guide_max_wait
+        self.guide_retries = max(0, guide_retries)
+        self.guide_retry_delay = guide_retry_delay
+        self.inject_submit_delay = inject_submit_delay
 
         # --- Composed components ---
         self.detector = AgentStateDetector(
@@ -1037,27 +1215,47 @@ class PlutoAgentFriend(TerminalProxy):
         Background thread: wait for the agent to become idle for the first
         time after startup, then inject a prompt telling it to read the
         skill guide file.
+
+        Robustness for slow machines
+        ----------------------------
+        TUI startup time varies wildly (cold caches, slow disks, container
+        cold-start, low-end CPUs).  We therefore:
+          1. Wait ``guide_startup_delay`` before even looking at state.
+          2. Wait up to ``guide_max_wait`` for the first ready signal.
+          3. After ready, wait for the agent to actually go quiet — many
+             agents (Copilot, Claude) print their ready banner BEFORE
+             finishing MCP/skill init, and input sent during that window
+             is silently dropped.  We require at least
+             ``guide_ready_grace`` seconds with no new output before we
+             consider the input field truly accepting keystrokes.
+          4. Inject deterministically using echo confirmation.  If the
+             echo is not observed, the prompt was not absorbed — retry
+             after another silent period instead of pressing Enter
+             blindly (which would submit a stale empty line).
+        All values are configurable via CLI flags or env vars.
         """
         # Give the agent a moment to start its TUI.
-        time.sleep(2)
+        time.sleep(self.guide_startup_delay)
 
         # Wait until the agent has signalled readiness at least once
         # (ready_pattern matched) OR has been idle long enough.  Ink-based
         # TUIs (Copilot) constantly redraw, so silence never fires — the
         # ever_ready latch handles that case.
-        deadline = time.monotonic() + 60.0
+        deadline = time.monotonic() + self.guide_max_wait
         while self._running and time.monotonic() < deadline:
-            if self.detector.ever_ready:
-                # Pattern matched — small grace period for TUI to settle.
-                time.sleep(0.5)
-                break
-            if self.detector.is_ready_for_injection():
+            if self.detector.ever_ready or \
+                    self.detector.is_ready_for_injection():
                 break
             time.sleep(0.2)
         else:
             if self._running:
                 logger.debug("Guide injection: agent never became idle")
             return
+
+        # Wait for actual silence after the ready signal.  Agents print
+        # their ready banner before finishing initialisation; injecting
+        # during that window is silently dropped on Copilot/Claude.
+        self._wait_for_silence(self.guide_ready_grace, deadline)
 
         if self._guide_injected or not self._running:
             return
@@ -1083,9 +1281,71 @@ class PlutoAgentFriend(TerminalProxy):
             f"Incoming messages will be injected into your input automatically. "
             f"Confirm briefly when done."
         )
-        self._info(f"Injecting startup guide: {guide_basename}")
-        self.inject_and_submit(prompt)
-        self.detector.state = AGENT_STATE_BUSY
+        # Inject deterministically: write the prompt, then wait until the
+        # agent has echoed it back (i.e. rendered it in its input field)
+        # before sending Enter.  If the echo is never observed the agent
+        # did NOT accept the input — retry after another silent period
+        # instead of submitting blindly (which would press Enter on a
+        # stale or empty input line).
+        attempts = 1 + self.guide_retries
+        for attempt in range(1, attempts + 1):
+            if attempt == 1:
+                self._info(f"Injecting startup guide: {guide_basename}")
+            else:
+                self._info(
+                    f"Guide injection retry {attempt - 1}/"
+                    f"{self.guide_retries}: {guide_basename}"
+                )
+            is_last = (attempt == attempts)
+            echoed = self.inject_and_submit_when_echoed(
+                prompt,
+                hard_deadline=max(self.guide_retry_delay, 5.0),
+                submit_on_timeout=is_last,
+            )
+            self.detector.state = AGENT_STATE_BUSY
+
+            if echoed:
+                if self.verbose:
+                    logger.debug("Guide injection: echo confirmed")
+                break
+
+            if is_last:
+                logger.debug(
+                    "Guide injection: echo never confirmed; "
+                    "sent Enter as best-effort fallback"
+                )
+                break
+
+            # Echo failed — wait for the agent to be quiet again before
+            # retrying.  This handles slow MCP/skill init that delayed
+            # input acceptance during the first attempt.
+            logger.debug(
+                "Guide injection: no echo within %.1fs, waiting for "
+                "silence then retrying",
+                self.guide_retry_delay,
+            )
+            self._wait_for_silence(
+                self.guide_ready_grace,
+                time.monotonic() + self.guide_retry_delay * 2,
+            )
+
+    def _wait_for_silence(self, quiet_for: float, deadline: float) -> bool:
+        """
+        Block until the agent has produced no new output for
+        ``quiet_for`` seconds, or the absolute monotonic ``deadline``
+        is reached.  Returns ``True`` if silence was achieved,
+        ``False`` if the deadline expired.
+
+        Used to wait out late-stage TUI initialisation (e.g. Copilot's
+        MCP/skill loading) that runs *after* the ready banner prints
+        but *before* the input field accepts keystrokes.
+        """
+        while self._running and time.monotonic() < deadline:
+            quiet = time.monotonic() - self.detector._last_output_time
+            if quiet >= quiet_for:
+                return True
+            time.sleep(min(0.2, max(0.05, quiet_for - quiet)))
+        return False
 
     # ── Injection logic ───────────────────────────────────────────────────
 
@@ -1139,7 +1399,7 @@ class PlutoAgentFriend(TerminalProxy):
         """Format and inject messages into the agent's stdin buffer."""
         prompt = self.formatter.format(messages)
         self._info(f"Injecting {len(messages)} message(s) from Pluto")
-        self.inject_and_submit(prompt)
+        self.inject_and_submit_when_echoed(prompt)
         self.detector.state = AGENT_STATE_BUSY
 
     def _notify_pending(self, messages: list[dict]) -> None:
@@ -1386,6 +1646,42 @@ def main() -> None:
         help="Disable automatic guide injection even if the file exists.",
     )
     parser.add_argument(
+        "--guide-startup-delay", type=float, default=GUIDE_STARTUP_DELAY_S,
+        help=f"Seconds to wait after spawn before checking agent readiness "
+             f"(default: {GUIDE_STARTUP_DELAY_S}, env: PLUTO_GUIDE_STARTUP_DELAY). "
+             f"Increase on slower machines.",
+    )
+    parser.add_argument(
+        "--guide-ready-grace", type=float, default=GUIDE_READY_GRACE_S,
+        help=f"Seconds to wait after the ready pattern matches before "
+             f"injecting (default: {GUIDE_READY_GRACE_S}, "
+             f"env: PLUTO_GUIDE_READY_GRACE).",
+    )
+    parser.add_argument(
+        "--guide-max-wait", type=float, default=GUIDE_MAX_WAIT_S,
+        help=f"Maximum seconds to wait for agent to become ready "
+             f"(default: {GUIDE_MAX_WAIT_S}, env: PLUTO_GUIDE_MAX_WAIT).",
+    )
+    parser.add_argument(
+        "--guide-retries", type=int, default=GUIDE_RETRIES,
+        help=f"Re-inject the guide prompt this many times if the agent "
+             f"does not react (default: {GUIDE_RETRIES}, "
+             f"env: PLUTO_GUIDE_RETRIES).",
+    )
+    parser.add_argument(
+        "--guide-retry-delay", type=float, default=GUIDE_RETRY_DELAY_S,
+        help=f"Seconds to wait for agent reaction before retrying "
+             f"(default: {GUIDE_RETRY_DELAY_S}, "
+             f"env: PLUTO_GUIDE_RETRY_DELAY).",
+    )
+    parser.add_argument(
+        "--inject-submit-delay", type=float, default=INJECT_SUBMIT_DELAY_S,
+        help=f"Seconds between writing injected text and the Enter key "
+             f"(default: {INJECT_SUBMIT_DELAY_S}, "
+             f"env: PLUTO_INJECT_SUBMIT_DELAY). Increase if Ink-based TUIs "
+             f"submit empty lines on slow machines.",
+    )
+    parser.add_argument(
         "--verbose", action="store_true",
         help="Enable verbose debug logging",
     )
@@ -1418,7 +1714,7 @@ def main() -> None:
         f"\n"
         f"    {CYAN}╔═══════════════════════════════════════════════╗{NC}\n"
         f"    {CYAN}║{NC}                                               {CYAN}║{NC}\n"
-        f"    {CYAN}║{NC}   {GREEN}★{NC}  {BOLD}PlutoAgentFriend{NC}                         {CYAN}║{NC}\n"
+        f"    {CYAN}║{NC}   {GREEN}★{NC}  {BOLD}PlutoAgentFriend{NC}  {DIM}{__version__}{NC}              {CYAN}║{NC}\n"
         f"    {CYAN}║{NC}      AI Agent + Pluto Coordination Wrapper    {CYAN}║{NC}\n"
         f"    {CYAN}║{NC}                                               {CYAN}║{NC}\n"
         f"    {CYAN}╚═══════════════════════════════════════════════╝{NC}\n",
@@ -1540,6 +1836,12 @@ def main() -> None:
         poll_timeout=args.poll_timeout,
         silence_timeout=args.silence_timeout,
         guide_file=guide_file,
+        guide_startup_delay=args.guide_startup_delay,
+        guide_ready_grace=args.guide_ready_grace,
+        guide_max_wait=args.guide_max_wait,
+        guide_retries=args.guide_retries,
+        guide_retry_delay=args.guide_retry_delay,
+        inject_submit_delay=args.inject_submit_delay,
         verbose=args.verbose,
     )
     sys.exit(friend.run())

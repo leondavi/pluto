@@ -83,6 +83,24 @@ _SRC_PY = os.path.abspath(os.path.join(_THIS_DIR, ".."))
 if _SRC_PY not in sys.path:
     sys.path.insert(0, _SRC_PY)
 
+# ── Version (loaded from VERSION.md at the project root) ─────────────────────
+def _read_version() -> str:
+    """Read the version string from VERSION.md two levels above this file."""
+    for candidate in (
+        os.path.join(_THIS_DIR, "..", "..", "VERSION.md"),
+        os.path.join(_THIS_DIR, "..", "VERSION.md"),
+    ):
+        try:
+            with open(os.path.normpath(candidate)) as _f:
+                v = _f.read().strip()
+                if v:
+                    return v
+        except OSError:
+            pass
+    return "unknown"
+
+__version__: str = _read_version()
+
 from pluto_client import PlutoHttpClient, PlutoError  # noqa: E402
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -1696,7 +1714,7 @@ def main() -> None:
         f"\n"
         f"    {CYAN}╔═══════════════════════════════════════════════╗{NC}\n"
         f"    {CYAN}║{NC}                                               {CYAN}║{NC}\n"
-        f"    {CYAN}║{NC}   {GREEN}★{NC}  {BOLD}PlutoAgentFriend{NC}                         {CYAN}║{NC}\n"
+        f"    {CYAN}║{NC}   {GREEN}★{NC}  {BOLD}PlutoAgentFriend{NC}  {DIM}{__version__}{NC}              {CYAN}║{NC}\n"
         f"    {CYAN}║{NC}      AI Agent + Pluto Coordination Wrapper    {CYAN}║{NC}\n"
         f"    {CYAN}║{NC}                                               {CYAN}║{NC}\n"
         f"    {CYAN}╚═══════════════════════════════════════════════╝{NC}\n",

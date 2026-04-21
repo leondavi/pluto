@@ -813,6 +813,30 @@ def main() -> None:
             f"(v{version}) at {host}:{http_port}",
             file=sys.stderr,
         )
+        # Strict client/server version check. The HTTP API surface
+        # (peek/ack, roles, etc.) must match exactly; a stale server
+        # silently returns 404 on missing endpoints which is very
+        # confusing for users.
+        def _normalize(v: str) -> str:
+            v = (v or "").strip()
+            if v.startswith("v") or v.startswith("V"):
+                v = v[1:]
+            return v
+
+        client_v = _normalize(__version__)
+        server_v = _normalize(version)
+        if client_v and server_v and client_v != server_v:
+            print(
+                f"\n{YELLOW}[pluto-friend]{NC} {BOLD}Version mismatch:{NC} "
+                f"client is v{client_v}, server is v{server_v}.\n"
+                f"{YELLOW}[pluto-friend]{NC} Rebuild and restart the server "
+                f"to match:\n"
+                f"    ./PlutoServer.sh --kill && ./PlutoServer.sh --daemon\n"
+                f"{YELLOW}[pluto-friend]{NC} Refusing to start — endpoints "
+                f"like /agents/peek may be missing on the running server.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     else:
         print(
             f"{YELLOW}[pluto-friend]{NC} Pluto server is {YELLOW}OFFLINE{NC} "

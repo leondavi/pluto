@@ -333,6 +333,32 @@ route('POST', <<"/locks/renew">>, Body, _Sock) ->
             {400, #{<<"error">> => <<"missing lock_ref">>}}
     end;
 
+%% Non-blocking lock probe over HTTP.  Returns status=ok+lock_ref if the
+%% resource is free, or status=unavailable if already held — never queues.
+route('POST', <<"/locks/try_acquire">>, Body, _Sock) ->
+    case decode_body(Body) of
+        {ok, #{<<"agent_id">> := AgentId, <<"resource">> := RawRes} = Msg} ->
+            case pluto_resource:normalize(RawRes) of
+                {ok, Resource} ->
+                    Mode = parse_mode(maps:get(<<"mode">>, Msg, <<"write">>)),
+                    TtlMs = maps:get(<<"ttl_ms">>, Msg, 30000),
+                    Opts = #{ttl_ms => TtlMs, max_wait_ms => undefined,
+                             session_id => <<"http">>, session_pid => undefined},
+                    case pluto_lock_mgr:try_acquire(Resource, Mode, AgentId, Opts) of
+                        {ok, LockRef, FToken} ->
+                            {200, #{<<"status">> => <<"ok">>,
+                                    <<"lock_ref">> => LockRef,
+                                    <<"fencing_token">> => FToken}};
+                        unavailable ->
+                            {200, #{<<"status">> => <<"unavailable">>}}
+                    end;
+                {error, empty_resource} ->
+                    {400, #{<<"error">> => <<"empty_resource">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing agent_id and resource">>}}
+    end;
+
 %% ── Events ──────────────────────────────────────────────────────────
 route('GET', <<"/events">>, _Body, _Sock) ->
     route_events(0, 100);

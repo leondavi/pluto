@@ -60,6 +60,7 @@ OP_TRY_ACQUIRE   = "try_acquire"
 OP_AGENT_STATUS  = "agent_status"
 OP_TASK_BATCH    = "task_batch"
 OP_TASK_PROGRESS = "task_progress"
+OP_RESOURCE_INFO = "resource_info"
 
 # ── Lock modes ───────────────────────────────────────────────────────────────
 

@@ -497,6 +497,9 @@ GET  /agents                  → {"status":"ok","agents":["coder-1",...]}
 GET  /agents/list/detailed    → full agent details with attributes
 GET  /agents/<id>             → single agent status
 GET  /locks                   → active locks
+GET  /locks/resource?resource=<name>    → holders + last holder + queue
+GET  /locks/last_holder?resource=<name> → most recent holder (or null)
+GET  /locks/queue?resource=<name>       → queue_length + waiters (FIFO)
 GET  /tasks                   → all tasks
 GET  /tasks/progress          → task counts by status and agent
 GET  /events?since_token=0    → event history (polling)

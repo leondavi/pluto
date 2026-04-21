@@ -207,6 +207,58 @@ it first**.  This prevents data corruption from concurrent writes.
   queue for it (you'll receive the lock via a Pluto message when it's
   granted).
 
+### Inspecting who holds or is waiting for a resource
+
+Before you decide to wait on a busy resource (or ping whoever is blocking
+you), ask the server who currently holds it, who held it last, and how long
+the waiting queue is.  Three read-only HTTP endpoints are available:
+
+```bash
+# Full picture: current holders + last holder + queue
+curl -s "http://localhost:9001/locks/resource?resource=file:/src/main.py"
+
+# Just the most recent holder (even after they released / lock expired)
+curl -s "http://localhost:9001/locks/last_holder?resource=file:/src/main.py"
+
+# Just how many agents are waiting in the FIFO queue
+curl -s "http://localhost:9001/locks/queue?resource=file:/src/main.py"
+```
+
+Example response from `/locks/resource`:
+
+```json
+{
+  "status": "ok",
+  "resource": "file:/src/main.py",
+  "now_ms": 1734123456789,
+  "current_holders": [
+    {"agent_id": "alice", "mode": "write", "lock_ref": "LOCK-42",
+     "expires_at": 1734123486789, "fencing_token": 17}
+  ],
+  "last_holder": {
+    "agent_id": "bob", "lock_ref": "LOCK-41",
+    "released_at": 1734123450000, "reason": "released"
+  },
+  "queue_length": 2,
+  "queue": [
+    {"agent_id": "carol", "mode": "write", "requested_at": 1734123455000,
+     "max_wait_until": 1734123515000, "wait_ref": "WAIT-8"},
+    {"agent_id": "dave",  "mode": "write", "requested_at": 1734123456100,
+     "max_wait_until": null,             "wait_ref": "WAIT-9"}
+  ]
+}
+```
+
+When to use these:
+- **Before acquiring** — if `queue_length` is high, consider working on a
+  different resource first.
+- **While blocked** — ask `last_holder` for the agent that just released
+  (useful for coordination: "hey bob, I saw you released main.py, I'll take
+  it now").
+- **Debugging stuck work** — `reason` is `"released"` after a clean
+  release and `"expired"` when a TTL timed out (agent probably died).
+- `last_holder` is `null` if the server has never seen this resource.
+
 ---
 
 ## Task Workflow

@@ -345,6 +345,13 @@ main() {
 BANNER
         echo -e "${NC}"
 
+        # If invoked from a different directory, show where Pluto is installed
+        # so users can tell which installation is in use.
+        if [[ "${SCRIPT_DIR}" != "${PWD}" ]]; then
+            info "Pluto install dir: ${BOLD}${SCRIPT_DIR}${NC}"
+            echo ""
+        fi
+
         # Show Pluto server status in the interactive menu (only when stdin is a
         # real terminal so piped/automated invocations are not delayed by curl).
         if [[ -t 0 ]]; then
@@ -447,7 +454,7 @@ BANNER
                 elif [[ "${_role_choice}" =~ ^[0-9]+$ ]] && \
                         (( _role_choice >= 1 && _role_choice < _ri )); then
                     role_file="${_role_files[$((_role_choice - 1))]}"
-                    ok "Role: $(basename "${role_file}" .md)"
+                    ok "Role: $(basename "${role_file}" .md) (${role_file})"
                 else
                     warn "Invalid choice — skipping role."
                 fi
@@ -469,6 +476,12 @@ BANNER
     ╚═══════════════════════════════════════════════╝
 BANNER
         echo -e "${NC}"
+
+        # If invoked from a different directory, show where Pluto is installed.
+        if [[ "${SCRIPT_DIR}" != "${PWD}" ]]; then
+            info "Pluto install dir: ${BOLD}${SCRIPT_DIR}${NC}"
+            echo ""
+        fi
 
         # Show Pluto server status (non-interactive path)
         show_pluto_status "${host}" "${http_port}" || true

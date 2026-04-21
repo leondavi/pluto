@@ -561,3 +561,24 @@ pluto/
 ## License
 
 See [LICENSE](LICENSE) for details.
+
+## Citation
+
+Pluto is developed by David Leon. Academic researchers can use Pluto for
+free, provided they cite this repository.
+
+If you use Pluto in your research, please cite it as:
+
+```bibtex
+@software{leon_pluto,
+  author  = {Leon, David},
+  title   = {Pluto: A coordination and messaging server for AI agents},
+  url     = {https://github.com/leondavi/pluto},
+  version = {0.2.42},
+  year    = {2026}
+}
+```
+
+A machine-readable [CITATION.cff](CITATION.cff) file is also provided —
+GitHub renders a "Cite this repository" button in the sidebar.
+

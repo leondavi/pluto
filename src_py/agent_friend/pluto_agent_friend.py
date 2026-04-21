@@ -845,17 +845,18 @@ def main() -> None:
         )
 
     # --- Resolve guide file ---
+    # Search order: explicit --guide path → project root → CWD.
+    # Project root is preferred over CWD so the wrapper works correctly
+    # when invoked from a directory other than the Pluto installation.
+    _project_root = os.path.normpath(os.path.join(_THIS_DIR, "..", ".."))
     guide_file = None
     if not args.no_guide:
         if args.guide:
             guide_file = os.path.abspath(args.guide)
         else:
             for candidate in [
+                os.path.join(_project_root, "agent_friend_guide.md"),
                 os.path.join(os.getcwd(), "agent_friend_guide.md"),
-                os.path.normpath(
-                    os.path.join(_THIS_DIR, "..", "..",
-                                 "agent_friend_guide.md")
-                ),
             ]:
                 if os.path.isfile(candidate):
                     guide_file = candidate
@@ -867,17 +868,45 @@ def main() -> None:
                 file=sys.stderr,
             )
             guide_file = None
+        if guide_file:
+            print(
+                f"{CYAN}[pluto-friend]{NC} Guide: {guide_file}",
+                file=sys.stderr,
+            )
 
     # --- Resolve role file ---
+    # Accept: absolute/relative path, OR a bare name resolved against the
+    # project's library/roles/ directory (works regardless of CWD).
     role_file = None
     if args.role:
-        role_file = os.path.abspath(args.role)
+        raw = args.role
+        # Bare name: no path separator and no .md suffix → look in library/roles/
+        if os.sep not in raw and "/" not in raw and not raw.endswith(".md"):
+            roles_dir = (
+                args.roles_dir
+                if args.roles_dir
+                else os.path.join(_project_root, "library", "roles")
+            )
+            candidate = os.path.join(roles_dir, raw + ".md")
+            if os.path.isfile(candidate):
+                role_file = candidate
+            else:
+                # Fall back: treat as a CWD-relative or absolute path
+                role_file = os.path.abspath(raw)
+        else:
+            role_file = os.path.abspath(raw)
         if not os.path.isfile(role_file):
             print(
                 f"{YELLOW}[pluto-friend]{NC} Role file not found: {role_file}",
                 file=sys.stderr,
             )
             role_file = None
+        else:
+            role_name = os.path.splitext(os.path.basename(role_file))[0]
+            print(
+                f"{CYAN}[pluto-friend]{NC} Role: {role_name} ({role_file})",
+                file=sys.stderr,
+            )
 
     # --- Launch ---
     friend = PlutoAgentFriend(

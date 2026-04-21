@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: "Leon"
+    given-names: "David"
+    orcid: "https://orcid.org/0000-0001-8036-9964"
+title: "Pluto"
+version: "0.2.42"
+date-released: 2026-04-21
+url: "https://github.com/leondavi/pluto"
+repository-code: "https://github.com/leondavi/pluto"
+license: "MIT"
+keywords:
+  - "agent coordination"
+  - "distributed locking"
+  - "multi-agent systems"
+  - "erlang"
+  - "ai agents"

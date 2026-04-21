@@ -40,6 +40,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from typing import Callable, Dict, List, Optional
 
 from pluto_client_def import (
@@ -72,6 +73,7 @@ from pluto_client_def import (
     OP_AGENT_STATUS,
     OP_TASK_BATCH,
     OP_TASK_PROGRESS,
+    OP_RESOURCE_INFO,
     MODE_WRITE,
     STATUS_OK,
     STATUS_WAIT,
@@ -251,6 +253,28 @@ class PlutoClient:
         if resp.get("status") == STATUS_UNAVAILABLE:
             return None
         raise PlutoError(resp.get("reason", "try_acquire failed"))
+
+    # ── Resource introspection (v0.2.42) ─────────────────────────────────
+    def resource_info(self, resource: str) -> dict:
+        """
+        Return full lock information for *resource*:
+          - ``current_holders``: list of agents currently holding the resource
+          - ``last_holder``: the most recent previous holder (or ``None``)
+          - ``queue_length``: number of agents waiting
+          - ``queue``: ordered list of waiting agents (FIFO)
+        """
+        resp = self._send_and_wait({"op": OP_RESOURCE_INFO, "resource": resource})
+        if resp.get("status") != STATUS_OK:
+            raise PlutoError(resp.get("reason", "resource_info failed"))
+        return resp
+
+    def last_holder(self, resource: str) -> Optional[dict]:
+        """Return the most recent previous holder of *resource* (or None)."""
+        return self.resource_info(resource).get("last_holder")
+
+    def queue_length(self, resource: str) -> int:
+        """Return the number of agents currently waiting for *resource*."""
+        return int(self.resource_info(resource).get("queue_length", 0))
 
     def find_agents(self, filter: Optional[dict] = None) -> List[str]:
         """Find agents matching an attribute filter."""
@@ -559,6 +583,86 @@ class PlutoHttpClient:
         """List all connected agents via HTTP."""
         resp = self._get("/agents")
         return resp.get("agents", [])
+
+    # ── Lock resource introspection ─────────────────────────────────────
+
+    def list_locks(self) -> List[dict]:
+        """List all currently active locks on the server."""
+        resp = self._get("/locks")
+        return resp.get("locks", [])
+    # ── Lock operations (HTTP) ───────────────────────────────────────────
+
+    def acquire(self, resource: str, mode: str = "write",
+                ttl_ms: int = 30000,
+                max_wait_ms: Optional[int] = None) -> dict:
+        """
+        Acquire a lock over HTTP.  Returns the raw server response:
+          - ``status=ok`` with ``lock_ref`` + ``fencing_token`` if granted
+          - ``status=wait`` with ``wait_ref`` if queued (server grants
+            later — poll ``/agents/poll`` for a ``lock_granted`` event)
+          - ``status=error`` with ``reason`` on failure
+        """
+        body = {"agent_id": self.agent_id, "resource": resource,
+                "mode": mode, "ttl_ms": ttl_ms}
+        if max_wait_ms is not None:
+            body["max_wait_ms"] = max_wait_ms
+        return self._post("/locks/acquire", body)
+
+    def try_acquire(self, resource: str, mode: str = "write",
+                    ttl_ms: int = 30000) -> Optional[str]:
+        """Non-blocking lock probe.  Returns lock_ref if granted, else None."""
+        body = {"agent_id": self.agent_id, "resource": resource,
+                "mode": mode, "ttl_ms": ttl_ms}
+        resp = self._post("/locks/try_acquire", body)
+        if resp.get("status") == "ok":
+            return resp.get("lock_ref")
+        return None
+
+    def release(self, lock_ref: str) -> dict:
+        """Release a previously-acquired lock."""
+        return self._post("/locks/release",
+                          {"lock_ref": lock_ref, "agent_id": self.agent_id})
+
+    def renew(self, lock_ref: str, ttl_ms: int = 30000) -> dict:
+        """Extend the TTL on an active lock lease."""
+        return self._post("/locks/renew",
+                          {"lock_ref": lock_ref, "ttl_ms": ttl_ms})
+    def resource_info(self, resource: str) -> dict:
+        """
+        Return full lock information for *resource*:
+          - ``current_holders``: list of agents currently holding the resource
+          - ``last_holder``: the most recent previous holder (or ``None``)
+          - ``queue_length``: number of agents waiting for the resource
+          - ``queue``: ordered list of waiting agents (FIFO, head = next)
+
+        Use this before acquiring a contested resource to decide whether to
+        wait, try a different resource, or message the current holder.
+        """
+        qp = urllib.parse.urlencode({"resource": resource})
+        return self._get(f"/locks/resource?{qp}")
+
+    def last_holder(self, resource: str) -> Optional[dict]:
+        """
+        Return the most recent previous holder of *resource* as a dict with
+        keys ``agent_id``, ``lock_ref``, ``released_at``, ``reason``
+        (``released`` or ``expired``), or ``None`` if the server has no
+        record of this resource ever being locked.
+        """
+        qp = urllib.parse.urlencode({"resource": resource})
+        resp = self._get(f"/locks/last_holder?{qp}")
+        return resp.get("last_holder")
+
+    def queue_length(self, resource: str) -> int:
+        """Return the number of agents currently waiting for *resource*."""
+        qp = urllib.parse.urlencode({"resource": resource})
+        resp = self._get(f"/locks/queue?{qp}")
+        return int(resp.get("queue_length", 0))
+
+    def resource_queue(self, resource: str) -> List[dict]:
+        """Return the FIFO wait-queue for *resource* (head = next to be granted)."""
+        qp = urllib.parse.urlencode({"resource": resource})
+        resp = self._get(f"/locks/queue?{qp}")
+        return resp.get("queue", [])
 
     def agent_status(self, agent_id: str) -> dict:
         """Query a specific agent's status (includes TTL info for HTTP agents)."""

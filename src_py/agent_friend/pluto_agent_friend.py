@@ -131,6 +131,16 @@ FOCUS_TRACKING_ENABLE  = b"\x1b[?1004h"   # DEC private mode 1004 – enable
 FOCUS_TRACKING_DISABLE = b"\x1b[?1004l"   # DEC private mode 1004 – disable
 FOCUS_IN_EVENT  = b"\x1b[I"               # CSI I – terminal gained focus
 FOCUS_OUT_EVENT = b"\x1b[O"               # CSI O – terminal lost focus
+
+# Bracketed paste mode (DEC private mode 2004).  When the agent enables it
+# (most modern TUIs do, including Copilot CLI / Ink), text written to the
+# PTY is interpreted as a *paste* if it is wrapped in these markers, and
+# any embedded newlines are stored as literal characters in the input
+# field rather than being treated as submit keystrokes.
+BRACKETED_PASTE_ENABLE  = b"\x1b[?2004h"
+BRACKETED_PASTE_DISABLE = b"\x1b[?2004l"
+PASTE_START = b"\x1b[200~"
+PASTE_END   = b"\x1b[201~"
 NC = "\033[0m"
 
 # ── Agent state constants ─────────────────────────────────────────────────────
@@ -195,6 +205,13 @@ class TerminalProxy:
         # (\x1b[?1004h), we intercept it so the outer terminal never sends
         # focus events.  Instead we immediately tell the child it is focused.
         self._focus_tracking_active = False
+
+        # Bracketed paste tracking: observe the agent enabling/disabling
+        # bracketed paste mode (\x1b[?2004h / \x1b[?2004l) on its own
+        # output stream so we know whether to wrap injected text in
+        # paste markers.  We do NOT strip these sequences — the outer
+        # terminal needs them too.
+        self._bracketed_paste_active = False
 
     # ── Child lifecycle ───────────────────────────────────────────────────
 
@@ -293,6 +310,13 @@ class TerminalProxy:
         if FOCUS_TRACKING_DISABLE in data:
             data = data.replace(FOCUS_TRACKING_DISABLE, b"")
             self._focus_tracking_active = False
+        # Track bracketed paste mode without modifying the byte stream.
+        if BRACKETED_PASTE_ENABLE in data:
+            self._bracketed_paste_active = True
+            logger.debug("Bracketed paste mode enabled by agent")
+        if BRACKETED_PASTE_DISABLE in data:
+            self._bracketed_paste_active = False
+            logger.debug("Bracketed paste mode disabled by agent")
         return data
 
     def _filter_stdin(self, data: bytes) -> bytes:
@@ -508,17 +532,37 @@ class TerminalProxy:
             ``True`` if the echo was confirmed before the deadline,
             ``False`` if the deadline expired.
         """
+        # Flatten newlines: when bracketed paste mode is active (most
+        # modern TUIs), embedded newlines are preserved in the input
+        # field as literal characters, turning the prompt into a
+        # multi-line "paste preview" that requires Ctrl+Enter rather
+        # than Enter to submit.  Replace newlines with spaces so the
+        # injected prompt remains a single submittable line.  Tabs are
+        # similarly normalised to avoid completion side effects.
+        flat_text = text.replace("\r\n", " ").replace("\n", " ")
+        flat_text = flat_text.replace("\r", " ").replace("\t", " ")
+        # Collapse runs of whitespace to keep the prompt tidy.
+        flat_text = re.sub(r" {2,}", " ", flat_text).strip()
+
         # Build a normalised sentinel (ASCII printable, no whitespace).
         if sentinel is None:
-            printable = "".join(c for c in text if 0x20 <= ord(c) < 0x7f)
+            printable = "".join(c for c in flat_text if 0x20 <= ord(c) < 0x7f)
             sentinel = printable[-32:] if len(printable) >= 8 else printable
         sentinel_norm = "".join(sentinel.split()).encode("utf-8")
 
         # Snapshot the current output position so we only search NEW output.
         marker = self._echo_total
 
-        # Send the text.
-        self._ibuf += text.encode("utf-8")
+        # Send the text.  When the agent has bracketed paste mode on, wrap
+        # the payload in paste markers so the TUI parser consumes it as
+        # one atomic paste event (avoids interleaving with cursor redraws
+        # and prevents the TUI from inserting its own start/end markers
+        # around partial chunks).
+        payload = flat_text.encode("utf-8")
+        if self._bracketed_paste_active:
+            self._ibuf += PASTE_START + payload + PASTE_END
+        else:
+            self._ibuf += payload
 
         deadline = time.monotonic() + hard_deadline
 

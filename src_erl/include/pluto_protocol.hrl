@@ -74,6 +74,11 @@
 -define(OP_TASK_BATCH,          <<"task_batch">>).
 -define(OP_TASK_PROGRESS,       <<"task_progress">>).
 
+%% ── Resource introspection (v0.2.42) ────────────────────────────────────────
+%% Query who currently holds a resource, who held it last, and how long the
+%% wait queue is.  Read-only; never modifies lock state.
+-define(OP_RESOURCE_INFO,       <<"resource_info">>).
+
 %% ── Response status codes ───────────────────────────────────────────────────
 -define(STATUS_OK,    <<"ok">>).
 -define(STATUS_WAIT,  <<"wait">>).

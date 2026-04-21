@@ -28,6 +28,9 @@
     renew/2,
     list_locks/0,
     locks_for_agent/1,
+    resource_info/1,
+    last_holder/1,
+    queue_length/1,
     get_fencing_seq/0,
     set_fencing_seq/1
 ]).
@@ -40,7 +43,11 @@
 -record(state, {
     fencing_seq  = 0 :: non_neg_integer(),   %% monotonically increasing
     lock_counter = 0 :: non_neg_integer(),    %% for generating LOCK-N refs
-    wait_counter = 0 :: non_neg_integer()     %% for generating WAIT-N refs
+    wait_counter = 0 :: non_neg_integer(),    %% for generating WAIT-N refs
+    %% Map Resource => #{agent_id, lock_ref, released_at, reason}
+    %% tracking the most recent previous holder of each resource.
+    %% Updated on explicit release and on TTL expiry.
+    last_holders = #{} :: map()
 }).
 
 %% Sweep interval for expired locks (5 seconds)
@@ -100,6 +107,38 @@ list_locks() ->
 -spec locks_for_agent(binary()) -> [#lock{}].
 locks_for_agent(AgentId) ->
     ets:match_object(?ETS_LOCKS, #lock{agent_id = AgentId, _ = '_'}).
+
+%% @doc Return a summary of who currently holds, who held last, and who is
+%% waiting for a given resource.  This is the primary introspection endpoint
+%% for coordinating agents that want to understand contention on a resource
+%% before (or after) requesting it.
+%%
+%% The returned map has the shape:
+%%   #{resource        => binary(),
+%%     current_holders => [#{agent_id, lock_ref, mode, fencing_token,
+%%                           expires_at, inserted_at}],
+%%     last_holder     => #{agent_id, lock_ref, released_at, reason}
+%%                      | null,
+%%     queue_length    => non_neg_integer(),
+%%     queue           => [#{wait_ref, agent_id, mode, requested_at}]}
+%%
+%% ``reason`` is either ``released`` (explicit release call) or ``expired``
+%% (TTL lapsed during sweep).
+-spec resource_info(binary()) -> map().
+resource_info(Resource) ->
+    gen_server:call(?MODULE, {resource_info, Resource}).
+
+%% @doc Convenience: return just the last-known holder for a resource,
+%% or ``null`` if the server has never seen this resource.
+-spec last_holder(binary()) -> map() | null.
+last_holder(Resource) ->
+    gen_server:call(?MODULE, {last_holder, Resource}).
+
+%% @doc Convenience: return the current wait-queue length for a resource.
+-spec queue_length(binary()) -> non_neg_integer().
+queue_length(Resource) ->
+    length(ets:match_object(?ETS_WAITERS,
+                            {{Resource, '_', '_'}, '_'})).
 
 %% @doc Get the current fencing sequence number.
 -spec get_fencing_seq() -> non_neg_integer().
@@ -171,8 +210,11 @@ handle_call({release, LockRef, AgentId}, _From, State) ->
             ets:delete(?ETS_LOCKS, LockRef),
             pluto_stats:inc(locks_released),
             pluto_stats:inc_agent(AgentId, locks_released),
+            %% Remember who held this resource last (for diagnostics).
+            State1 = record_last_holder(Resource, AgentId, LockRef,
+                                        released, State),
             %% Advance the wait queue for this resource
-            NewState = advance_queue(Resource, State),
+            NewState = advance_queue(Resource, State1),
             {reply, ok, NewState};
         [#lock{}] ->
             %% Lock exists but owned by a different agent
@@ -199,6 +241,15 @@ handle_call(get_fencing_seq, _From, #state{fencing_seq = FSeq} = State) ->
 
 handle_call({set_fencing_seq, Seq}, _From, State) when is_integer(Seq), Seq >= 0 ->
     {reply, ok, State#state{fencing_seq = max(Seq, State#state.fencing_seq)}};
+
+%% ── resource introspection ─────────────────────────────────────────
+handle_call({resource_info, Resource}, _From, State) ->
+    Info = build_resource_info(Resource, State),
+    {reply, Info, State};
+
+handle_call({last_holder, Resource}, _From, State) ->
+    {reply, get_last_holder(Resource, State), State};
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
@@ -222,6 +273,64 @@ terminate(_Reason, _State) ->
 %% Internal functions
 %%====================================================================
 
+%% @private Record the most recent holder of a resource in state so that
+%% subsequent resource_info / last_holder queries can report it even after
+%% the lock is gone from ETS.
+record_last_holder(Resource, AgentId, LockRef, Reason,
+                   #state{last_holders = LH} = State) ->
+    Entry = #{agent_id    => AgentId,
+              lock_ref    => LockRef,
+              released_at => pluto_lease:now_ms(),
+              reason      => Reason},
+    State#state{last_holders = maps:put(Resource, Entry, LH)}.
+
+%% @private Look up the last holder entry for a resource (or null).
+get_last_holder(Resource, #state{last_holders = LH}) ->
+    case maps:find(Resource, LH) of
+        {ok, Entry} -> Entry;
+        error       -> null
+    end.
+
+%% @private Build the comprehensive resource_info map.
+build_resource_info(Resource, State) ->
+    Now = pluto_lease:now_ms(),
+    CurrentLocks = ets:match_object(?ETS_LOCKS,
+                                    #lock{resource = Resource, _ = '_'}),
+    HolderMaps = [lock_to_map(L) || L <- CurrentLocks],
+    %% ETS_WAITERS is an ordered_set keyed by {Resource, RequestedAt, WaitRef}
+    %% so match_object returns waiters already in FIFO order.
+    Waiters = ets:match_object(?ETS_WAITERS,
+                               {{Resource, '_', '_'}, '_'}),
+    QueueMaps = [wait_entry_to_map(W) || {_Key, W} <- Waiters],
+    #{resource        => Resource,
+      now_ms          => Now,
+      current_holders => HolderMaps,
+      last_holder     => get_last_holder(Resource, State),
+      queue_length    => length(Waiters),
+      queue           => QueueMaps}.
+
+lock_to_map(#lock{lock_ref = Ref, resource = _Res, mode = Mode,
+                  agent_id = AId, fencing_token = FT,
+                  expires_at = Exp, inserted_at = Ins}) ->
+    #{lock_ref      => Ref,
+      agent_id      => AId,
+      mode          => atom_to_binary(Mode, utf8),
+      fencing_token => FT,
+      expires_at    => Exp,
+      inserted_at   => Ins}.
+
+wait_entry_to_map(#wait_entry{wait_ref = WRef, agent_id = AId, mode = Mode,
+                              requested_at = Ts,
+                              max_wait_until = MaxUntil}) ->
+    Deadline = case MaxUntil of
+                   infinity -> null;
+                   _        -> MaxUntil
+               end,
+    #{wait_ref       => WRef,
+      agent_id       => AId,
+      mode           => atom_to_binary(Mode, utf8),
+      requested_at   => Ts,
+      max_wait_until => Deadline}.
 %% @private Check whether a new lock request conflicts with existing locks.
 %%
 %% Conflict rules:
@@ -402,7 +511,9 @@ sweep_expired_locks(State) ->
                 ets:delete(?ETS_LOCKS, Ref),
                 pluto_stats:inc(locks_expired),
                 pluto_stats:inc_agent(AId, locks_expired),
-                advance_queue(Res, AccState);
+                Acc1 = record_last_holder(Res, AId, Ref,
+                                          expired, AccState),
+                advance_queue(Res, Acc1);
             false ->
                 AccState
         end

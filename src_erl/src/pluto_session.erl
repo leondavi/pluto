@@ -320,6 +320,10 @@ handle_request(#{<<"op">> := ?OP_PUBLISH} = Msg, S) ->
 handle_request(#{<<"op">> := ?OP_TRY_ACQUIRE} = Msg, S) ->
     pluto_stats:inc(total_requests),
     handle_try_acquire(Msg, S);
+%% ── Resource introspection (v0.2.42) ────────────────────────────────
+handle_request(#{<<"op">> := ?OP_RESOURCE_INFO} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    handle_resource_info(Msg, S);
 %% ── Agent presence & status query ───────────────────────────────────
 handle_request(#{<<"op">> := ?OP_AGENT_STATUS} = Msg, S) ->
     pluto_stats:inc(total_requests),
@@ -834,6 +838,37 @@ handle_try_acquire(Msg, #sess{socket = Sock, session_id = SessId,
                                 <<"reason">> => ?ERR_UNAUTHORIZED
                             })
                     end;
+                {error, empty_resource} ->
+                    send_error(Sock, ?ERR_BAD_REQUEST)
+            end;
+        error ->
+            send_error(Sock, ?ERR_BAD_REQUEST)
+    end,
+    S.
+
+%% ── Resource introspection (v0.2.42) ────────────────────────────────
+%% Return current holders, last known holder, queue length and queue for
+%% a named resource.  Read-only.
+handle_resource_info(Msg, #sess{socket = Sock} = S) ->
+    case maps:find(<<"resource">>, Msg) of
+        {ok, RawResource} ->
+            case pluto_resource:normalize(RawResource) of
+                {ok, Resource} ->
+                    Info = pluto_lock_mgr:resource_info(Resource),
+                    Last = case maps:get(last_holder, Info) of
+                               null -> null;
+                               undefined -> null;
+                               M -> M
+                           end,
+                    send_json(Sock, #{
+                        <<"status">>          => ?STATUS_OK,
+                        <<"resource">>        => Resource,
+                        <<"now_ms">>          => maps:get(now_ms, Info),
+                        <<"current_holders">> => maps:get(current_holders, Info),
+                        <<"last_holder">>     => Last,
+                        <<"queue_length">>    => maps:get(queue_length, Info),
+                        <<"queue">>           => maps:get(queue, Info)
+                    });
                 {error, empty_resource} ->
                     send_error(Sock, ?ERR_BAD_REQUEST)
             end;

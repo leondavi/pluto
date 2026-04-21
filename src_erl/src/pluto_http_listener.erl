@@ -232,6 +232,46 @@ route('GET', <<"/locks">>, _Body, _Sock) ->
     LockMaps = [format_lock(L) || L <- Locks],
     {200, #{<<"status">> => <<"ok">>, <<"locks">> => LockMaps}};
 
+%% ── Lock resource introspection ────────────────────────────────────
+%% GET /locks/resource?resource=<name>
+%%   Returns current holders, last-known holder (even after release),
+%%   queue length, and queue contents for the given resource.
+%% GET /locks/last_holder?resource=<name>
+%%   Convenience: just the last_holder field, or null.
+%% GET /locks/queue?resource=<name>
+%%   Convenience: {queue_length, queue}
+route('GET', <<"/locks/resource?", Query/binary>>, _Body, _Sock) ->
+    resource_info_response(parse_query(Query));
+route('GET', <<"/locks/resource">>, _Body, _Sock) ->
+    {400, #{<<"error">> => <<"missing resource query parameter">>}};
+
+route('GET', <<"/locks/last_holder?", Query/binary>>, _Body, _Sock) ->
+    Params = parse_query(Query),
+    case resolve_resource(Params) of
+        {ok, Resource} ->
+            Last = pluto_lock_mgr:last_holder(Resource),
+            {200, #{<<"status">> => <<"ok">>,
+                    <<"resource">>    => Resource,
+                    <<"last_holder">> => nullable(Last)}};
+        Err -> Err
+    end;
+route('GET', <<"/locks/last_holder">>, _Body, _Sock) ->
+    {400, #{<<"error">> => <<"missing resource query parameter">>}};
+
+route('GET', <<"/locks/queue?", Query/binary>>, _Body, _Sock) ->
+    Params = parse_query(Query),
+    case resolve_resource(Params) of
+        {ok, Resource} ->
+            Info = pluto_lock_mgr:resource_info(Resource),
+            {200, #{<<"status">>       => <<"ok">>,
+                    <<"resource">>     => Resource,
+                    <<"queue_length">> => maps:get(queue_length, Info),
+                    <<"queue">>        => maps:get(queue, Info)}};
+        Err -> Err
+    end;
+route('GET', <<"/locks/queue">>, _Body, _Sock) ->
+    {400, #{<<"error">> => <<"missing resource query parameter">>}};
+
 route('POST', <<"/locks/acquire">>, Body, _Sock) ->
     case decode_body(Body) of
         {ok, #{<<"agent_id">> := AgentId, <<"resource">> := RawRes} = Msg} ->
@@ -291,6 +331,32 @@ route('POST', <<"/locks/renew">>, Body, _Sock) ->
             end;
         _ ->
             {400, #{<<"error">> => <<"missing lock_ref">>}}
+    end;
+
+%% Non-blocking lock probe over HTTP.  Returns status=ok+lock_ref if the
+%% resource is free, or status=unavailable if already held — never queues.
+route('POST', <<"/locks/try_acquire">>, Body, _Sock) ->
+    case decode_body(Body) of
+        {ok, #{<<"agent_id">> := AgentId, <<"resource">> := RawRes} = Msg} ->
+            case pluto_resource:normalize(RawRes) of
+                {ok, Resource} ->
+                    Mode = parse_mode(maps:get(<<"mode">>, Msg, <<"write">>)),
+                    TtlMs = maps:get(<<"ttl_ms">>, Msg, 30000),
+                    Opts = #{ttl_ms => TtlMs, max_wait_ms => undefined,
+                             session_id => <<"http">>, session_pid => undefined},
+                    case pluto_lock_mgr:try_acquire(Resource, Mode, AgentId, Opts) of
+                        {ok, LockRef, FToken} ->
+                            {200, #{<<"status">> => <<"ok">>,
+                                    <<"lock_ref">> => LockRef,
+                                    <<"fencing_token">> => FToken}};
+                        unavailable ->
+                            {200, #{<<"status">> => <<"unavailable">>}}
+                    end;
+                {error, empty_resource} ->
+                    {400, #{<<"error">> => <<"empty_resource">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing agent_id and resource">>}}
     end;
 
 %% ── Events ──────────────────────────────────────────────────────────
@@ -874,6 +940,44 @@ format_lock(#lock{lock_ref = Ref, resource = Res, agent_id = AId,
     #{<<"lock_ref">> => Ref, <<"resource">> => Res,
       <<"agent_id">> => AId, <<"mode">> => atom_to_binary(Mode, utf8),
       <<"fencing_token">> => FT}.
+
+%% @private Resolve the `resource` query parameter into a normalised
+%% binary, or produce a 400 response tuple.
+resolve_resource(Params) ->
+    case maps:find(<<"resource">>, Params) of
+        {ok, <<>>} ->
+            {400, #{<<"error">> => <<"empty_resource">>}};
+        {ok, Raw} ->
+            case pluto_resource:normalize(Raw) of
+                {ok, Resource} -> {ok, Resource};
+                {error, empty_resource} ->
+                    {400, #{<<"error">> => <<"empty_resource">>}}
+            end;
+        error ->
+            {400, #{<<"error">> => <<"missing resource query parameter">>}}
+    end.
+
+%% @private Emit the full resource-info JSON response.
+resource_info_response(Params) ->
+    case resolve_resource(Params) of
+        {ok, Resource} ->
+            Info = pluto_lock_mgr:resource_info(Resource),
+            Last = maps:get(last_holder, Info),
+            {200, #{<<"status">>          => <<"ok">>,
+                    <<"resource">>        => Resource,
+                    <<"now_ms">>          => maps:get(now_ms, Info),
+                    <<"current_holders">> => maps:get(current_holders, Info),
+                    <<"last_holder">>     => nullable(Last),
+                    <<"queue_length">>    => maps:get(queue_length, Info),
+                    <<"queue">>           => maps:get(queue, Info)}};
+        Err -> Err
+    end.
+
+%% @private JSON-friendly null marker.  pluto_protocol_json encodes the
+%% atom `null` as a JSON `null`, whereas `undefined` is silently dropped.
+nullable(null)      -> null;
+nullable(undefined) -> null;
+nullable(V)         -> V.
 
 parse_mode(<<"read">>)  -> read;
 parse_mode(<<"write">>) -> write;

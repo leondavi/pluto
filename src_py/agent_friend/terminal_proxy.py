@@ -5,12 +5,14 @@ terminal.  Handles non-blocking reads/writes, focus-event interception
 (for Ink-based TUIs), and deterministic inject-with-echo-confirmation.
 """
 
+import errno
 import fcntl
 import logging
 import os
 import pty
 import re
 import select
+import signal
 import termios
 import time
 import tty
@@ -94,12 +96,57 @@ class TerminalProxy:
             except termios.error:
                 pass
 
-    def wait_child(self) -> int:
-        """Wait for the child to exit and return its exit code."""
-        _, status = os.waitpid(self._child_pid, 0)
-        if os.WIFEXITED(status):
-            return os.WEXITSTATUS(status)
-        return 1
+    def wait_child(self, timeout: float | None = None,
+                   escalate_after: float = 2.0) -> int:
+        """Wait for the child to exit and return its exit code.
+
+        If *timeout* is given (seconds), the wait is bounded.  After
+        *escalate_after* seconds with no exit, SIGTERM is sent; if the
+        child still hasn't exited by *timeout*, SIGKILL is sent.
+        """
+        if timeout is None:
+            try:
+                _, status = os.waitpid(self._child_pid, 0)
+            except (ChildProcessError, OSError):
+                return 1
+            if os.WIFEXITED(status):
+                return os.WEXITSTATUS(status)
+            if os.WIFSIGNALED(status):
+                return 128 + os.WTERMSIG(status)
+            return 1
+
+        deadline = time.monotonic() + timeout
+        sent_term = False
+        sent_kill = False
+        while True:
+            try:
+                pid, status = os.waitpid(self._child_pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                return 1
+            if pid != 0:
+                if os.WIFEXITED(status):
+                    return os.WEXITSTATUS(status)
+                if os.WIFSIGNALED(status):
+                    return 128 + os.WTERMSIG(status)
+                return 1
+            now = time.monotonic()
+            if not sent_term and now >= deadline - (timeout - escalate_after):
+                self._signal_child(signal.SIGTERM)
+                sent_term = True
+            if not sent_kill and now >= deadline:
+                self._signal_child(signal.SIGKILL)
+                sent_kill = True
+                deadline = now + 1.0  # brief reap window after SIGKILL
+            time.sleep(0.05)
+
+    def _signal_child(self, sig: int) -> None:
+        """Send *sig* to the child process, ignoring failures."""
+        if self._child_pid <= 0:
+            return
+        try:
+            os.kill(self._child_pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
     # ── Terminal setup / teardown ─────────────────────────────────────────
 

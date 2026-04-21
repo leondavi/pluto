@@ -216,6 +216,14 @@ class PlutoAgentFriend(TerminalProxy):
 
         self.sync_window_size()
         signal.signal(signal.SIGWINCH, self._handle_sigwinch)
+        # Forward termination signals to the child and tear down cleanly.
+        # SIGINT (Ctrl-C) is normally delivered to the child via the PTY when
+        # the terminal is in raw mode; these handlers cover the cases where
+        # the wrapper process itself receives the signal (e.g. shell exits,
+        # parent sends SIGTERM, or Ctrl-C before raw-mode was entered).
+        signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
+        signal.signal(signal.SIGHUP, self._handle_shutdown_signal)
+        signal.signal(signal.SIGINT, self._handle_shutdown_signal)
         self.enter_raw_mode()
 
         self._running = True
@@ -242,7 +250,9 @@ class PlutoAgentFriend(TerminalProxy):
         exit_code = 1
         try:
             self.copy_loop(timeout=0.5)
-            exit_code = self.wait_child()
+            # Child pipe closed — reap with a bounded wait so a wedged
+            # child can never hang the wrapper.
+            exit_code = self.wait_child(timeout=5.0, escalate_after=2.0)
         except Exception as exc:
             logger.error("I/O loop error: %s", exc)
         finally:
@@ -535,6 +545,27 @@ class PlutoAgentFriend(TerminalProxy):
             os.kill(self._child_pid, signal.SIGWINCH)
         except OSError:
             pass
+
+    def _handle_shutdown_signal(self, signum, _frame) -> None:
+        """Forward a shutdown signal to the child and break the copy loop.
+
+        Installed for SIGINT / SIGTERM / SIGHUP.  In raw-mode the user's
+        Ctrl-C is delivered to the child via the PTY, so this handler
+        only fires for signals sent directly to the wrapper process
+        (e.g. ``kill <pid>``, parent shell exit, Ctrl-C before raw mode).
+        """
+        name = {
+            signal.SIGINT: "SIGINT",
+            signal.SIGTERM: "SIGTERM",
+            signal.SIGHUP: "SIGHUP",
+        }.get(signum, str(signum))
+        logger.debug("Received %s \u2014 shutting down", name)
+        # Relay to the child so it gets a chance to exit cleanly.
+        sig_to_child = signal.SIGHUP if signum == signal.SIGHUP \
+            else signal.SIGTERM if signum == signal.SIGTERM \
+            else signal.SIGINT
+        self._signal_child(sig_to_child)
+        self._running = False
 
     # ── User-facing output helpers ────────────────────────────────────────
 

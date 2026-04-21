@@ -13,45 +13,27 @@ Architecture
                             │
                     AgentStateDetector   (parses stdout → BUSY / ASKING / READY)
                             │
-                    PlutoConnection      (long-polls Pluto server for messages)
+                    PlutoConnection      (peek/ack the Pluto inbox)
                             │
                     MessageFormatter     (formats messages as natural-language)
-                            │
-                    InjectionGate        (decides when/how to inject)
 
-Class Hierarchy
-===============
+Since v0.2.44 the implementation is split across several modules inside
+the ``agent_friend`` package for readability:
 
-    TerminalProxy        Low-level PTY management, raw mode, non-blocking I/O.
-                         Modelled after Python's pty.spawn() with buffered
-                         reads/writes and proper non-blocking master_fd.
-
-    AgentStateDetector   Watches agent output and classifies the agent's current
-                         state: BUSY (producing output), ASKING_USER (waiting
-                         for human answer), or READY (idle, safe to inject).
-
-    MessageFormatter     Converts Pluto protocol messages (JSON dicts) into
-                         natural-language prompts that any LLM agent can process.
-
-    PlutoConnection      Manages the HTTP session with the Pluto server:
-                         register, long-poll for messages, unregister on exit.
-
-    PlutoAgentFriend     Top-level orchestrator that wires everything together.
-                         Owns the main run() loop and coordinates injection.
+    constants.py          Shared ANSI / escape / timing constants
+    terminal_proxy.py     TerminalProxy (low-level PTY management)
+    state_detector.py     AgentStateDetector
+    message_formatter.py  MessageFormatter
+    pluto_connection.py   PlutoConnection (peek/ack + in-flight buffer)
+    frameworks.py         Framework detection + config helpers
+    pluto_agent_friend.py (this file) — PlutoAgentFriend orchestrator + CLI
 
 Injection Modes
 ===============
 
     auto    — Inject as soon as the agent is READY and no user input pending.
     confirm — Show notification; auto-inject after 10 s if still ready.
-    manual  — Show notification only; the user copy-pastes or types the message.
-
-Safety Rules
-============
-
-    1. User input always has priority over injected messages.
-    2. Never inject when the agent is asking the user a question.
-    3. Injections are displayed to the user (stderr) for transparency.
+    manual  — Show notification only; at-most-once (messages are acked).
 
 Usage
 =====
@@ -61,29 +43,24 @@ Usage
     python3 pluto_agent_friend.py --agent-id coder-1 --ready-pattern '^> $' -- aider
 """
 
-# ── Standard library imports ──────────────────────────────────────────────────
 import argparse
-import fcntl
 import json
 import logging
 import os
-import pty
-import re
-import select
 import signal
 import sys
-import termios
 import threading
 import time
-import tty
 
-# ── Project imports ───────────────────────────────────────────────────────────
+# ── Package-path bootstrap ────────────────────────────────────────────────────
+# Allow running the file as a script (``python3 pluto_agent_friend.py``)
+# AND as a package member (``from agent_friend.pluto_agent_friend import …``).
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_PY = os.path.abspath(os.path.join(_THIS_DIR, ".."))
 if _SRC_PY not in sys.path:
     sys.path.insert(0, _SRC_PY)
 
-# ── Version (loaded from VERSION.md at the project root) ─────────────────────
+
 def _read_version() -> str:
     """Read the version string from VERSION.md two levels above this file."""
     for candidate in (
@@ -99,983 +76,52 @@ def _read_version() -> str:
             pass
     return "unknown"
 
+
 __version__: str = _read_version()
 
-from pluto_client import PlutoHttpClient, PlutoError  # noqa: E402
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ── Re-export public API (backward compatibility) ────────────────────────────
+# Tests and external code import many symbols directly from this module;
+# keep the surface unchanged after the v0.2.44 split.
+from agent_friend.constants import (  # noqa: E402,F401
+    AGENT_STATE_ASKING_USER,
+    AGENT_STATE_BUSY,
+    AGENT_STATE_READY,
+    BOLD,
+    CYAN,
+    DIM,
+    FOCUS_IN_EVENT,
+    FOCUS_OUT_EVENT,
+    FOCUS_TRACKING_DISABLE,
+    FOCUS_TRACKING_ENABLE,
+    GREEN,
+    GUIDE_MAX_WAIT_S,
+    GUIDE_READY_GRACE_S,
+    GUIDE_RETRIES,
+    GUIDE_RETRY_DELAY_S,
+    GUIDE_STARTUP_DELAY_S,
+    INJECT_SUBMIT_DELAY_S,
+    NC,
+    SILENCE_TIMEOUT_S,
+    YELLOW,
+    strip_ansi,
+)
+from agent_friend.frameworks import (  # noqa: E402,F401
+    KNOWN_FRAMEWORKS,
+    check_pluto_status,
+    detect_available_frameworks,
+    get_framework_cmd,
+    get_framework_ready_pattern,
+    list_roles,
+    load_pluto_config,
+    load_role,
+)
+from agent_friend.message_formatter import MessageFormatter  # noqa: E402
+from agent_friend.pluto_connection import PlutoConnection  # noqa: E402
+from agent_friend.state_detector import AgentStateDetector  # noqa: E402
+from agent_friend.terminal_proxy import TerminalProxy  # noqa: E402
+
 logger = logging.getLogger("pluto_agent_friend")
-
-# ── File descriptors (match pty module constants) ─────────────────────────────
-STDIN_FILENO = pty.STDIN_FILENO   # 0
-STDOUT_FILENO = pty.STDOUT_FILENO  # 1
-
-# ── ANSI colour helpers (for stderr messages) ─────────────────────────────────
-CYAN = "\033[0;36m"
-YELLOW = "\033[0;33m"
-GREEN = "\033[0;32m"
-DIM = "\033[2m"
-BOLD = "\033[1m"
-
-# ── Terminal escape sequences for focus event handling ────────────────────────
-# When an Ink-based TUI (e.g. Copilot CLI) enables focus event tracking, the
-# outer terminal (VS Code) sends \x1b[O (focus-out) whenever the terminal pane
-# loses focus.  In a PTY proxy context these events are forwarded to the inner
-# process, causing it to believe the terminal is inactive and stop accepting
-# keyboard input.
-#
-# Solution: intercept focus-tracking enable/disable in the agent's output so the
-# outer terminal never enables focus events, and always tell the inner process
-# that the terminal is focused.
-FOCUS_TRACKING_ENABLE  = b"\x1b[?1004h"   # DEC private mode 1004 – enable
-FOCUS_TRACKING_DISABLE = b"\x1b[?1004l"   # DEC private mode 1004 – disable
-FOCUS_IN_EVENT  = b"\x1b[I"               # CSI I – terminal gained focus
-FOCUS_OUT_EVENT = b"\x1b[O"               # CSI O – terminal lost focus
-
-# Bracketed paste mode (DEC private mode 2004).  When the agent enables it
-# (most modern TUIs do, including Copilot CLI / Ink), text written to the
-# PTY is interpreted as a *paste* if it is wrapped in these markers, and
-# any embedded newlines are stored as literal characters in the input
-# field rather than being treated as submit keystrokes.
-BRACKETED_PASTE_ENABLE  = b"\x1b[?2004h"
-BRACKETED_PASTE_DISABLE = b"\x1b[?2004l"
-PASTE_START = b"\x1b[200~"
-PASTE_END   = b"\x1b[201~"
-NC = "\033[0m"
-
-# ── Agent state constants ─────────────────────────────────────────────────────
-AGENT_STATE_BUSY = "BUSY"
-AGENT_STATE_ASKING_USER = "ASKING_USER"
-AGENT_STATE_READY = "READY"
-
-# ── ANSI escape stripper ─────────────────────────────────────────────────────
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?[@-~]")
-
-
-def strip_ansi(text: str) -> str:
-    """Remove ANSI escape sequences from *text* and return the clean string."""
-    return _ANSI_RE.sub("", text)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  TerminalProxy — Low-level PTY management
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TerminalProxy:
-    """
-    Spawn a child process inside a PTY and proxy I/O to/from the real terminal.
-
-    This class mirrors the logic of Python's :func:`pty.spawn` / :func:`pty._copy`
-    with two critical improvements over a naive approach:
-
-    * The PTY master fd is set to **non-blocking** so writes never stall the
-      event loop (which would freeze keyboard input).
-    * Read and write operations are **buffered**: data is accumulated in
-      ``_ibuf`` (stdin → master) and ``_obuf`` (master → stdout), and
-      ``select()`` is used for *both* read-readiness and write-readiness.
-
-    Subclasses can override :meth:`on_agent_output` to inspect every chunk
-    the agent writes to its stdout/stderr.
-    """
-
-    # High-water mark: stop reading when buffer exceeds this size.
-    _HIGH_WATER = 4096
-
-    def __init__(self, cmd: list[str]):
-        self.cmd = cmd
-        self._child_pid: int = 0
-        self._master_fd: int = -1
-        self._old_tty_attrs = None
-        self._running = False
-
-        # Internal I/O buffers (stdin→master and master→stdout).
-        self._ibuf = b""   # input  buffer: user keystrokes → agent
-        self._obuf = b""   # output buffer: agent output   → terminal
-
-        # Rolling tail of agent output, used for deterministic
-        # echo-confirmation when injecting prompts.  We keep a bounded
-        # tail plus a monotonic byte counter so callers can ask
-        # "what has the agent emitted since marker N?" even after the
-        # tail has been truncated.
-        self._echo_buf: bytes = b""
-        self._echo_total: int = 0
-        self._echo_buf_max: int = 65536
-
-        # Focus event handling: when the child enables focus tracking
-        # (\x1b[?1004h), we intercept it so the outer terminal never sends
-        # focus events.  Instead we immediately tell the child it is focused.
-        self._focus_tracking_active = False
-
-        # Bracketed paste tracking: observe the agent enabling/disabling
-        # bracketed paste mode (\x1b[?2004h / \x1b[?2004l) on its own
-        # output stream so we know whether to wrap injected text in
-        # paste markers.  We do NOT strip these sequences — the outer
-        # terminal needs them too.
-        self._bracketed_paste_active = False
-
-    # ── Child lifecycle ───────────────────────────────────────────────────
-
-    def spawn(self) -> None:
-        """Fork a PTY and exec *self.cmd* in the child process."""
-        # Capture parent terminal attributes BEFORE forking so we can
-        # apply them to the PTY slave.  This ensures the child inherits
-        # realistic terminal settings (baud rate, special characters, flags)
-        # rather than the system defaults that openpty() provides.
-        parent_attrs = None
-        try:
-            parent_attrs = termios.tcgetattr(STDIN_FILENO)
-        except termios.error:
-            pass
-
-        self._child_pid, self._master_fd = pty.fork()
-        if self._child_pid == 0:
-            # --- child process: set Pluto env vars for agent discovery ---
-            if hasattr(self, '_pluto_env'):
-                for k, v in self._pluto_env.items():
-                    os.environ[k] = v
-            os.execvp(self.cmd[0], self.cmd)
-            os._exit(127)  # only reached if execvp fails
-
-        # --- parent process: copy terminal attrs to PTY slave (via master) ---
-        if parent_attrs is not None:
-            try:
-                termios.tcsetattr(self._master_fd, termios.TCSANOW,
-                                  parent_attrs)
-            except termios.error:
-                pass
-
-    def wait_child(self) -> int:
-        """Wait for the child to exit and return its exit code."""
-        _, status = os.waitpid(self._child_pid, 0)
-        if os.WIFEXITED(status):
-            return os.WEXITSTATUS(status)
-        return 1
-
-    # ── Terminal setup / teardown ─────────────────────────────────────────
-
-    def enter_raw_mode(self) -> None:
-        """
-        Save the current terminal attributes and switch stdin to raw mode.
-
-        Raw mode delivers every keystroke immediately (no line buffering,
-        no echo, no signal generation) so the proxy can forward them to the PTY
-        without delay.
-        """
-        try:
-            self._old_tty_attrs = termios.tcgetattr(STDIN_FILENO)
-            tty.setraw(STDIN_FILENO)
-        except termios.error:
-            self._old_tty_attrs = None
-
-    def restore_terminal(self) -> None:
-        """Restore the terminal to its state before :meth:`enter_raw_mode`."""
-        if self._old_tty_attrs is not None:
-            try:
-                termios.tcsetattr(STDIN_FILENO, termios.TCSAFLUSH,
-                                  self._old_tty_attrs)
-            except termios.error:
-                pass
-
-    def sync_window_size(self) -> None:
-        """Copy the real terminal's window size to the PTY."""
-        try:
-            ws = fcntl.ioctl(STDOUT_FILENO, termios.TIOCGWINSZ, b"\x00" * 8)
-            fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, ws)
-        except (OSError, termios.error):
-            pass
-
-    # ── Main I/O loop ─────────────────────────────────────────────────────
-
-    def _filter_agent_output(self, data: bytes) -> bytes:
-        """
-        Filter escape sequences in agent output before forwarding to the
-        real terminal.
-
-        Currently handles:
-        - **Focus tracking** (``\\x1b[?1004h`` / ``\\x1b[?1004l``):
-          Intercepted so the outer terminal never enables focus event
-          reporting.  Instead, a fake "focus-in" event is sent back to
-          the agent so it always believes the terminal is focused.
-          This is critical for Ink-based TUI applications (e.g. Copilot
-          CLI) that disable input on focus-out.
-        """
-        if FOCUS_TRACKING_ENABLE in data:
-            data = data.replace(FOCUS_TRACKING_ENABLE, b"")
-            if not self._focus_tracking_active:
-                self._focus_tracking_active = True
-                # Tell the child it is focused.
-                self._ibuf += FOCUS_IN_EVENT
-                logger.debug("Intercepted focus-tracking enable; "
-                             "sent focus-in to child")
-        if FOCUS_TRACKING_DISABLE in data:
-            data = data.replace(FOCUS_TRACKING_DISABLE, b"")
-            self._focus_tracking_active = False
-        # Track bracketed paste mode without modifying the byte stream.
-        if BRACKETED_PASTE_ENABLE in data:
-            self._bracketed_paste_active = True
-            logger.debug("Bracketed paste mode enabled by agent")
-        if BRACKETED_PASTE_DISABLE in data:
-            self._bracketed_paste_active = False
-            logger.debug("Bracketed paste mode disabled by agent")
-        return data
-
-    def _filter_stdin(self, data: bytes) -> bytes:
-        """
-        Filter escape sequences from the outer terminal before forwarding
-        to the child PTY.
-
-        Currently handles:
-        - **Focus-out events** (``\\x1b[O``): Dropped so the child never
-          sees a "terminal lost focus" event.  In a PTY proxy the child's
-          terminal is always logically connected and focused.
-        """
-        if FOCUS_OUT_EVENT in data:
-            data = data.replace(FOCUS_OUT_EVENT, b"")
-            logger.debug("Filtered focus-out event from stdin")
-        return data
-
-    def copy_loop(self, timeout: float = 0.5) -> None:
-        """
-        Non-blocking copy loop (mirrors :func:`pty._copy`).
-
-        Reads from STDIN and the PTY master, buffers the data, and writes
-        it out when the target fd is ready.  A *timeout* on ``select()``
-        allows callers (subclasses) to do periodic work between iterations
-        by overriding :meth:`on_idle`.
-
-        The master fd is set to non-blocking so a large burst of output
-        from the agent (or a sluggish terminal) cannot block the loop and
-        starve keyboard input.
-
-        Agent output is filtered through :meth:`_filter_agent_output` and
-        stdin data through :meth:`_filter_stdin` to handle escape
-        sequences that would otherwise break double-PTY proxying (most
-        notably terminal focus-out events).
-        """
-        master_fd = self._master_fd
-        self._running = True
-
-        # --- set master_fd to non-blocking (critical for responsiveness) ---
-        os.set_blocking(master_fd, False)
-
-        stdin_open = master_fd != STDIN_FILENO
-        stdout_open = master_fd != STDOUT_FILENO
-
-        try:
-            while self._running:
-                rfds: list[int] = []
-                wfds: list[int] = []
-
-                # Read from stdin if buffer has room
-                if stdin_open and len(self._ibuf) < self._HIGH_WATER:
-                    rfds.append(STDIN_FILENO)
-
-                # Read from master if buffer has room
-                if stdout_open and len(self._obuf) < self._HIGH_WATER:
-                    rfds.append(master_fd)
-
-                # Write to stdout if there is buffered output
-                if stdout_open and self._obuf:
-                    wfds.append(STDOUT_FILENO)
-
-                # Write to master if there is buffered input
-                if self._ibuf:
-                    wfds.append(master_fd)
-
-                try:
-                    rfds, wfds, _ = select.select(rfds, wfds, [], timeout)
-                except (OSError, ValueError):
-                    break
-
-                # --- Write agent output to the real terminal ---
-                if STDOUT_FILENO in wfds:
-                    try:
-                        n = os.write(STDOUT_FILENO, self._obuf)
-                        self._obuf = self._obuf[n:]
-                    except OSError:
-                        stdout_open = False
-
-                # --- Read agent output from the PTY ---
-                if master_fd in rfds:
-                    try:
-                        data = os.read(master_fd, 4096)
-                    except OSError:
-                        data = b""
-                    if not data:
-                        break  # child closed its side → exit loop
-                    data = self._filter_agent_output(data)
-                    self._obuf += data
-                    self._record_echo(data)
-                    self.on_agent_output(data)
-
-                # --- Write user keystrokes to the agent PTY ---
-                if master_fd in wfds:
-                    try:
-                        n = os.write(master_fd, self._ibuf)
-                        self._ibuf = self._ibuf[n:]
-                    except OSError:
-                        pass  # agent not ready to read yet
-
-                # --- Read user keystrokes ---
-                if stdin_open and STDIN_FILENO in rfds:
-                    try:
-                        data = os.read(STDIN_FILENO, 4096)
-                    except OSError:
-                        data = b""
-                    if not data:
-                        stdin_open = False
-                    else:
-                        data = self._filter_stdin(data)
-                        if data:  # may be empty after filtering
-                            self._ibuf += data
-                            self.on_user_input(data)
-
-                # No events → let subclass do periodic work
-                if not rfds and not wfds:
-                    self.on_idle()
-
-        finally:
-            os.set_blocking(master_fd, True)  # restore for waitpid
-
-    def stop(self) -> None:
-        """Signal the copy loop to exit on its next iteration."""
-        self._running = False
-
-    def inject_input(self, text: str) -> None:
-        """
-        Enqueue *text* to be written to the agent's stdin.
-
-        The text is appended to ``_ibuf`` and will be flushed on the next
-        ``select()`` iteration when the master fd is write-ready.
-        Thread-safe (GIL protects the bytestring append).
-        """
-        self._ibuf += text.encode("utf-8")
-
-    # ── Echo-detection helpers ─────────────────────────────────────────────
-
-    def _record_echo(self, data: bytes) -> None:
-        """Append agent output to the rolling echo buffer."""
-        self._echo_total += len(data)
-        if len(data) >= self._echo_buf_max:
-            self._echo_buf = data[-self._echo_buf_max:]
-        else:
-            self._echo_buf = (self._echo_buf + data)[-self._echo_buf_max:]
-
-    def _echo_since(self, marker: int) -> bytes:
-        """
-        Return agent output bytes received since ``marker``.
-
-        ``marker`` is a value previously read from ``self._echo_total``.
-        If the rolling buffer has rotated past the marker, the oldest
-        retained bytes are returned (best-effort).
-        """
-        available_start = self._echo_total - len(self._echo_buf)
-        if marker <= available_start:
-            return self._echo_buf
-        offset = marker - available_start
-        return self._echo_buf[offset:]
-
-    @staticmethod
-    def _normalize_for_echo(data: bytes) -> bytes:
-        """
-        Strip ANSI escape sequences and collapse all whitespace so an
-        echoed prompt can be matched even when the TUI inserts cursor
-        positioning between characters or wraps long input visually.
-        """
-        try:
-            text = data.decode("utf-8", errors="replace")
-        except Exception:
-            return b""
-        text = strip_ansi(text)
-        return "".join(text.split()).encode("utf-8")
-
-    def inject_and_submit_when_echoed(
-        self,
-        text: str,
-        sentinel: str | None = None,
-        hard_deadline: float = 15.0,
-        poll_interval: float = 0.05,
-        submit_on_timeout: bool = True,
-    ) -> bool:
-        """
-        Deterministic injection: write *text* to the PTY, wait until the
-        agent has actually rendered the text into its input field
-        (i.e. echoed it back through the master fd), then send Enter.
-
-        This avoids the timing race where ``\\r`` arrives before an
-        Ink-based TUI's React reconciler has placed the pasted text into
-        its input state — which would otherwise submit an empty line.
-
-        Parameters
-        ----------
-        text : str
-            The prompt to inject.
-        sentinel : str | None
-            A substring whose appearance in the agent's output confirms
-            the echo.  Defaults to the last printable ASCII tail of
-            *text* (whitespace ignored).  Provide an explicit value if
-            *text* itself is unlikely to be rendered verbatim.
-        hard_deadline : float
-            Maximum total seconds to wait for flush + echo.
-        poll_interval : float
-            How often to re-scan the echo buffer.
-        submit_on_timeout : bool
-            If ``True`` (default) Enter is sent even when the echo was
-            never confirmed (best-effort fallback).  Set to ``False``
-            when the caller plans to retry on failure — sending Enter
-            blindly into a TUI that did not absorb the text would just
-            submit a stale/empty input line.
-
-        Returns
-        -------
-        bool
-            ``True`` if the echo was confirmed before the deadline,
-            ``False`` if the deadline expired.
-        """
-        # Flatten newlines: when bracketed paste mode is active (most
-        # modern TUIs), embedded newlines are preserved in the input
-        # field as literal characters, turning the prompt into a
-        # multi-line "paste preview" that requires Ctrl+Enter rather
-        # than Enter to submit.  Replace newlines with spaces so the
-        # injected prompt remains a single submittable line.  Tabs are
-        # similarly normalised to avoid completion side effects.
-        flat_text = text.replace("\r\n", " ").replace("\n", " ")
-        flat_text = flat_text.replace("\r", " ").replace("\t", " ")
-        # Collapse runs of whitespace to keep the prompt tidy.
-        flat_text = re.sub(r" {2,}", " ", flat_text).strip()
-
-        # Build a normalised sentinel (ASCII printable, no whitespace).
-        if sentinel is None:
-            printable = "".join(c for c in flat_text if 0x20 <= ord(c) < 0x7f)
-            sentinel = printable[-32:] if len(printable) >= 8 else printable
-        sentinel_norm = "".join(sentinel.split()).encode("utf-8")
-
-        # Snapshot the current output position so we only search NEW output.
-        marker = self._echo_total
-
-        # Send the text.  When the agent has bracketed paste mode on, wrap
-        # the payload in paste markers so the TUI parser consumes it as
-        # one atomic paste event (avoids interleaving with cursor redraws
-        # and prevents the TUI from inserting its own start/end markers
-        # around partial chunks).
-        payload = flat_text.encode("utf-8")
-        if self._bracketed_paste_active:
-            self._ibuf += PASTE_START + payload + PASTE_END
-        else:
-            self._ibuf += payload
-
-        deadline = time.monotonic() + hard_deadline
-
-        # Phase 1: wait for the buffer to be fully flushed to the PTY.
-        while self._ibuf and time.monotonic() < deadline:
-            time.sleep(poll_interval)
-
-        # Phase 2: wait for the agent to echo the sentinel back.
-        detected = False
-        if sentinel_norm:
-            while time.monotonic() < deadline:
-                new_bytes = self._echo_since(marker)
-                if sentinel_norm in self._normalize_for_echo(new_bytes):
-                    detected = True
-                    break
-                time.sleep(poll_interval)
-
-        # Phase 3: submit.  On confirmed echo we always send Enter.
-        # On timeout we only send Enter if the caller opted in via
-        # ``submit_on_timeout`` — otherwise blindly pressing Enter into
-        # a TUI that did not absorb the text would submit a stale or
-        # empty input line.
-        if detected or submit_on_timeout:
-            try:
-                os.write(self._master_fd, b"\r")
-            except OSError:
-                self._ibuf += b"\r"
-        return detected
-
-    def inject_and_submit(self, text: str, delay: float | None = None) -> None:
-        """
-        Inject *text* followed by Enter (``\\r``), with a delay between them.
-
-        TUI frameworks like Ink (used by Copilot CLI) process stdin in
-        ``data`` events.  If the text and Enter arrive in the same chunk,
-        the Enter is consumed as text content rather than triggering a
-        submit action.  This method injects the text first, **waits for
-        it to be fully flushed** to the PTY, adds an extra settling delay,
-        then writes ``\\r`` directly to the PTY master fd — guaranteeing
-        it arrives as a separate write/data event.
-
-        Runs synchronously — call from a background thread.
-        """
-        if delay is None:
-            delay = INJECT_SUBMIT_DELAY_S
-
-        self._ibuf += text.encode("utf-8")
-
-        # Wait for the copy_loop to flush all text to the PTY master fd.
-        # For long messages this may take multiple select() iterations.
-        flush_deadline = time.monotonic() + 10.0
-        while self._ibuf and time.monotonic() < flush_deadline:
-            time.sleep(0.05)
-
-        # Extra settling time — lets the TUI process the text before \r.
-        # On slow machines Ink's React reconciler needs more time to render
-        # the pasted text into its input buffer before Enter triggers submit.
-        time.sleep(delay)
-
-        # Write \r directly to the PTY master fd so it is guaranteed to
-        # be a separate os.write() call, never bundled with the text.
-        try:
-            os.write(self._master_fd, b"\r")
-        except OSError:
-            # Fallback: queue through the buffer.
-            self._ibuf += b"\r"
-
-    # ── Hooks for subclasses ──────────────────────────────────────────────
-
-    def on_agent_output(self, data: bytes) -> None:
-        """Called with every chunk the agent writes.  Override to inspect."""
-
-    def on_user_input(self, data: bytes) -> None:
-        """Called with every chunk the user types.  Override to track."""
-
-    def on_idle(self) -> None:
-        """Called when ``select()`` times out.  Override for periodic work."""
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  AgentStateDetector — Output analysis for state classification
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# Default patterns that indicate the agent is asking the user a question.
-DEFAULT_ASK_PATTERNS = [
-    r"\?\s*$",       # line ending with ?
-    r"\[y/n\]",      # [y/n] prompt
-    r"\[Y/n\]",      # [Y/n] prompt
-    r"\[yes/no\]",   # [yes/no] prompt
-    r"Enter choice",
-    r"Select.*:",
-    r"Confirm\?",
-    r"Continue\?",
-    r"Proceed\?",
-    r"Press Enter",
-    r"Type .* to continue",
-]
-
-# How long after last output before considering the agent "idle" (fallback).
-SILENCE_TIMEOUT_S = 3.0
-
-# ── Guide-injection timing defaults ────────────────────────────────────────
-# These can all be overridden via CLI flags or environment variables.
-# On slower machines (CI runners, low-end laptops, remote VMs) the TUI takes
-# longer to finish initialising, so the previous hard-coded values
-# (2 s / 0.5 s / 0.3 s) often resulted in lost guide injections.
-GUIDE_STARTUP_DELAY_S = float(os.environ.get("PLUTO_GUIDE_STARTUP_DELAY", 3.0))
-GUIDE_READY_GRACE_S = float(os.environ.get("PLUTO_GUIDE_READY_GRACE", 1.5))
-GUIDE_MAX_WAIT_S = float(os.environ.get("PLUTO_GUIDE_MAX_WAIT", 60.0))
-GUIDE_RETRIES = int(os.environ.get("PLUTO_GUIDE_RETRIES", 2))
-GUIDE_RETRY_DELAY_S = float(os.environ.get("PLUTO_GUIDE_RETRY_DELAY", 4.0))
-INJECT_SUBMIT_DELAY_S = float(os.environ.get("PLUTO_INJECT_SUBMIT_DELAY", 0.6))
-
-
-class AgentStateDetector:
-    """
-    Classify an agent's current state by analysing its terminal output.
-
-    States
-    ------
-    BUSY          The agent is actively producing output.
-    ASKING_USER   The agent printed a question and is waiting for the user.
-    READY         The agent is idle (explicit prompt matched or silence timeout).
-
-    The detector exposes :attr:`state` and the convenience method
-    :meth:`is_ready_for_injection` which also considers user-typing recency.
-    """
-
-    def __init__(
-        self,
-        ready_pattern: str | None = None,
-        ask_patterns: list[str] | None = None,
-        silence_timeout: float = SILENCE_TIMEOUT_S,
-        verbose: bool = False,
-    ):
-        # Compile the optional "ready" regex (matches the agent's prompt).
-        self.ready_re = re.compile(ready_pattern) if ready_pattern else None
-
-        # Compile "asking" patterns (questions directed at the user).
-        self.ask_patterns = [
-            re.compile(p, re.IGNORECASE)
-            for p in (ask_patterns or DEFAULT_ASK_PATTERNS)
-        ]
-
-        self.silence_timeout = silence_timeout
-        self.verbose = verbose
-
-        # Current state and timing bookkeeping.
-        self.state: str = AGENT_STATE_BUSY
-        self._last_output_time: float = time.monotonic()
-        self._last_output_line: str = ""
-        self._user_typing_time: float = 0.0
-        # Track the last visible content so Ink-style screen redraws
-        # (cursor repositioning with identical text) don't restart the
-        # silence timer.
-        self._prev_content: str = ""
-        # Latched True once the ready_pattern has matched at least once.
-        # Used by the startup guide injector — Ink-based TUIs keep redrawing
-        # the cursor/footer so silence_timeout never fires, but the banner
-        # text appears once and means the agent is initialised.
-        self.ever_ready: bool = False
-
-    # ── Public interface ──────────────────────────────────────────────────
-
-    def analyse_output(self, data: bytes) -> None:
-        """
-        Feed agent output and update :attr:`state` accordingly.
-
-        Call this with every chunk read from the PTY master fd.
-        """
-        try:
-            text = data.decode("utf-8", errors="replace")
-        except Exception:
-            return
-
-        clean = strip_ansi(text)
-        content = clean.strip()
-
-        # Only restart the silence timer when visible content actually
-        # changes.  Ink-based TUIs (Copilot, etc.) continuously redraw
-        # the fixed screen (cursor positioning, status bar).  These
-        # redraws carry no new information and should not prevent the
-        # silence timeout from firing.
-        if content and content != self._prev_content:
-            self._last_output_time = time.monotonic()
-            self._prev_content = content
-        elif not content:
-            # Empty chunk (pure ANSI) — ignore completely.
-            return
-
-        # --- Check each line for "asking user" patterns ---
-        for line in clean.split("\n"):
-            stripped = line.rstrip()
-            if not stripped:
-                continue
-            self._last_output_line = stripped
-            for pat in self.ask_patterns:
-                if pat.search(stripped):
-                    self.state = AGENT_STATE_ASKING_USER
-                    if self.verbose:
-                        logger.debug("State → ASKING_USER (matched: %s)", stripped)
-                    return
-
-        # --- Check for explicit "ready" prompt pattern ---
-        if self.ready_re:
-            last_segment = strip_ansi(text.split("\n")[-1])
-            # Match either on the last line (classic prompt patterns like
-            # "^> $") or anywhere in the cleaned chunk (banner-style
-            # patterns used by Ink TUIs that emit text mixed with cursor
-            # positioning).
-            if self.ready_re.search(last_segment) or self.ready_re.search(clean):
-                self.state = AGENT_STATE_READY
-                self.ever_ready = True
-                if self.verbose:
-                    logger.debug("State → READY (pattern match)")
-                return
-
-        # --- Default: agent is producing output → BUSY ---
-        self.state = AGENT_STATE_BUSY
-
-    def record_user_input(self) -> None:
-        """Mark that the user just typed something (updates recency clock)."""
-        self._user_typing_time = time.monotonic()
-
-    def is_ready_for_injection(self) -> bool:
-        """
-        Return ``True`` if it is safe to inject a Pluto message right now.
-
-        Injection is blocked when:
-        - The agent is asking the user a question.
-        - The user typed something in the last 5 seconds.
-        """
-        now = time.monotonic()
-
-        # Never inject while the agent is prompting the user.
-        if self.state == AGENT_STATE_ASKING_USER:
-            return False
-
-        # Never inject while the user is actively typing.
-        if now - self._user_typing_time < 5.0:
-            return False
-
-        # Ready if explicit prompt pattern matched.
-        if self.state == AGENT_STATE_READY:
-            return True
-
-        # Fallback: ready if agent has been silent for silence_timeout.
-        if now - self._last_output_time >= self.silence_timeout:
-            return True
-
-        return False
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MessageFormatter — Convert Pluto messages to natural-language prompts
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class MessageFormatter:
-    """
-    Turn Pluto protocol messages (JSON dicts) into natural-language text
-    that any LLM-based agent can understand and act on.
-
-    Each Pluto event type gets its own formatting template so the agent
-    receives clear, actionable instructions.
-    """
-
-    @staticmethod
-    def format(messages: list[dict]) -> str:
-        """
-        Format one or more Pluto messages into a single injection string.
-
-        Parameters
-        ----------
-        messages : list[dict]
-            Raw message dicts from the Pluto long-poll response.
-
-        Returns
-        -------
-        str
-            A multi-line text block ready to be injected into the agent's stdin.
-        """
-        parts: list[str] = []
-
-        for msg in messages:
-            event = msg.get("event", "message")
-            sender = msg.get("from", "unknown")
-            payload = msg.get("payload", {})
-
-            if event == "message":
-                # Skip delivery_ack wrapped as regular message.
-                if isinstance(payload, dict) and payload.get("event") in (
-                    "delivery_ack", "status_update", "heartbeat",
-                ):
-                    continue
-                parts.append(
-                    f"[Pluto Message from {sender}]\n"
-                    f"{json.dumps(payload, indent=2)}"
-                )
-            elif event == "broadcast":
-                parts.append(
-                    f"[Pluto Broadcast from {sender}]\n"
-                    f"{json.dumps(payload, indent=2)}"
-                )
-            elif event == "task_assigned":
-                task_id = msg.get("task_id", "?")
-                desc = msg.get("description", "")
-                parts.append(
-                    f"[Pluto Task Assignment - {task_id}]\n"
-                    f"From: {sender}\n"
-                    f"Description: {desc}\n"
-                    f"Payload: {json.dumps(payload, indent=2)}\n"
-                    f"\nWork on this task. When done, update it with "
-                    f'pluto_task_update("{task_id}", "completed", '
-                    f'{{"result": ...}}).'
-                )
-            elif event == "topic_message":
-                topic = msg.get("topic", "?")
-                parts.append(
-                    f"[Pluto Topic '{topic}' from {sender}]\n"
-                    f"{json.dumps(payload, indent=2)}"
-                )
-            else:
-                # Unknown/infrastructure event — skip silently.
-                continue
-
-        header = (
-            "You have received the following Pluto coordination messages. "
-            "Process them and take appropriate action.\n\n"
-        )
-        return header + "\n\n".join(parts)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PlutoConnection — Pluto server session management
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class PlutoConnection:
-    """
-    Manage a persistent HTTP session with the Pluto coordination server.
-
-    Handles:
-    - Registration (with configurable TTL).
-    - Background long-polling for incoming messages.
-    - Graceful unregistration on shutdown.
-
-    Call :meth:`start_polling` to launch the background thread and
-    :meth:`stop` to tear down.  Received messages accumulate in
-    :meth:`drain_messages`.
-    """
-
-    def __init__(
-        self,
-        agent_id: str,
-        host: str = "localhost",
-        http_port: int = 9001,
-        poll_timeout: int = 15,
-        ttl_ms: int = 600_000,
-        verbose: bool = False,
-    ):
-        self.agent_id = agent_id
-        self.host = host
-        self.http_port = http_port
-        self.poll_timeout = poll_timeout
-        self.ttl_ms = ttl_ms
-        self.verbose = verbose
-
-        self._client: PlutoHttpClient | None = None
-        self._poll_thread: threading.Thread | None = None
-        self._running = False
-        self._messages: list[dict] = []
-        self._lock = threading.Lock()
-
-    # ── Connection lifecycle ──────────────────────────────────────────────
-
-    def connect(self) -> bool:
-        """
-        Register with the Pluto server.  Returns ``True`` on success.
-
-        If the server is unreachable, logs a warning and returns ``False``
-        so the caller can continue in standalone mode.
-        """
-        try:
-            self._client = PlutoHttpClient(
-                host=self.host,
-                http_port=self.http_port,
-                agent_id=self.agent_id,
-                mode="http",
-                ttl_ms=self.ttl_ms,
-            )
-            resp = self._client.register()
-            if resp.get("status") != "ok":
-                logger.warning("Pluto registration failed: %s", resp)
-                self._client = None
-                return False
-
-            # The server may assign a different agent ID.
-            actual = resp.get("agent_id", self.agent_id)
-            if actual != self.agent_id:
-                self.agent_id = actual
-
-            return True
-
-        except Exception as exc:
-            logger.warning("Cannot connect to Pluto: %s", exc)
-            self._client = None
-            return False
-
-    def disconnect(self) -> None:
-        """Unregister from the Pluto server and stop polling."""
-        self._running = False
-        if self._poll_thread and self._poll_thread.is_alive():
-            self._poll_thread.join(timeout=5)
-        if self._client:
-            try:
-                self._client.unregister()
-            except Exception:
-                pass
-            self._client = None
-
-    @property
-    def connected(self) -> bool:
-        return self._client is not None
-
-    @property
-    def token(self) -> str:
-        """Return the first 12 chars of the session token (for display)."""
-        if self._client and self._client.token:
-            return self._client.token[:12]
-        return "?"
-
-    @property
-    def full_token(self) -> str:
-        """Return the full session token (for agent API calls)."""
-        if self._client and self._client.token:
-            return self._client.token
-        return ""
-
-    # ── Polling ───────────────────────────────────────────────────────────
-
-    def start_polling(self) -> None:
-        """Launch the background long-poll thread."""
-        self._running = True
-        self._poll_thread = threading.Thread(
-            target=self._poll_loop, daemon=True, name="pluto-poll"
-        )
-        self._poll_thread.start()
-
-    # Events that the agent should never see.
-    _NOISE_PAYLOAD_EVENTS = {
-        "delivery_ack", "status_update", "heartbeat",
-    }
-
-    # Events that carry actionable content for the agent.
-    _ACTIONABLE_EVENTS = {
-        "message", "broadcast", "task_assigned", "topic_message",
-    }
-
-    @classmethod
-    def _is_noise(cls, msg: dict) -> bool:
-        """Return True if *msg* is infrastructure noise (delivery_ack etc.)
-
-        The Pluto server wraps delivery_ack receipts as regular ``message``
-        events (top-level ``event`` is ``"message"``) with the ack details
-        inside the ``payload``.  We must therefore check both levels.
-        """
-        # Top-level event check.
-        top_event = msg.get("event", "message")
-        if top_event not in cls._ACTIONABLE_EVENTS:
-            return True
-        # Payload-level check (server wraps ack as message + ack payload).
-        payload = msg.get("payload") or {}
-        if isinstance(payload, dict):
-            if payload.get("event") in cls._NOISE_PAYLOAD_EVENTS:
-                return True
-        return False
-
-    def _poll_loop(self) -> None:
-        """Background: repeatedly long-poll the server for new messages."""
-        while self._running and self._client:
-            try:
-                msgs = self._client.long_poll(
-                    timeout=self.poll_timeout, ack=False
-                )
-                if msgs:
-                    # Drop infrastructure events (delivery_ack, status_update,
-                    # heartbeat, etc.) — they are noise for the agent.
-                    actionable = [
-                        m for m in msgs if not self._is_noise(m)
-                    ]
-                    dropped = len(msgs) - len(actionable)
-                    if actionable:
-                        with self._lock:
-                            self._messages.extend(actionable)
-                    if self.verbose:
-                        logger.debug(
-                            "Received %d Pluto message(s) (%d actionable, %d dropped)",
-                            len(msgs), len(actionable), dropped,
-                        )
-            except (PlutoError, Exception) as exc:
-                logger.warning("Pluto poll error: %s", exc)
-                time.sleep(5)
-
-    def drain_messages(self) -> list[dict]:
-        """Return and clear all pending messages (thread-safe)."""
-        with self._lock:
-            msgs = self._messages
-            self._messages = []
-        return msgs
-
-    def has_messages(self) -> bool:
-        """Check if there are pending messages without draining them."""
-        with self._lock:
-            return bool(self._messages)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1089,27 +135,6 @@ class PlutoAgentFriend(TerminalProxy):
     Inherits from :class:`TerminalProxy` for the core I/O loop and composes
     :class:`AgentStateDetector`, :class:`PlutoConnection`, and
     :class:`MessageFormatter` for the higher-level behaviour.
-
-    Parameters
-    ----------
-    cmd : list[str]
-        The agent command to execute (e.g. ``["claude"]``).
-    agent_id : str
-        Unique identifier for this agent in the Pluto network.
-    pluto_host, pluto_http_port : str, int
-        Pluto server coordinates.
-    ready_pattern : str | None
-        Optional regex matching the agent's "ready for input" prompt.
-    ask_patterns : list[str] | None
-        Regexes that indicate the agent is asking the user a question.
-    mode : str
-        Injection mode: ``"auto"``, ``"confirm"``, or ``"manual"``.
-    poll_timeout : int
-        Seconds for each Pluto long-poll request.
-    silence_timeout : float
-        Seconds of silence before the agent is considered idle.
-    verbose : bool
-        Enable debug logging.
     """
 
     def __init__(
@@ -1130,6 +155,7 @@ class PlutoAgentFriend(TerminalProxy):
         guide_retries: int = GUIDE_RETRIES,
         guide_retry_delay: float = GUIDE_RETRY_DELAY_S,
         inject_submit_delay: float = INJECT_SUBMIT_DELAY_S,
+        role_file: str | None = None,
         verbose: bool = False,
     ):
         super().__init__(cmd)
@@ -1138,6 +164,7 @@ class PlutoAgentFriend(TerminalProxy):
         self.mode = mode
         self.verbose = verbose
         self.guide_file = guide_file
+        self.role_file = role_file
         self.guide_startup_delay = guide_startup_delay
         self.guide_ready_grace = guide_ready_grace
         self.guide_max_wait = guide_max_wait
@@ -1145,7 +172,6 @@ class PlutoAgentFriend(TerminalProxy):
         self.guide_retry_delay = guide_retry_delay
         self.inject_submit_delay = inject_submit_delay
 
-        # --- Composed components ---
         self.detector = AgentStateDetector(
             ready_pattern=ready_pattern,
             ask_patterns=ask_patterns,
@@ -1161,33 +187,21 @@ class PlutoAgentFriend(TerminalProxy):
         )
         self.formatter = MessageFormatter()
 
-        # Injection thread handle.
         self._injection_thread: threading.Thread | None = None
         self._guide_injected = False
+        self._role_injected = False
 
     # ── Public entry point ────────────────────────────────────────────────
 
     def run(self) -> int:
-        """
-        Run the full PlutoAgentFriend lifecycle.  Returns the child exit code.
-
-        1. Print banner.
-        2. Connect to Pluto (or continue standalone).
-        3. Spawn the agent in a PTY.
-        4. Set the real terminal to raw mode.
-        5. Start Pluto polling + injection threads.
-        6. Enter the non-blocking I/O copy loop.
-        7. Restore terminal and disconnect on exit.
-        """
+        """Run the full PlutoAgentFriend lifecycle.  Returns the child exit code."""
         self._print_banner()
 
-        # --- Pluto connection (optional — agent works without it) ---
         if self.pluto.connect():
             self._info(
                 f"Connected to Pluto at {self.pluto.host}:{self.pluto.http_port} "
                 f"(token: {self.pluto.token}...)"
             )
-            # Set env vars so the agent can discover its identity.
             self._pluto_env = {
                 "PLUTO_AGENT_ID": self.pluto.agent_id,
                 "PLUTO_TOKEN": self.pluto.full_token,
@@ -1198,17 +212,20 @@ class PlutoAgentFriend(TerminalProxy):
         else:
             self._info("Starting without Pluto (messages won't be injected)")
 
-        # --- Spawn the agent process ---
         self.spawn()
 
-        # --- Terminal setup ---
         self.sync_window_size()
         signal.signal(signal.SIGWINCH, self._handle_sigwinch)
+        # Forward termination signals to the child and tear down cleanly.
+        # SIGINT (Ctrl-C) is normally delivered to the child via the PTY when
+        # the terminal is in raw mode; these handlers cover the cases where
+        # the wrapper process itself receives the signal (e.g. shell exits,
+        # parent sends SIGTERM, or Ctrl-C before raw-mode was entered).
+        signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
+        signal.signal(signal.SIGHUP, self._handle_shutdown_signal)
+        signal.signal(signal.SIGINT, self._handle_shutdown_signal)
         self.enter_raw_mode()
 
-        # --- Background threads ---
-        # Set _running before starting threads so they don't exit the
-        # ``while self._running`` loop before copy_loop() begins.
         self._running = True
 
         if self.pluto.connected:
@@ -1218,18 +235,24 @@ class PlutoAgentFriend(TerminalProxy):
             )
             self._injection_thread.start()
 
-        # --- Startup guide injection thread ---
         if self.guide_file:
             threading.Thread(
                 target=self._guide_injection_loop, daemon=True,
                 name="guide-inject",
             ).start()
 
-        # --- Main I/O loop ---
+        if self.role_file:
+            threading.Thread(
+                target=self._role_injection_loop, daemon=True,
+                name="role-inject",
+            ).start()
+
         exit_code = 1
         try:
             self.copy_loop(timeout=0.5)
-            exit_code = self.wait_child()
+            # Child pipe closed — reap with a bounded wait so a wedged
+            # child can never hang the wrapper.
+            exit_code = self.wait_child(timeout=5.0, escalate_after=2.0)
         except Exception as exc:
             logger.error("I/O loop error: %s", exc)
         finally:
@@ -1255,36 +278,9 @@ class PlutoAgentFriend(TerminalProxy):
     # ── Guide injection on startup ─────────────────────────────────────────
 
     def _guide_injection_loop(self) -> None:
-        """
-        Background thread: wait for the agent to become idle for the first
-        time after startup, then inject a prompt telling it to read the
-        skill guide file.
-
-        Robustness for slow machines
-        ----------------------------
-        TUI startup time varies wildly (cold caches, slow disks, container
-        cold-start, low-end CPUs).  We therefore:
-          1. Wait ``guide_startup_delay`` before even looking at state.
-          2. Wait up to ``guide_max_wait`` for the first ready signal.
-          3. After ready, wait for the agent to actually go quiet — many
-             agents (Copilot, Claude) print their ready banner BEFORE
-             finishing MCP/skill init, and input sent during that window
-             is silently dropped.  We require at least
-             ``guide_ready_grace`` seconds with no new output before we
-             consider the input field truly accepting keystrokes.
-          4. Inject deterministically using echo confirmation.  If the
-             echo is not observed, the prompt was not absorbed — retry
-             after another silent period instead of pressing Enter
-             blindly (which would submit a stale empty line).
-        All values are configurable via CLI flags or env vars.
-        """
-        # Give the agent a moment to start its TUI.
+        """Background: wait for idle, then inject the skill-guide prompt."""
         time.sleep(self.guide_startup_delay)
 
-        # Wait until the agent has signalled readiness at least once
-        # (ready_pattern matched) OR has been idle long enough.  Ink-based
-        # TUIs (Copilot) constantly redraw, so silence never fires — the
-        # ever_ready latch handles that case.
         deadline = time.monotonic() + self.guide_max_wait
         while self._running and time.monotonic() < deadline:
             if self.detector.ever_ready or \
@@ -1296,9 +292,6 @@ class PlutoAgentFriend(TerminalProxy):
                 logger.debug("Guide injection: agent never became idle")
             return
 
-        # Wait for actual silence after the ready signal.  Agents print
-        # their ready banner before finishing initialisation; injecting
-        # during that window is silently dropped on Copilot/Claude.
         self._wait_for_silence(self.guide_ready_grace, deadline)
 
         if self._guide_injected or not self._running:
@@ -1306,7 +299,6 @@ class PlutoAgentFriend(TerminalProxy):
         self._guide_injected = True
 
         guide_basename = os.path.basename(self.guide_file)
-        # Use the actual server-assigned agent_id and token.
         actual_id = self.pluto.agent_id if self.pluto.connected else self.agent_id
         token = self.pluto.full_token if self.pluto.connected else ""
         token_part = (
@@ -1325,12 +317,6 @@ class PlutoAgentFriend(TerminalProxy):
             f"Incoming messages will be injected into your input automatically. "
             f"Confirm briefly when done."
         )
-        # Inject deterministically: write the prompt, then wait until the
-        # agent has echoed it back (i.e. rendered it in its input field)
-        # before sending Enter.  If the echo is never observed the agent
-        # did NOT accept the input — retry after another silent period
-        # instead of submitting blindly (which would press Enter on a
-        # stale or empty input line).
         attempts = 1 + self.guide_retries
         for attempt in range(1, attempts + 1):
             if attempt == 1:
@@ -1360,9 +346,6 @@ class PlutoAgentFriend(TerminalProxy):
                 )
                 break
 
-            # Echo failed — wait for the agent to be quiet again before
-            # retrying.  This handles slow MCP/skill init that delayed
-            # input acceptance during the first attempt.
             logger.debug(
                 "Guide injection: no echo within %.1fs, waiting for "
                 "silence then retrying",
@@ -1374,16 +357,7 @@ class PlutoAgentFriend(TerminalProxy):
             )
 
     def _wait_for_silence(self, quiet_for: float, deadline: float) -> bool:
-        """
-        Block until the agent has produced no new output for
-        ``quiet_for`` seconds, or the absolute monotonic ``deadline``
-        is reached.  Returns ``True`` if silence was achieved,
-        ``False`` if the deadline expired.
-
-        Used to wait out late-stage TUI initialisation (e.g. Copilot's
-        MCP/skill loading) that runs *after* the ready banner prints
-        but *before* the input field accepts keystrokes.
-        """
+        """Block until agent output has been quiet for *quiet_for* seconds."""
         while self._running and time.monotonic() < deadline:
             quiet = time.monotonic() - self.detector._last_output_time
             if quiet >= quiet_for:
@@ -1391,13 +365,95 @@ class PlutoAgentFriend(TerminalProxy):
             time.sleep(min(0.2, max(0.05, quiet_for - quiet)))
         return False
 
+    # ── Role injection on startup ──────────────────────────────────────────
+
+    def _role_injection_loop(self) -> None:
+        """Background: after guide injection, inject the role prompt.
+
+        Waits for the guide injection to complete (or for the agent to be
+        idle again if no guide was configured), then injects the role file
+        content as a single prompt so the agent can internalize its
+        behavioral role before processing any coordination messages.
+        """
+        # Wait until the guide injection has fired (or give up after max_wait)
+        # to avoid racing the guide and overwhelming the agent at startup.
+        deadline = time.monotonic() + self.guide_max_wait + 30.0
+        if self.guide_file:
+            # Spin until guide is marked done or deadline passes.
+            while self._running and not self._guide_injected \
+                    and time.monotonic() < deadline:
+                time.sleep(0.5)
+        else:
+            # No guide — wait for agent to be idle first.
+            time.sleep(self.guide_startup_delay)
+            while self._running and time.monotonic() < deadline:
+                if self.detector.ever_ready or \
+                        self.detector.is_ready_for_injection():
+                    break
+                time.sleep(0.2)
+
+        if not self._running:
+            return
+
+        # Allow the agent to finish processing the guide before we pile in.
+        self._wait_for_silence(self.guide_ready_grace, deadline)
+
+        if self._role_injected or not self._running:
+            return
+        self._role_injected = True
+
+        try:
+            role_content = load_role(self.role_file)
+        except OSError as exc:
+            logger.warning("Role file not readable: %s", exc)
+            return
+
+        role_basename = os.path.basename(self.role_file)
+        prompt = (
+            f"You have been assigned a specific role for this session. "
+            f"Read and internalize the following role description from "
+            f"{role_basename}, then confirm briefly that you understand "
+            f"your role and are ready to begin:\n\n{role_content}"
+        )
+
+        attempts = 1 + self.guide_retries
+        for attempt in range(1, attempts + 1):
+            if attempt == 1:
+                self._info(f"Injecting role: {role_basename}")
+            else:
+                self._info(
+                    f"Role injection retry {attempt - 1}/"
+                    f"{self.guide_retries}: {role_basename}"
+                )
+            is_last = (attempt == attempts)
+            echoed = self.inject_and_submit_when_echoed(
+                prompt,
+                hard_deadline=max(self.guide_retry_delay, 5.0),
+                submit_on_timeout=is_last,
+            )
+            self.detector.state = AGENT_STATE_BUSY
+
+            if echoed:
+                if self.verbose:
+                    logger.debug("Role injection: echo confirmed")
+                break
+
+            if is_last:
+                logger.debug(
+                    "Role injection: echo never confirmed; "
+                    "sent Enter as best-effort fallback"
+                )
+                break
+
+            self._wait_for_silence(
+                self.guide_ready_grace,
+                time.monotonic() + self.guide_retry_delay * 2,
+            )
+
     # ── Injection logic ───────────────────────────────────────────────────
 
     def _injection_loop(self) -> None:
-        """
-        Background thread: periodically check for pending Pluto messages
-        and inject them when the agent is ready.
-        """
+        """Background: inject pending Pluto messages when the agent is ready."""
         if self.verbose:
             logger.debug("Injection loop started")
         while self._running:
@@ -1420,15 +476,15 @@ class PlutoAgentFriend(TerminalProxy):
             if not messages:
                 continue
 
-            # Cap batch size — injecting too many messages at once
-            # overwhelms the agent and produces unusable output.
+            # Cap batch size (oldest first — ack-by-max-seq stays safe).
             MAX_INJECT = 10
             if len(messages) > MAX_INJECT:
-                logger.warning(
-                    "Dropping %d excess messages (keeping latest %d)",
-                    len(messages) - MAX_INJECT, MAX_INJECT,
-                )
-                messages = messages[-MAX_INJECT:]
+                if self.verbose:
+                    logger.debug(
+                        "Deferring %d excess message(s) to next cycle",
+                        len(messages) - MAX_INJECT,
+                    )
+                messages = messages[:MAX_INJECT]
 
             if self.mode == "auto":
                 self._do_inject(messages)
@@ -1436,15 +492,27 @@ class PlutoAgentFriend(TerminalProxy):
                 self._notify_pending(messages)
                 self._wait_confirm_then_inject(messages)
             elif self.mode == "manual":
+                # Notification-only: at-most-once by design.
                 self._notify_pending(messages)
-                # Manual = notification only; messages are already drained.
+                self.pluto.confirm_delivered(messages)
 
     def _do_inject(self, messages: list[dict]) -> None:
-        """Format and inject messages into the agent's stdin buffer."""
+        """Format and inject messages; ack on success, abort on failure."""
         prompt = self.formatter.format(messages)
         self._info(f"Injecting {len(messages)} message(s) from Pluto")
-        self.inject_and_submit_when_echoed(prompt)
-        self.detector.state = AGENT_STATE_BUSY
+        ok = self.inject_and_submit_when_echoed(
+            prompt, submit_on_timeout=False,
+        )
+        if ok:
+            self.pluto.confirm_delivered(messages)
+            self.detector.state = AGENT_STATE_BUSY
+        else:
+            self.pluto.abort_delivery(messages)
+            logger.warning(
+                "Injection of %d message(s) not confirmed by echo; "
+                "will retry on next peek cycle",
+                len(messages),
+            )
 
     def _notify_pending(self, messages: list[dict]) -> None:
         """Show the user a preview of pending messages (on stderr)."""
@@ -1456,10 +524,7 @@ class PlutoAgentFriend(TerminalProxy):
             self._notify(f"Pending [{event}] from {sender}: {preview}")
 
     def _wait_confirm_then_inject(self, messages: list[dict]) -> None:
-        """
-        Confirm mode: show notification, then auto-inject after 10 s
-        if the agent is still idle.
-        """
+        """Confirm mode: show notification, auto-inject after 10 s idle."""
         self._notify(
             "Press Enter in the agent to accept injection (auto in 10s)..."
         )
@@ -1467,7 +532,7 @@ class PlutoAgentFriend(TerminalProxy):
         while self._running and time.monotonic() < deadline:
             time.sleep(0.5)
             if not self.detector.is_ready_for_injection():
-                return  # user started interacting → cancel
+                return
         if self.detector.is_ready_for_injection():
             self._do_inject(messages)
 
@@ -1480,6 +545,27 @@ class PlutoAgentFriend(TerminalProxy):
             os.kill(self._child_pid, signal.SIGWINCH)
         except OSError:
             pass
+
+    def _handle_shutdown_signal(self, signum, _frame) -> None:
+        """Forward a shutdown signal to the child and break the copy loop.
+
+        Installed for SIGINT / SIGTERM / SIGHUP.  In raw-mode the user's
+        Ctrl-C is delivered to the child via the PTY, so this handler
+        only fires for signals sent directly to the wrapper process
+        (e.g. ``kill <pid>``, parent shell exit, Ctrl-C before raw mode).
+        """
+        name = {
+            signal.SIGINT: "SIGINT",
+            signal.SIGTERM: "SIGTERM",
+            signal.SIGHUP: "SIGHUP",
+        }.get(signum, str(signum))
+        logger.debug("Received %s \u2014 shutting down", name)
+        # Relay to the child so it gets a chance to exit cleanly.
+        sig_to_child = signal.SIGHUP if signum == signal.SIGHUP \
+            else signal.SIGTERM if signum == signal.SIGTERM \
+            else signal.SIGINT
+        self._signal_child(sig_to_child)
+        self._running = False
 
     # ── User-facing output helpers ────────────────────────────────────────
 
@@ -1508,123 +594,6 @@ class PlutoAgentFriend(TerminalProxy):
         """Print a notification line to stderr."""
         sys.stderr.write(f"\r\n{YELLOW}[pluto-friend]{NC} {msg}\r\n")
         sys.stderr.flush()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Agent Framework Detection (module-level helpers)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-KNOWN_FRAMEWORKS = {
-    "claude": {
-        "cmd_names": ["claude"],
-        "display": "Claude Code",
-        "default_args": [],
-        "ready_pattern": None,  # Claude uses silence timeout
-    },
-    "copilot": {
-        "cmd_names": ["copilot"],
-        "display": "GitHub Copilot CLI",
-        "default_args": [],
-        "ready_pattern": r"Describe a task to get started",
-    },
-    "aider": {
-        "cmd_names": ["aider"],
-        "display": "Aider",
-        "default_args": [],
-        "ready_pattern": r"^[>›] $",
-    },
-    "cursor": {
-        "cmd_names": ["cursor"],
-        "display": "Cursor",
-        "default_args": [],
-        "ready_pattern": None,
-    },
-}
-
-
-def detect_available_frameworks() -> list[dict]:
-    """
-    Scan ``$PATH`` for known agent framework executables.
-
-    Returns a list of dicts with keys: ``key``, ``display``, ``cmd``, ``path``.
-    """
-    import shutil
-
-    available = []
-    for key, info in KNOWN_FRAMEWORKS.items():
-        for cmd_name in info["cmd_names"]:
-            path = shutil.which(cmd_name)
-            if path:
-                available.append({
-                    "key": key,
-                    "display": info["display"],
-                    "cmd": cmd_name,
-                    "path": path,
-                })
-                break
-    return available
-
-
-def get_framework_cmd(framework: str) -> list[str]:
-    """Return the command list for a known framework, or ``[framework]``."""
-    info = KNOWN_FRAMEWORKS.get(framework)
-    if not info:
-        return [framework]
-    return info["cmd_names"][:1] + info["default_args"]
-
-
-def get_framework_ready_pattern(framework: str) -> str | None:
-    """Return the prompt-ready regex for a framework, or ``None``."""
-    info = KNOWN_FRAMEWORKS.get(framework)
-    return info["ready_pattern"] if info else None
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Pluto Server Status & Config Helpers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def check_pluto_status(host: str, http_port: int) -> dict | None:
-    """
-    Hit the Pluto ``/health`` endpoint and return the response dict,
-    or ``None`` if the server is unreachable.
-    """
-    import urllib.request
-
-    try:
-        url = f"http://{host}:{http_port}/health"
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-
-
-def load_pluto_config() -> dict:
-    """
-    Load ``config/pluto_config.json`` from the project root.
-
-    Searches in two locations:
-    1. Relative to this file (``../../config/pluto_config.json``).
-    2. Relative to the current working directory.
-
-    Returns an empty dict if no config file is found.
-    """
-    candidates = [
-        os.path.normpath(
-            os.path.join(_THIS_DIR, "..", "..", "config", "pluto_config.json")
-        ),
-        os.path.normpath(
-            os.path.join(os.getcwd(), "config", "pluto_config.json")
-        ),
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            try:
-                with open(path) as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                pass
-    return {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1682,18 +651,26 @@ def main() -> None:
     parser.add_argument(
         "--guide", default=None,
         help="Path to a skill-guide file to inject on startup. "
-             "The agent will be prompted to read it when it first becomes "
-             "idle.  Defaults to agent_friend_guide.md if it exists.",
+             "Defaults to agent_friend_guide.md if it exists.",
     )
     parser.add_argument(
         "--no-guide", action="store_true",
         help="Disable automatic guide injection even if the file exists.",
     )
     parser.add_argument(
+        "--role", default=None, metavar="PATH",
+        help="Path to a role file (.md) to inject after the guide. "
+             "Default: no role injection.",
+    )
+    parser.add_argument(
+        "--roles-dir", default=None, metavar="DIR",
+        help="Directory to scan for role files (default: library/roles/ "
+             "under the project root). Used when listing available roles.",
+    )
+    parser.add_argument(
         "--guide-startup-delay", type=float, default=GUIDE_STARTUP_DELAY_S,
         help=f"Seconds to wait after spawn before checking agent readiness "
-             f"(default: {GUIDE_STARTUP_DELAY_S}, env: PLUTO_GUIDE_STARTUP_DELAY). "
-             f"Increase on slower machines.",
+             f"(default: {GUIDE_STARTUP_DELAY_S}, env: PLUTO_GUIDE_STARTUP_DELAY).",
     )
     parser.add_argument(
         "--guide-ready-grace", type=float, default=GUIDE_READY_GRACE_S,
@@ -1722,8 +699,7 @@ def main() -> None:
         "--inject-submit-delay", type=float, default=INJECT_SUBMIT_DELAY_S,
         help=f"Seconds between writing injected text and the Enter key "
              f"(default: {INJECT_SUBMIT_DELAY_S}, "
-             f"env: PLUTO_INJECT_SUBMIT_DELAY). Increase if Ink-based TUIs "
-             f"submit empty lines on slow machines.",
+             f"env: PLUTO_INJECT_SUBMIT_DELAY).",
     )
     parser.add_argument(
         "--verbose", action="store_true",
@@ -1837,6 +813,30 @@ def main() -> None:
             f"(v{version}) at {host}:{http_port}",
             file=sys.stderr,
         )
+        # Strict client/server version check. The HTTP API surface
+        # (peek/ack, roles, etc.) must match exactly; a stale server
+        # silently returns 404 on missing endpoints which is very
+        # confusing for users.
+        def _normalize(v: str) -> str:
+            v = (v or "").strip()
+            if v.startswith("v") or v.startswith("V"):
+                v = v[1:]
+            return v
+
+        client_v = _normalize(__version__)
+        server_v = _normalize(version)
+        if client_v and server_v and client_v != server_v:
+            print(
+                f"\n{YELLOW}[pluto-friend]{NC} {BOLD}Version mismatch:{NC} "
+                f"client is v{client_v}, server is v{server_v}.\n"
+                f"{YELLOW}[pluto-friend]{NC} Rebuild and restart the server "
+                f"to match:\n"
+                f"    ./PlutoServer.sh --kill && ./PlutoServer.sh --daemon\n"
+                f"{YELLOW}[pluto-friend]{NC} Refusing to start — endpoints "
+                f"like /agents/peek may be missing on the running server.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     else:
         print(
             f"{YELLOW}[pluto-friend]{NC} Pluto server is {YELLOW}OFFLINE{NC} "
@@ -1850,7 +850,6 @@ def main() -> None:
         if args.guide:
             guide_file = os.path.abspath(args.guide)
         else:
-            # Auto-discover agent_friend_guide.md in project root
             for candidate in [
                 os.path.join(os.getcwd(), "agent_friend_guide.md"),
                 os.path.normpath(
@@ -1869,6 +868,17 @@ def main() -> None:
             )
             guide_file = None
 
+    # --- Resolve role file ---
+    role_file = None
+    if args.role:
+        role_file = os.path.abspath(args.role)
+        if not os.path.isfile(role_file):
+            print(
+                f"{YELLOW}[pluto-friend]{NC} Role file not found: {role_file}",
+                file=sys.stderr,
+            )
+            role_file = None
+
     # --- Launch ---
     friend = PlutoAgentFriend(
         cmd=cmd,
@@ -1886,6 +896,7 @@ def main() -> None:
         guide_retries=args.guide_retries,
         guide_retry_delay=args.guide_retry_delay,
         inject_submit_delay=args.inject_submit_delay,
+        role_file=role_file,
         verbose=args.verbose,
     )
     sys.exit(friend.run())

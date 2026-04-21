@@ -261,9 +261,45 @@ When to use these:
 
 ---
 
-## Task Workflow
+## Message Delivery (peek / ack)
 
-When you receive a `[Pluto Task Assignment]`:
+PlutoAgentFriend uses **at-least-once delivery**.  Messages stay in the
+server inbox until you ack them, so if the wrapper crashes mid-inject
+the next attempt will see them again.
+
+The wrapper handles this automatically:
+
+1. `/agents/peek` — non-destructive read (still uses your HTTP token).
+2. Inject into the editor and wait for the echo to confirm the paste
+   actually landed.
+3. `/agents/ack` — drain the server inbox up to the last confirmed
+   `seq_token`.
+
+Each peeked message carries a `seq_token` (monotonically increasing
+integer).  Ack is idempotent: re-acking a `seq_token` you already
+drained returns `{"drained": 0}`.
+
+You can use these endpoints directly, for example to recover a lost
+message or to inspect the inbox without disturbing it:
+
+```bash
+# Peek (does not drain)
+curl -s "http://localhost:9001/agents/peek?token=<TOKEN>&since_token=0"
+
+# Ack everything up to seq 42
+curl -s -X POST http://localhost:9001/agents/ack \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"<TOKEN>","up_to_seq":42}'
+```
+
+> ⚠ `/agents/poll` is still available (destructive long-poll) for
+> custom clients, but if you are running under PlutoAgentFriend the
+> wrapper owns polling — don't call `/poll` yourself or you'll race the
+> wrapper.  Use `/peek` for observation and let the wrapper ack.
+
+---
+
+## Task Workflow
 
 1. **Read the description and payload** — they tell you what to do.
 2. **Update status to `in_progress`**:
@@ -373,7 +409,9 @@ This section is for the **user** (or for you to suggest to the user).
 | `/agents` | GET | List all connected agents |
 | `/agents/register` | POST | Register (HTTP session mode) |
 | `/agents/unregister` | POST | Unregister |
-| `/agents/poll` | GET | Long-poll for messages (`?token=...&timeout=30`) |
+| `/agents/poll` | GET | Long-poll for messages (destructive; `?token=...&timeout=30`) |
+| `/agents/peek` | GET | Non-destructive inbox read (`?token=...[&since_token=N]`) |
+| `/agents/ack` | POST | Ack messages `{token, up_to_seq}` (idempotent) |
 | `/agents/find` | POST | Find agents by attributes |
 | `/message` | POST | Send a direct message |
 | `/broadcast` | POST | Broadcast to all agents |

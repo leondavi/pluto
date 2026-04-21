@@ -43,7 +43,8 @@
     update_http_ttl/2,
     sweep_inbox/0,
     peek_inbox/1,
-    peek_inbox/2
+    peek_inbox/2,
+    ack_inbox/2
 ]).
 
 %% gen_server callbacks
@@ -236,6 +237,13 @@ peek_inbox(AgentId) ->
 -spec peek_inbox(binary(), non_neg_integer()) -> {ok, [map()]}.
 peek_inbox(AgentId, SinceToken) ->
     gen_server:call(?MODULE, {peek_inbox, AgentId, SinceToken}).
+
+%% @doc Acknowledge (delete) all queued messages for *AgentId* whose
+%% seq_token is `=< UpToSeq'.  Returns the number of messages drained.
+%% Idempotent: acking the same range twice returns 0 the second time.
+-spec ack_inbox(binary(), non_neg_integer()) -> {ok, non_neg_integer()}.
+ack_inbox(AgentId, UpToSeq) when is_integer(UpToSeq), UpToSeq >= 0 ->
+    gen_server:call(?MODULE, {ack_inbox, AgentId, UpToSeq}).
 
 %%====================================================================
 %% gen_server callbacks
@@ -524,6 +532,21 @@ handle_call({peek_inbox, AgentId, SinceToken}, _From, State) ->
         end
     end, FilteredSeqs),
     {reply, {ok, Messages}, State};
+
+%% ── ack_inbox — delete messages with seq =< UpToSeq ────────────────
+handle_call({ack_inbox, AgentId, UpToSeq}, _From, State) ->
+    Keys = ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}),
+    Drained = lists:foldl(fun([Seq], Acc) when Seq =< UpToSeq ->
+                                  ets:delete(?ETS_MSG_INBOX, {AgentId, Seq}),
+                                  Acc + 1;
+                             ([_], Acc) -> Acc
+                          end, 0, Keys),
+    %% If the inbox is now empty, also drop the on-disk signal file.
+    case ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}) of
+        [] -> delete_signal_file(AgentId);
+        _  -> ok
+    end,
+    {reply, {ok, Drained}, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -964,7 +987,7 @@ do_poll_inbox(AgentId) ->
                 ets:delete(?ETS_MSG_INBOX, Key),
                 case NowMs - InsertedAt > InboxTtlMs of
                     true  -> false; %% expired
-                    false -> {true, Event}
+                    false -> {true, Event#{<<"seq_token">> => Seq}}
                 end;
             [] ->
                 false

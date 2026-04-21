@@ -103,8 +103,10 @@ OPTIONS
     --guide <path>          Skill guide file to inject on startup
                             (default: auto-discovers agent_friend_guide.md)
     --no-guide              Disable automatic guide injection
-    --role <path>           Role file (.md) to inject after the guide
-                            (default: none; interactive menu offers choices)
+    --role <name|path>      Role file to inject after the guide.
+                            Accepts a full path to a .md file, or a bare name
+                            (e.g. orchestrator) resolved from library/roles/.
+                            (default: interactive menu when stdin is a terminal)
     --roles-dir <dir>       Directory to scan for role files
                             (default: library/roles/ under project root)
     --verbose               Enable debug logging
@@ -303,6 +305,19 @@ main() {
                 ;;
         esac
     done
+
+    # Resolve --role: accept either a file path OR a bare role name.
+    # A bare name (no path separators, no .md suffix) is looked up as
+    # <roles_dir>/<name>.md  (or <SCRIPT_DIR>/library/roles/<name>.md).
+    if [[ -n "${role_file}" && "${role_file}" != */* && "${role_file}" != *.md ]]; then
+        local _resolve_dir="${roles_dir:-${SCRIPT_DIR}/library/roles}"
+        local _candidate="${_resolve_dir}/${role_file}.md"
+        if [[ -f "${_candidate}" ]]; then
+            role_file="${_candidate}"
+        else
+            warn "--role '${role_file}' not found as '${_candidate}'; treating as path and letting Python validate it."
+        fi
+    fi
 
     # Load config defaults early so host/port are available for server status check
     if [[ -z "${host}" ]]; then

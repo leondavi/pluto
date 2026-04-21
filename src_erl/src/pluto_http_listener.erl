@@ -619,6 +619,47 @@ route('GET', <<"/agents/poll?", Query/binary>>, _Body, Sock) ->
             {400, #{<<"error">> => <<"missing token query parameter">>}}
     end;
 
+%% GET /agents/peek?token=...&since_token=N — Non-destructive inbox read
+%%
+%% Returns queued messages for this token's agent without deleting them.
+%% Each message is tagged with a `seq_token`.  The agent (or its wrapper)
+%% acknowledges delivery later via POST /agents/ack {token, up_to_seq}.
+%% This is the basis of at-least-once delivery: a peeked-but-not-acked
+%% message will be returned again on the next peek.
+route('GET', <<"/agents/peek?", Query/binary>>, _Body, _Sock) ->
+    Params = parse_query(Query),
+    peek_response(Params);
+route('GET', <<"/agents/peek">>, _Body, _Sock) ->
+    {400, #{<<"error">> => <<"missing token query parameter">>}};
+
+%% POST /agents/ack — Acknowledge delivery of inbox messages.
+%% Body: {"token": "PLUTO-...", "up_to_seq": 42}
+%% Deletes all queued messages whose seq_token is `=< up_to_seq'.
+%% Idempotent: a second call with the same up_to_seq returns drained=0.
+route('POST', <<"/agents/ack">>, Body, _Sock) ->
+    case decode_body(Body) of
+        {ok, #{<<"token">> := Token, <<"up_to_seq">> := UpToSeq}}
+          when is_integer(UpToSeq), UpToSeq >= 0 ->
+            case pluto_msg_hub:touch_http_agent(Token) of
+                ok ->
+                    case ets:lookup(?ETS_HTTP_SESSIONS, Token) of
+                        [#http_session{agent_id = AgentId}] ->
+                            {ok, N} = pluto_msg_hub:ack_inbox(AgentId, UpToSeq),
+                            {200, #{<<"status">>  => <<"ok">>,
+                                    <<"drained">> => N,
+                                    <<"up_to_seq">> => UpToSeq}};
+                        [] ->
+                            {404, #{<<"status">> => <<"error">>,
+                                    <<"reason">> => <<"session_not_found">>}}
+                    end;
+                {error, not_found} ->
+                    {404, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"session_not_found">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing token and up_to_seq (non-negative integer)">>}}
+    end;
+
 %% POST /agents/send — Send message as HTTP agent (with token auth)
 %% Body: {"token": "PLUTO-...", "to": "agent-b", "payload": {...}}
 route('POST', <<"/agents/send">>, Body, _Sock) ->
@@ -978,6 +1019,35 @@ resource_info_response(Params) ->
 nullable(null)      -> null;
 nullable(undefined) -> null;
 nullable(V)         -> V.
+
+%% @private Build the response for GET /agents/peek.
+peek_response(Params) ->
+    case maps:find(<<"token">>, Params) of
+        {ok, Token} ->
+            case pluto_msg_hub:touch_http_agent(Token) of
+                ok ->
+                    case ets:lookup(?ETS_HTTP_SESSIONS, Token) of
+                        [#http_session{agent_id = AgentId}] ->
+                            SinceToken = to_int(
+                                maps:get(<<"since_token">>, Params, <<"0">>), 0),
+                            {ok, Messages} =
+                                pluto_msg_hub:peek_inbox(AgentId, SinceToken),
+                            {200, #{<<"status">>      => <<"ok">>,
+                                    <<"agent_id">>    => AgentId,
+                                    <<"messages">>    => Messages,
+                                    <<"count">>       => length(Messages),
+                                    <<"since_token">> => SinceToken}};
+                        [] ->
+                            {404, #{<<"status">> => <<"error">>,
+                                    <<"reason">> => <<"session_not_found">>}}
+                    end;
+                {error, not_found} ->
+                    {404, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"session_not_found">>}}
+            end;
+        error ->
+            {400, #{<<"error">> => <<"missing token query parameter">>}}
+    end.
 
 parse_mode(<<"read">>)  -> read;
 parse_mode(<<"write">>) -> write;

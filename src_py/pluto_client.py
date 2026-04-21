@@ -695,6 +695,38 @@ class PlutoHttpClient:
             self.timeout = old_timeout
         return resp.get("messages", [])
 
+    # ── At-least-once delivery (v0.2.43) ─────────────────────────────────
+
+    def peek(self, since_token: int = 0) -> List[dict]:
+        """Non-destructive inbox read.
+
+        Returns messages with a ``seq_token`` field attached.  Messages are
+        *not* removed from the server inbox — callers must call :meth:`ack`
+        with the highest seq_token they have durably handled.  A peek after
+        a crash or failed delivery will return the same messages again,
+        giving at-least-once semantics.
+        """
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        resp = self._get(
+            f"/agents/peek?token={self.token}&since_token={int(since_token)}"
+        )
+        return resp.get("messages", [])
+
+    def ack(self, up_to_seq: int) -> int:
+        """Acknowledge messages up to and including *up_to_seq*.
+
+        Deletes all queued messages whose seq_token is ``<= up_to_seq``.
+        Returns the number of messages drained.  Idempotent.
+        """
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        resp = self._post(
+            "/agents/ack",
+            {"token": self.token, "up_to_seq": int(up_to_seq)},
+        )
+        return int(resp.get("drained", 0))
+
     def update_ttl(self, ttl_ms: int) -> dict:
         """Dynamically update the session TTL."""
         if not self.token:

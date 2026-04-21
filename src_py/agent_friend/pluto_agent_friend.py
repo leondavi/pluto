@@ -932,7 +932,13 @@ class PlutoConnection:
         self._client: PlutoHttpClient | None = None
         self._poll_thread: threading.Thread | None = None
         self._running = False
+        # `_messages` holds actionable messages that have been peeked from
+        # the server but NOT yet acked.  Each has a `seq_token` we use for
+        # ack / dedup.  Messages stay here (and on the server) until the
+        # wrapper calls `confirm_delivered` after a successful inject.
         self._messages: list[dict] = []
+        self._seen_seqs: set[int] = set()
+        self._last_acked_seq: int = 0
         self._lock = threading.Lock()
 
     # ── Connection lifecycle ──────────────────────────────────────────────
@@ -1040,40 +1046,119 @@ class PlutoConnection:
         return False
 
     def _poll_loop(self) -> None:
-        """Background: repeatedly long-poll the server for new messages."""
+        """Background: periodically *peek* (non-destructive) the inbox.
+
+        At-least-once delivery: messages stay on the server until the
+        wrapper successfully injects them and calls :meth:`confirm_delivered`.
+        If the wrapper crashes mid-inject, the message is still on the
+        server and will be picked up on the next peek.
+        """
+        PEEK_INTERVAL_S = 1.0
         while self._running and self._client:
             try:
-                msgs = self._client.long_poll(
-                    timeout=self.poll_timeout, ack=False
-                )
+                msgs = self._client.peek(since_token=self._last_acked_seq)
                 if msgs:
-                    # Drop infrastructure events (delivery_ack, status_update,
-                    # heartbeat, etc.) — they are noise for the agent.
                     actionable = [
                         m for m in msgs if not self._is_noise(m)
                     ]
-                    dropped = len(msgs) - len(actionable)
-                    if actionable:
-                        with self._lock:
-                            self._messages.extend(actionable)
-                    if self.verbose:
+                    noise_seqs = [
+                        int(m["seq_token"]) for m in msgs
+                        if self._is_noise(m) and "seq_token" in m
+                    ]
+                    # Dedup: skip anything we've already buffered locally.
+                    with self._lock:
+                        fresh = []
+                        for m in actionable:
+                            seq = m.get("seq_token")
+                            if seq is None or seq in self._seen_seqs:
+                                continue
+                            self._seen_seqs.add(int(seq))
+                            fresh.append(m)
+                        if fresh:
+                            self._messages.extend(fresh)
+                    # Ack pure-noise messages immediately — they don't need
+                    # to be injected, and keeping them around wastes the
+                    # server inbox.
+                    if noise_seqs:
+                        try:
+                            self._client.ack(max(noise_seqs))
+                        except Exception:
+                            pass  # retried on next loop
+                    if self.verbose and (actionable or noise_seqs):
                         logger.debug(
-                            "Received %d Pluto message(s) (%d actionable, %d dropped)",
-                            len(msgs), len(actionable), dropped,
+                            "Pluto peek: %d actionable (+%d fresh), "
+                            "%d noise acked",
+                            len(actionable), len(fresh) if actionable else 0,
+                            len(noise_seqs),
                         )
             except (PlutoError, Exception) as exc:
-                logger.warning("Pluto poll error: %s", exc)
+                logger.warning("Pluto peek error: %s", exc)
                 time.sleep(5)
+                continue
+            time.sleep(PEEK_INTERVAL_S)
 
     def drain_messages(self) -> list[dict]:
-        """Return and clear all pending messages (thread-safe)."""
+        """
+        Return all currently buffered messages without acking them.
+
+        The caller is expected to inject the messages and then call
+        :meth:`confirm_delivered` on success, or :meth:`abort_delivery`
+        on failure.  Until confirmed, a second call to `drain_messages`
+        will re-return the same batch (so an in-progress delivery is
+        never silently lost).
+        """
         with self._lock:
-            msgs = self._messages
-            self._messages = []
-        return msgs
+            return list(self._messages)
+
+    def confirm_delivered(self, messages: list[dict]) -> None:
+        """
+        Mark *messages* as successfully injected.  Acks them on the server
+        and removes them from the local buffer.
+        """
+        seqs = [int(m["seq_token"]) for m in messages if "seq_token" in m]
+        if not seqs:
+            return
+        up_to = max(seqs)
+        # Server ack (delete from inbox).  Safe to retry — idempotent.
+        try:
+            if self._client is not None:
+                self._client.ack(up_to)
+                self._last_acked_seq = max(self._last_acked_seq, up_to)
+        except Exception as exc:
+            logger.warning(
+                "Pluto ack(up_to=%d) failed: %s — will retry next peek",
+                up_to, exc,
+            )
+            # Don't clear local buffer: next peek will re-receive and we
+            # retry the ack.
+            return
+        acked = set(seqs)
+        with self._lock:
+            self._messages = [
+                m for m in self._messages
+                if int(m.get("seq_token", -1)) not in acked
+            ]
+
+    def abort_delivery(self, messages: list[dict]) -> None:
+        """
+        Record that *messages* could not be delivered.  They stay in the
+        local buffer AND on the server, so the next inject attempt will
+        see them again.
+        """
+        # Nothing to do: messages are already in self._messages and on the
+        # server (we never acked).  Just make sure nothing got prematurely
+        # removed — if it did (shouldn't), restore it.
+        with self._lock:
+            present = {
+                int(m.get("seq_token", -1)) for m in self._messages
+            }
+            for m in messages:
+                seq = m.get("seq_token")
+                if seq is not None and int(seq) not in present:
+                    self._messages.append(m)
 
     def has_messages(self) -> bool:
-        """Check if there are pending messages without draining them."""
+        """Check if there are pending (unacked) messages."""
         with self._lock:
             return bool(self._messages)
 
@@ -1421,14 +1506,18 @@ class PlutoAgentFriend(TerminalProxy):
                 continue
 
             # Cap batch size — injecting too many messages at once
-            # overwhelms the agent and produces unusable output.
+            # overwhelms the agent and produces unusable output.  Take
+            # the OLDEST up to MAX_INJECT so the remaining newer ones
+            # are retried (and ack'd) on the next cycle.  This keeps
+            # delivery strictly FIFO and keeps ack-by-max-seq safe.
             MAX_INJECT = 10
             if len(messages) > MAX_INJECT:
-                logger.warning(
-                    "Dropping %d excess messages (keeping latest %d)",
-                    len(messages) - MAX_INJECT, MAX_INJECT,
-                )
-                messages = messages[-MAX_INJECT:]
+                if self.verbose:
+                    logger.debug(
+                        "Deferring %d excess message(s) to next cycle",
+                        len(messages) - MAX_INJECT,
+                    )
+                messages = messages[:MAX_INJECT]
 
             if self.mode == "auto":
                 self._do_inject(messages)
@@ -1436,15 +1525,42 @@ class PlutoAgentFriend(TerminalProxy):
                 self._notify_pending(messages)
                 self._wait_confirm_then_inject(messages)
             elif self.mode == "manual":
+                # Notification-only: the agent is responsible for handling
+                # these messages.  We ack them so they don't stay in the
+                # inbox forever — manual mode trades at-least-once for
+                # at-most-once by design.
                 self._notify_pending(messages)
-                # Manual = notification only; messages are already drained.
+                self.pluto.confirm_delivered(messages)
 
     def _do_inject(self, messages: list[dict]) -> None:
-        """Format and inject messages into the agent's stdin buffer."""
+        """Format and inject messages into the agent's stdin buffer.
+
+        On successful echo-confirmed injection, acks the messages on the
+        Pluto server (at-least-once delivery).  On failure, leaves them
+        in the local buffer + server inbox so the next poll cycle will
+        retry.
+        """
         prompt = self.formatter.format(messages)
         self._info(f"Injecting {len(messages)} message(s) from Pluto")
-        self.inject_and_submit_when_echoed(prompt)
-        self.detector.state = AGENT_STATE_BUSY
+        # submit_on_timeout=False: don't blindly send Enter if the echo
+        # was never confirmed — the server still has the messages so we
+        # can safely retry on the next peek cycle.
+        ok = self.inject_and_submit_when_echoed(
+            prompt, submit_on_timeout=False,
+        )
+        if ok:
+            self.pluto.confirm_delivered(messages)
+            self.detector.state = AGENT_STATE_BUSY
+        else:
+            # Echo never confirmed — the TUI did not absorb the paste.
+            # Keep the messages in flight; the peek loop will keep them
+            # in the buffer and we'll try again next cycle.
+            self.pluto.abort_delivery(messages)
+            logger.warning(
+                "Injection of %d message(s) not confirmed by echo; "
+                "will retry on next peek cycle",
+                len(messages),
+            )
 
     def _notify_pending(self, messages: list[dict]) -> None:
         """Show the user a preview of pending messages (on stderr)."""

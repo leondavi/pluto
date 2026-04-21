@@ -1,4 +1,4 @@
-"""Agent framework detection + Pluto server status/config helpers."""
+"""Agent framework detection, role discovery, and Pluto server status/config helpers."""
 
 import json
 import os
@@ -6,6 +6,11 @@ import shutil
 import urllib.request
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Default library/roles directory: two levels up from src_py/agent_friend/
+_DEFAULT_ROLES_DIR = os.path.normpath(
+    os.path.join(_THIS_DIR, "..", "..", "library", "roles")
+)
 
 
 KNOWN_FRAMEWORKS = {
@@ -96,3 +101,35 @@ def load_pluto_config() -> dict:
             except (json.JSONDecodeError, IOError):
                 pass
     return {}
+
+
+# ── Role discovery ─────────────────────────────────────────────────────────────
+
+def list_roles(roles_dir: str | None = None) -> list[dict]:
+    """
+    Scan *roles_dir* for ``*.md`` files and return a list of dicts:
+    ``{"name": str, "path": str}`` sorted alphabetically by name.
+
+    If *roles_dir* is omitted the default ``library/roles/`` directory
+    relative to the project root is used.  Returns an empty list when the
+    directory does not exist or contains no ``*.md`` files.
+    """
+    directory = roles_dir or _DEFAULT_ROLES_DIR
+    if not os.path.isdir(directory):
+        return []
+    roles = []
+    for entry in sorted(os.listdir(directory)):
+        if entry.endswith(".md"):
+            name = entry[:-3]  # strip .md
+            roles.append({"name": name, "path": os.path.join(directory, entry)})
+    return roles
+
+
+def load_role(path: str) -> str:
+    """
+    Read and return the content of a role file.
+
+    Raises ``FileNotFoundError`` if *path* does not exist.
+    """
+    with open(path, encoding="utf-8") as f:
+        return f.read()

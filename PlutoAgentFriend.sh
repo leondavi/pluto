@@ -74,6 +74,10 @@ OPTIONS
     --guide <path>          Skill guide file to inject on startup
                             (default: auto-discovers agent_friend_guide.md)
     --no-guide              Disable automatic guide injection
+    --role <path>           Role file (.md) to inject after the guide
+                            (default: none; interactive menu offers choices)
+    --roles-dir <dir>       Directory to scan for role files
+                            (default: library/roles/ under project root)
     --verbose               Enable debug logging
     --help, -h              Show this help
 
@@ -190,6 +194,8 @@ main() {
     local verbose=""
     local guide=""
     local no_guide=""
+    local role_file=""
+    local roles_dir=""
     local extra_cmd=()
     local past_separator=false
 
@@ -249,6 +255,14 @@ main() {
                 no_guide="true"
                 shift
                 ;;
+            --role)
+                role_file="$2"
+                shift 2
+                ;;
+            --roles-dir)
+                roles_dir="$2"
+                shift 2
+                ;;
             --)
                 past_separator=true
                 shift
@@ -260,6 +274,14 @@ main() {
                 ;;
         esac
     done
+
+    # Load config defaults early so host/port are available for server status check
+    if [[ -z "${host}" ]]; then
+        host=$(read_config "host_ip" "localhost")
+    fi
+    if [[ -z "${http_port}" ]]; then
+        http_port=$(read_config "host_http_port" "9001")
+    fi
 
     local banner_shown=false
 
@@ -278,6 +300,13 @@ main() {
     ╚═══════════════════════════════════════════════╝
 BANNER
         echo -e "${NC}"
+
+        # Show Pluto server status in the interactive menu (only when stdin is a
+        # real terminal so piped/automated invocations are not delayed by curl).
+        if [[ -t 0 ]]; then
+            show_pluto_status "${host}" "${http_port}" || true
+            echo ""
+        fi
 
         # Prompt for agent-id
         info "No --agent-id provided. Enter one now."
@@ -348,14 +377,39 @@ BANNER
             fi
             echo ""
         fi
-    fi
 
-    # Load defaults from config
-    if [[ -z "${host}" ]]; then
-        host=$(read_config "host_ip" "localhost")
-    fi
-    if [[ -z "${http_port}" ]]; then
-        http_port=$(read_config "host_http_port" "9001")
+        # Role selection (skipped if --role was passed via CLI)
+        local _roles_scan_dir="${roles_dir:-${SCRIPT_DIR}/library/roles}"
+        if [[ -d "${_roles_scan_dir}" && -z "${role_file}" ]]; then
+            local _role_files=()
+            while IFS= read -r -d '' _rf; do
+                _role_files+=("${_rf}")
+            done < <(find "${_roles_scan_dir}" -maxdepth 1 -name '*.md' -print0 | sort -z)
+            if [[ ${#_role_files[@]} -gt 0 ]]; then
+                echo ""
+                info "Available roles:"
+                echo ""
+                local _ri=1
+                for _rf in "${_role_files[@]}"; do
+                    echo -e "    ${BOLD}${_ri}.${NC} $(basename "${_rf}" .md)"
+                    ((_ri++))
+                done
+                echo -e "    ${BOLD}${_ri}.${NC} No role ${DIM}(skip)${NC}"
+                echo ""
+                local _role_choice
+                read -rp "  Select a role (default: skip): " _role_choice
+                if [[ -z "${_role_choice}" || "${_role_choice}" == "${_ri}" ]]; then
+                    role_file=""
+                elif [[ "${_role_choice}" =~ ^[0-9]+$ ]] && \
+                        (( _role_choice >= 1 && _role_choice < _ri )); then
+                    role_file="${_role_files[$((_role_choice - 1))]}"
+                    ok "Role: $(basename "${role_file}" .md)"
+                else
+                    warn "Invalid choice — skipping role."
+                fi
+                echo ""
+            fi
+        fi
     fi
 
     # Banner (skip if already shown in interactive mode)
@@ -371,11 +425,11 @@ BANNER
     ╚═══════════════════════════════════════════════╝
 BANNER
         echo -e "${NC}"
-    fi
 
-    # Show Pluto server status
-    show_pluto_status "${host}" "${http_port}" || true
-    echo ""
+        # Show Pluto server status (non-interactive path)
+        show_pluto_status "${host}" "${http_port}" || true
+        echo ""
+    fi
 
     # Determine framework / command
     if [[ ${#extra_cmd[@]} -gt 0 ]]; then
@@ -482,6 +536,12 @@ BANNER
     fi
     if [[ -n "${no_guide}" ]]; then
         py_args+=("--no-guide")
+    fi
+    if [[ -n "${role_file}" ]]; then
+        py_args+=("--role" "${role_file}")
+    fi
+    if [[ -n "${roles_dir}" ]]; then
+        py_args+=("--roles-dir" "${roles_dir}")
     fi
 
     if [[ ${#extra_cmd[@]} -gt 0 ]]; then

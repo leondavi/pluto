@@ -112,7 +112,9 @@ from agent_friend.frameworks import (  # noqa: E402,F401
     detect_available_frameworks,
     get_framework_cmd,
     get_framework_ready_pattern,
+    list_roles,
     load_pluto_config,
+    load_role,
 )
 from agent_friend.message_formatter import MessageFormatter  # noqa: E402
 from agent_friend.pluto_connection import PlutoConnection  # noqa: E402
@@ -153,6 +155,7 @@ class PlutoAgentFriend(TerminalProxy):
         guide_retries: int = GUIDE_RETRIES,
         guide_retry_delay: float = GUIDE_RETRY_DELAY_S,
         inject_submit_delay: float = INJECT_SUBMIT_DELAY_S,
+        role_file: str | None = None,
         verbose: bool = False,
     ):
         super().__init__(cmd)
@@ -161,6 +164,7 @@ class PlutoAgentFriend(TerminalProxy):
         self.mode = mode
         self.verbose = verbose
         self.guide_file = guide_file
+        self.role_file = role_file
         self.guide_startup_delay = guide_startup_delay
         self.guide_ready_grace = guide_ready_grace
         self.guide_max_wait = guide_max_wait
@@ -185,6 +189,7 @@ class PlutoAgentFriend(TerminalProxy):
 
         self._injection_thread: threading.Thread | None = None
         self._guide_injected = False
+        self._role_injected = False
 
     # ── Public entry point ────────────────────────────────────────────────
 
@@ -226,6 +231,12 @@ class PlutoAgentFriend(TerminalProxy):
             threading.Thread(
                 target=self._guide_injection_loop, daemon=True,
                 name="guide-inject",
+            ).start()
+
+        if self.role_file:
+            threading.Thread(
+                target=self._role_injection_loop, daemon=True,
+                name="role-inject",
             ).start()
 
         exit_code = 1
@@ -343,6 +354,91 @@ class PlutoAgentFriend(TerminalProxy):
                 return True
             time.sleep(min(0.2, max(0.05, quiet_for - quiet)))
         return False
+
+    # ── Role injection on startup ──────────────────────────────────────────
+
+    def _role_injection_loop(self) -> None:
+        """Background: after guide injection, inject the role prompt.
+
+        Waits for the guide injection to complete (or for the agent to be
+        idle again if no guide was configured), then injects the role file
+        content as a single prompt so the agent can internalize its
+        behavioral role before processing any coordination messages.
+        """
+        # Wait until the guide injection has fired (or give up after max_wait)
+        # to avoid racing the guide and overwhelming the agent at startup.
+        deadline = time.monotonic() + self.guide_max_wait + 30.0
+        if self.guide_file:
+            # Spin until guide is marked done or deadline passes.
+            while self._running and not self._guide_injected \
+                    and time.monotonic() < deadline:
+                time.sleep(0.5)
+        else:
+            # No guide — wait for agent to be idle first.
+            time.sleep(self.guide_startup_delay)
+            while self._running and time.monotonic() < deadline:
+                if self.detector.ever_ready or \
+                        self.detector.is_ready_for_injection():
+                    break
+                time.sleep(0.2)
+
+        if not self._running:
+            return
+
+        # Allow the agent to finish processing the guide before we pile in.
+        self._wait_for_silence(self.guide_ready_grace, deadline)
+
+        if self._role_injected or not self._running:
+            return
+        self._role_injected = True
+
+        try:
+            role_content = load_role(self.role_file)
+        except OSError as exc:
+            logger.warning("Role file not readable: %s", exc)
+            return
+
+        role_basename = os.path.basename(self.role_file)
+        prompt = (
+            f"You have been assigned a specific role for this session. "
+            f"Read and internalize the following role description from "
+            f"{role_basename}, then confirm briefly that you understand "
+            f"your role and are ready to begin:\n\n{role_content}"
+        )
+
+        attempts = 1 + self.guide_retries
+        for attempt in range(1, attempts + 1):
+            if attempt == 1:
+                self._info(f"Injecting role: {role_basename}")
+            else:
+                self._info(
+                    f"Role injection retry {attempt - 1}/"
+                    f"{self.guide_retries}: {role_basename}"
+                )
+            is_last = (attempt == attempts)
+            echoed = self.inject_and_submit_when_echoed(
+                prompt,
+                hard_deadline=max(self.guide_retry_delay, 5.0),
+                submit_on_timeout=is_last,
+            )
+            self.detector.state = AGENT_STATE_BUSY
+
+            if echoed:
+                if self.verbose:
+                    logger.debug("Role injection: echo confirmed")
+                break
+
+            if is_last:
+                logger.debug(
+                    "Role injection: echo never confirmed; "
+                    "sent Enter as best-effort fallback"
+                )
+                break
+
+            self._wait_for_silence(
+                self.guide_ready_grace,
+                time.monotonic() + self.guide_retry_delay * 2,
+            )
 
     # ── Injection logic ───────────────────────────────────────────────────
 
@@ -531,6 +627,16 @@ def main() -> None:
         help="Disable automatic guide injection even if the file exists.",
     )
     parser.add_argument(
+        "--role", default=None, metavar="PATH",
+        help="Path to a role file (.md) to inject after the guide. "
+             "Default: no role injection.",
+    )
+    parser.add_argument(
+        "--roles-dir", default=None, metavar="DIR",
+        help="Directory to scan for role files (default: library/roles/ "
+             "under the project root). Used when listing available roles.",
+    )
+    parser.add_argument(
         "--guide-startup-delay", type=float, default=GUIDE_STARTUP_DELAY_S,
         help=f"Seconds to wait after spawn before checking agent readiness "
              f"(default: {GUIDE_STARTUP_DELAY_S}, env: PLUTO_GUIDE_STARTUP_DELAY).",
@@ -707,6 +813,17 @@ def main() -> None:
             )
             guide_file = None
 
+    # --- Resolve role file ---
+    role_file = None
+    if args.role:
+        role_file = os.path.abspath(args.role)
+        if not os.path.isfile(role_file):
+            print(
+                f"{YELLOW}[pluto-friend]{NC} Role file not found: {role_file}",
+                file=sys.stderr,
+            )
+            role_file = None
+
     # --- Launch ---
     friend = PlutoAgentFriend(
         cmd=cmd,
@@ -724,6 +841,7 @@ def main() -> None:
         guide_retries=args.guide_retries,
         guide_retry_delay=args.guide_retry_delay,
         inject_submit_delay=args.inject_submit_delay,
+        role_file=role_file,
         verbose=args.verbose,
     )
     sys.exit(friend.run())

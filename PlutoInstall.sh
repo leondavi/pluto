@@ -64,6 +64,39 @@ next_step() {
     show_progress "$1"
 }
 
+# ── Sudo warm-up ─────────────────────────────────────────────────────────────
+# Call once before any background sudo usage.  Validates (or obtains) the sudo
+# credential in the foreground so spinner-driven sudo commands never hang
+# waiting for an invisible password prompt.
+ensure_sudo() {
+    # Already have a valid cached credential → nothing to do
+    if sudo -n true 2>/dev/null; then
+        return 0
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}${YELLOW}Administrator (sudo) access is required${NC}"
+    echo -e "  ${DIM}Some steps install system packages and need elevated privileges."
+    echo -e "  Please enter your password below — keystrokes are intentionally"
+    echo -e "  hidden by the system (this is normal).${NC}"
+    echo ""
+    # Run sudo -v in the foreground so the user sees the prompt cleanly.
+    # Redirect from /dev/tty so it works even when stdin is piped.
+    if ! sudo -v </dev/tty; then
+        err "sudo authentication failed. Cannot continue without admin access."
+        exit 1
+    fi
+
+    ok "Administrator access granted."
+    echo ""
+
+    # Keep the timestamp alive in the background for long installs
+    (while true; do sudo -n true; sleep 50; done) &
+    SUDO_KEEPALIVE_PID=$!
+    # Clean up the keep-alive on exit
+    trap 'kill "${SUDO_KEEPALIVE_PID}" 2>/dev/null || true' EXIT
+}
+
 # ── Spinner for long-running commands ─────────────────────────────────────────
 # Usage: run_with_spinner "Human-readable message" cmd [args...]
 # Runs cmd in the background, shows a spinner, streams errors on failure.
@@ -321,6 +354,7 @@ ensure_homebrew() {
 }
 
 install_macos() {
+    ensure_sudo
     ensure_homebrew
 
     # ── Step 1: Erlang ────────────────────────────────────────────────────────
@@ -385,6 +419,7 @@ install_macos() {
 # ── Install functions (Debian / Ubuntu) ───────────────────────────────────────
 
 install_debian() {
+    ensure_sudo
     run_with_spinner "Updating package lists" sudo apt-get update -qq
 
     # ── Step 1: Erlang ────────────────────────────────────────────────────────

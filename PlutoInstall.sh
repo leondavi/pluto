@@ -226,13 +226,61 @@ check_erlang() {
             ok "Erlang/OTP ${otp_ver} ✓"
             return 0
         else
-            warn "Erlang/OTP ${otp_ver} found but ${REQUIRED_OTP_MAJOR}+ required"
+            warn "Erlang/OTP ${otp_ver} found — OTP ${REQUIRED_OTP_MAJOR}+ is required"
             return 1
         fi
     else
         warn "Erlang not found"
         return 1
     fi
+}
+
+# ── Remove an existing (wrong-version) Erlang installation ───────────────────
+remove_old_erlang() {
+    local erl_path
+    erl_path=$(command -v erl 2>/dev/null || true)
+    [[ -z "${erl_path}" ]] && return 0  # nothing to remove
+
+    local otp_ver
+    otp_ver=$(erl -eval 'io:format("~s",[erlang:system_info(otp_release)]),halt().' -noshell 2>/dev/null || echo "?")
+
+    echo ""
+    warn  "Erlang/OTP ${otp_ver} is currently installed at ${erl_path}."
+    info  "It must be removed so OTP ${REQUIRED_OTP_MAJOR} can be installed cleanly."
+    echo ""
+
+    if ! ask_yes_no "Remove existing Erlang/OTP ${otp_ver} now?" "y"; then
+        err "Cannot install OTP ${REQUIRED_OTP_MAJOR} alongside an old version. Aborting."
+        exit 1
+    fi
+
+    # apt-managed package
+    if [[ "${PLATFORM}" == "debian" ]] && dpkg -l 'erlang*' 2>/dev/null | grep -q '^ii'; then
+        run_with_spinner "Removing apt Erlang packages" \
+            sudo apt-get remove -y -qq --purge 'erlang*' 'esl-erlang*' || true
+        run_with_spinner "Cleaning up dependencies" \
+            sudo apt-get autoremove -y -qq || true
+    fi
+
+    # Manually installed binaries under /usr/local
+    if [[ "${erl_path}" == /usr/local/* ]]; then
+        run_with_spinner "Removing /usr/local Erlang binaries" bash -c '
+            sudo rm -f /usr/local/bin/erl /usr/local/bin/erlc /usr/local/bin/escript \
+                       /usr/local/bin/epmd /usr/local/bin/ct_run /usr/local/bin/dialyzer
+            sudo rm -rf /usr/local/lib/erlang
+        '
+    fi
+
+    # Homebrew erlang (macOS)
+    if [[ "${PLATFORM}" == "macos" ]] && command -v brew &>/dev/null; then
+        if brew list erlang &>/dev/null 2>&1; then
+            run_with_spinner "Removing Homebrew Erlang" brew uninstall erlang || true
+        fi
+    fi
+
+    hash -r 2>/dev/null || true
+    ok "Old Erlang/OTP ${otp_ver} removed."
+    echo ""
 }
 
 check_rebar3() {
@@ -283,42 +331,54 @@ install_erlang_from_source() {
     # Install build dependencies
     if [[ "$PLATFORM" == "debian" ]]; then
         run_with_spinner "Installing build dependencies" \
-            sudo apt-get install -y -qq build-essential autoconf libncurses5-dev \
-                libssl-dev libpng-dev libssh-dev unixodbc-dev xsltproc || \
+            sudo apt-get install -y -qq build-essential autoconf autoconf \
+                libncurses5-dev libssl-dev libpng-dev libssh-dev \
+                unixodbc-dev xsltproc || \
         run_with_spinner "Installing build dependencies (minimal set)" \
             sudo apt-get install -y -qq build-essential autoconf libncurses-dev libssl-dev || true
     fi
 
     rm -rf "${build_dir}"
     mkdir -p "${build_dir}"
-    pushd "${build_dir}" >/dev/null
 
     if ! run_with_spinner "Downloading OTP ${REQUIRED_OTP_MAJOR} source" \
-            curl -fsSL -o "otp_src.tar.gz" "${otp_src_url}"; then
+            curl -fsSL -o "${build_dir}/otp_src.tar.gz" "${otp_src_url}"; then
         local alt_url="https://github.com/erlang/otp/archive/refs/tags/${otp_tag}.tar.gz"
         info "Primary URL failed, trying GitHub archive fallback ..."
         run_with_spinner "Downloading OTP source (fallback URL)" \
-            curl -fsSL -o "otp_src.tar.gz" "${alt_url}"
+            curl -fsSL -o "${build_dir}/otp_src.tar.gz" "${alt_url}"
     fi
 
-    run_with_spinner "Extracting source archive" tar xzf otp_src.tar.gz
+    run_with_spinner "Extracting source archive" \
+        tar xzf "${build_dir}/otp_src.tar.gz" -C "${build_dir}"
 
+    # Locate the extracted directory robustly
     local src_dir
-    src_dir=$(find "${build_dir}" -maxdepth 1 -type d -name "otp*" | head -1)
-    pushd "${src_dir}" >/dev/null
+    src_dir=$(find "${build_dir}" -mindepth 1 -maxdepth 1 -type d | head -1)
+    if [[ -z "${src_dir}" ]]; then
+        err "Could not find the extracted OTP source directory inside ${build_dir}."
+        err "The archive may be corrupted — please re-run the installer."
+        exit 1
+    fi
+    info "Source directory: ${src_dir}"
 
-    export ERL_TOP="${PWD}"
+    # Generate configure if not present (happens with GitHub tag archives)
+    if [[ ! -f "${src_dir}/configure" ]]; then
+        info "'configure' not found — running autoconf to generate it ..."
+        run_with_spinner "Generating configure script" \
+            bash -c "cd '${src_dir}' && autoconf"
+    fi
+
+    export ERL_TOP="${src_dir}"
     run_with_spinner "Configuring build (a few minutes)" \
-        ./configure --prefix=/usr/local --without-javac --without-wx --without-odbc
+        bash -c "cd '${src_dir}' && ./configure --prefix=/usr/local --without-javac --without-wx --without-odbc"
 
     run_with_spinner "Compiling Erlang/OTP — please wait (10–20 min)" \
-        make -j"$(nproc)"
+        bash -c "cd '${src_dir}' && make -j\"\$(nproc)\""
 
     run_with_spinner "Installing to /usr/local" \
-        sudo make install
+        bash -c "cd '${src_dir}' && sudo make install"
 
-    popd >/dev/null
-    popd >/dev/null
     rm -rf "${build_dir}"
     hash -r 2>/dev/null || true
 
@@ -374,6 +434,7 @@ install_macos() {
                 echo -e "  A source build always gives the exact version needed.${NC}"
                 echo ""
                 if ask_yes_no "Build Erlang/OTP ${REQUIRED_OTP_MAJOR} from source instead?" "y"; then
+                    remove_old_erlang
                     install_erlang_from_source
                 else
                     err "OTP ${REQUIRED_OTP_MAJOR} is required. Aborting."
@@ -461,6 +522,7 @@ https://packages.erlang-solutions.com/ubuntu ${codename} contrib" \
                 echo -e "  This is reliable but takes 10–25 minutes.${NC}"
                 echo ""
                 if ask_yes_no "Build Erlang/OTP ${REQUIRED_OTP_MAJOR} from source?" "y"; then
+                    remove_old_erlang
                     install_erlang_from_source
                 else
                     err "OTP ${REQUIRED_OTP_MAJOR} is required. Aborting."

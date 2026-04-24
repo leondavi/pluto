@@ -91,6 +91,9 @@ REQUIRED
 OPTIONS
     --framework <name>      Agent framework: claude, copilot, aider, cursor
                             If omitted, scans for available agents and prompts
+    --model <name>          Model to start the underlying agent CLI with
+                            (e.g. gpt-5.2, claude-sonnet-4.5, claude-haiku-4.5).
+                            Forwarded as the framework's model flag.
     --mode <mode>           Injection mode (default: auto)
                               auto    — inject messages when agent is idle
                               confirm — notify + auto-inject after 10s
@@ -216,6 +219,7 @@ ensure_venv() {
 main() {
     local agent_id=""
     local framework=""
+    local model=""
     local mode="auto"
     local host=""
     local http_port=""
@@ -248,6 +252,10 @@ main() {
                 ;;
             --framework)
                 framework="$2"
+                shift 2
+                ;;
+            --model)
+                model="$2"
                 shift 2
                 ;;
             --mode)
@@ -575,6 +583,9 @@ BANNER
 
     if [[ -n "${framework}" ]]; then
         py_args+=("--framework" "${framework}")
+    fi
+    if [[ -n "${model}" ]]; then
+        py_args+=("--model" "${model}")
     fi
     if [[ -n "${ready_pattern}" ]]; then
         py_args+=("--ready-pattern" "${ready_pattern}")

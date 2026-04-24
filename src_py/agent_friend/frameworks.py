@@ -19,24 +19,33 @@ KNOWN_FRAMEWORKS = {
         "display": "Claude Code",
         "default_args": [],
         "ready_pattern": None,  # Claude uses silence timeout
+        # ``claude --model <name>`` (e.g. ``claude-sonnet-4-5``).
+        "model_flag": "--model",
     },
     "copilot": {
         "cmd_names": ["copilot"],
         "display": "GitHub Copilot CLI",
         "default_args": [],
         "ready_pattern": r"Describe a task to get started",
+        # ``copilot --model <name>`` (e.g. ``gpt-5.2``, ``claude-sonnet-4.5``,
+        # ``claude-haiku-4.5``).
+        "model_flag": "--model",
     },
     "aider": {
         "cmd_names": ["aider"],
         "display": "Aider",
         "default_args": [],
         "ready_pattern": r"^[>›] $",
+        # ``aider --model <name>`` (e.g. ``sonnet``, ``gpt-4o``).
+        "model_flag": "--model",
     },
     "cursor": {
         "cmd_names": ["cursor"],
         "display": "Cursor",
         "default_args": [],
         "ready_pattern": None,
+        # Cursor CLI does not expose a stable model flag in interactive mode.
+        "model_flag": None,
     },
 }
 
@@ -58,12 +67,33 @@ def detect_available_frameworks() -> list[dict]:
     return available
 
 
-def get_framework_cmd(framework: str) -> list[str]:
-    """Return the command list for a known framework, or ``[framework]``."""
+def get_framework_cmd(framework: str, model: str | None = None) -> list[str]:
+    """Return the command list for a known framework, or ``[framework]``.
+
+    If *model* is supplied and the framework declares a ``model_flag``,
+    ``[<flag>, <model>]`` is appended so the underlying CLI starts with the
+    requested model.  Unknown frameworks fall back to ``[framework]`` (with
+    ``--model <model>`` appended when *model* is given, since most modern
+    agent CLIs accept that convention).
+    """
     info = KNOWN_FRAMEWORKS.get(framework)
     if not info:
-        return [framework]
-    return info["cmd_names"][:1] + info["default_args"]
+        cmd = [framework]
+        if model:
+            cmd += ["--model", model]
+        return cmd
+    cmd = info["cmd_names"][:1] + list(info["default_args"])
+    if model:
+        flag = info.get("model_flag")
+        if flag:
+            cmd += [flag, model]
+    return cmd
+
+
+def get_framework_model_flag(framework: str) -> str | None:
+    """Return the CLI flag a framework uses to select its model, or ``None``."""
+    info = KNOWN_FRAMEWORKS.get(framework)
+    return info.get("model_flag") if info else None
 
 
 def get_framework_ready_pattern(framework: str) -> str | None:

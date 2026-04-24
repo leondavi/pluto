@@ -111,6 +111,7 @@ from agent_friend.frameworks import (  # noqa: E402,F401
     check_pluto_status,
     detect_available_frameworks,
     get_framework_cmd,
+    get_framework_model_flag,
     get_framework_ready_pattern,
     list_roles,
     load_pluto_config,
@@ -427,11 +428,37 @@ class PlutoAgentFriend(TerminalProxy):
             return
 
         role_basename = os.path.basename(self.role_file)
+
+        # Resolve protocol.md to its absolute path at runtime so the agent
+        # can locate it regardless of the working directory it was launched from.
+        # Primary: one level up from the role file's directory (works when role
+        # lives in library/roles/ regardless of CWD).
+        # Fallback: library/protocol.md inside the Pluto project root (needed
+        # when the role is given as a full path from an unrelated directory).
+        _role_dir = os.path.dirname(os.path.abspath(self.role_file))
+        _project_root_local = os.path.normpath(
+            os.path.join(_THIS_DIR, "..", "..")
+        )
+        protocol_path = None
+        for _candidate in (
+            os.path.normpath(os.path.join(_role_dir, "..", "protocol.md")),
+            os.path.join(_project_root_local, "library", "protocol.md"),
+        ):
+            if os.path.isfile(_candidate):
+                protocol_path = _candidate
+                break
+        protocol_note = (
+            f"\n\n(Note: all references to `protocol.md` in your role refer to "
+            f"the file at the absolute path: {protocol_path})"
+            if protocol_path is not None and "protocol.md" in role_content
+            else ""
+        )
+
         prompt = (
             f"You have been assigned a specific role for this session. "
             f"Read and internalize the following role description from "
             f"{role_basename}, then confirm briefly that you understand "
-            f"your role and are ready to begin:\n\n{role_content}"
+            f"your role and are ready to begin:\n\n{role_content}{protocol_note}"
         )
 
         attempts = 1 + self.guide_retries
@@ -643,6 +670,14 @@ def main() -> None:
              "Auto-detected if omitted.",
     )
     parser.add_argument(
+        "--model", default=None, metavar="NAME",
+        help="Model to pass to the underlying agent CLI "
+             "(e.g. 'gpt-5.2', 'claude-sonnet-4.5', 'claude-haiku-4.5'). "
+             "Forwarded as the framework's model flag (e.g. copilot/claude/aider "
+             "all use --model). Ignored when an explicit command is given "
+             "after `--`.",
+    )
+    parser.add_argument(
         "--host", default=None,
         help="Pluto server host (default: from config or localhost)",
     )
@@ -774,7 +809,7 @@ def main() -> None:
 
     if not cmd:
         if args.framework:
-            cmd = get_framework_cmd(args.framework)
+            cmd = get_framework_cmd(args.framework, model=args.model)
             if not ready_pattern:
                 ready_pattern = get_framework_ready_pattern(args.framework)
         else:
@@ -792,7 +827,7 @@ def main() -> None:
                     f"Auto-detected: {fw['display']} ({fw['path']})",
                     file=sys.stderr,
                 )
-                cmd = [fw["cmd"]]
+                cmd = get_framework_cmd(fw["key"], model=args.model)
                 if not ready_pattern:
                     ready_pattern = get_framework_ready_pattern(fw["key"])
             else:
@@ -806,7 +841,7 @@ def main() -> None:
                     idx = int(choice) - 1
                     if 0 <= idx < len(available):
                         fw = available[idx]
-                        cmd = [fw["cmd"]]
+                        cmd = get_framework_cmd(fw["key"], model=args.model)
                         if not ready_pattern:
                             ready_pattern = get_framework_ready_pattern(
                                 fw["key"])
@@ -816,6 +851,16 @@ def main() -> None:
                 except (ValueError, EOFError):
                     print("Invalid choice.", file=sys.stderr)
                     sys.exit(1)
+    elif args.model:
+        # Explicit command after `--` was provided; warn that --model is ignored
+        # so the user is not surprised when the underlying CLI starts with its
+        # default model.
+        print(
+            f"{YELLOW}[pluto-friend]{NC} --model={args.model} ignored: an "
+            f"explicit command was supplied after `--`. Add the model flag "
+            f"to the command yourself if needed.",
+            file=sys.stderr,
+        )
 
     # --- Show Pluto server status ---
     print(

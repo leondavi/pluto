@@ -5,13 +5,6 @@ server to coordinate the team setups: which endpoints are called, by
 whom, in what order, and what concrete benefit Pluto provides for this
 particular benchmark.
 
-> Everything here is real: real Erlang OTP node on TCP `127.0.0.1:9200`
-> + HTTP `127.0.0.1:9201`, real `urllib.request` HTTP calls from the
-> Python harness, real `copilot -p` subprocesses, real `pytest`
-> subprocess. No mocks, no fakes, no in-process shortcuts —
-> [`grep -rEn 'mock|Mock|patch|fake|stub|monkeypatch'`](../../../tests/demo_logistics_multiagent_vs_solo)
-> over the harness returns zero matches outside docstrings.
-
 ## Server lifecycle
 
 The harness wraps `tests/pluto_test_server.py:PlutoTestServer`, which:

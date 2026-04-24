@@ -45,7 +45,7 @@ err()   { echo -e "${RED}[pluto]${NC} $*" >&2; }
 # Ping the Pluto server via the Python utility (OS-independent).
 # Returns 0 if the server responds with "pong", 1 otherwise.
 pluto_ping() {
-    python3 "${PING_TOOL}" -q --timeout "${1:-2}" 2>/dev/null
+    python3 "${PING_TOOL}" -q --port "${PLUTO_PORT:-9200}" --timeout "${1:-2}" 2>/dev/null
 }
 
 # Check that rebar3 is on the PATH
@@ -57,13 +57,13 @@ require_rebar3() {
     fi
 }
 
-# Find PIDs of processes holding the Pluto TCP port (9000) or matching beam.
+# Find PIDs of processes holding the Pluto TCP port (9200) or matching beam.
 # Returns space-separated PIDs (may be empty).
 find_pluto_pids() {
     local pids=""
-    # Primary: find process holding port 9000
+    # Primary: find process holding port 9200
     local port_pids
-    port_pids=$(lsof -ti :9000 2>/dev/null || true)
+    port_pids=$(lsof -ti :9200 2>/dev/null || true)
     if [[ -n "${port_pids}" ]]; then
         pids="${port_pids}"
     fi
@@ -87,7 +87,7 @@ check_node_conflict() {
         epmd_conflict=true
     fi
 
-    if lsof -ti :9000 &>/dev/null; then
+    if lsof -ti :9200 &>/dev/null; then
         port_conflict=true
     fi
 
@@ -96,7 +96,7 @@ check_node_conflict() {
     fi
 
     $epmd_conflict && warn "An Erlang node named 'pluto' is already registered with epmd."
-    $port_conflict && warn "Port 9000 is already in use."
+    $port_conflict && warn "Port 9200 is already in use."
 
     # Find and kill all Pluto-related processes
     local pids
@@ -135,7 +135,7 @@ check_node_conflict() {
     if command -v epmd &>/dev/null && epmd -names 2>/dev/null | grep -q 'name pluto '; then
         still_epmd=true
     fi
-    if lsof -ti :9000 &>/dev/null; then
+    if lsof -ti :9200 &>/dev/null; then
         still_port=true
     fi
 
@@ -143,11 +143,11 @@ check_node_conflict() {
         echo
         err "════════════════════════════════════════════════════════════════"
         err "Failed to clean up the previous Pluto instance."
-        $still_port && err "  Port 9000 is still in use."
+        $still_port && err "  Port 9200 is still in use."
         $still_epmd && err "  'pluto' node is still in epmd."
         err ""
         err "Please run these commands manually:"
-        err "  ${CYAN}kill -9 \$(lsof -ti :9000)${NC}"
+        err "  ${CYAN}kill -9 \$(lsof -ti :9200)${NC}"
         err "  ${CYAN}pkill -x epmd${NC}"
         err "════════════════════════════════════════════════════════════════"
         echo
@@ -226,7 +226,7 @@ cmd_start_daemon() {
         if pluto_ping 1; then
             # Store the OS PID for --kill convenience
             local os_pid
-            os_pid=$(lsof -ti :9000 2>/dev/null || echo "unknown")
+            os_pid=$(lsof -ti :9200 2>/dev/null || echo "unknown")
             echo "${os_pid}" > "${PID_FILE}"
             ok "Pluto daemon is running (pid ${os_pid})."
             return 0
@@ -267,7 +267,7 @@ cmd_kill() {
         rm -f "${PID_FILE}"
     fi
 
-    # 3. Fallback: kill processes holding port 9000 or matching beam.*pluto
+    # 3. Fallback: kill processes holding port 9200 or matching beam.*pluto
     if ! $stopped; then
         local pids
         pids=$(find_pluto_pids)

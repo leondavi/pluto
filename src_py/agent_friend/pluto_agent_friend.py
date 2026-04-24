@@ -429,12 +429,16 @@ class PlutoAgentFriend(TerminalProxy):
 
         role_basename = os.path.basename(self.role_file)
 
-        # Resolve protocol.md to its absolute path at runtime so the agent
-        # can locate it regardless of the working directory it was launched from.
-        # Primary: one level up from the role file's directory (works when role
-        # lives in library/roles/ regardless of CWD).
-        # Fallback: library/protocol.md inside the Pluto project root (needed
-        # when the role is given as a full path from an unrelated directory).
+        # Resolve protocol.md robustly so this works whether Pluto is invoked
+        # from the repo root, the install dir, or anywhere else. We try, in
+        # order:
+        #   1. one level up from the role file's directory (handles roles
+        #      passed by absolute path that live in some library/roles/ tree)
+        #   2. library/protocol.md inside the Pluto project root (the source
+        #      checkout that ships with this script)
+        # If found, we INLINE the content into the prompt — same approach as
+        # the guide in v0.2.5 — so the agent never has to locate the file on
+        # disk regardless of its CWD or filesystem sandbox.
         _role_dir = os.path.dirname(os.path.abspath(self.role_file))
         _project_root_local = os.path.normpath(
             os.path.join(_THIS_DIR, "..", "..")
@@ -447,18 +451,37 @@ class PlutoAgentFriend(TerminalProxy):
             if os.path.isfile(_candidate):
                 protocol_path = _candidate
                 break
-        protocol_note = (
-            f"\n\n(Note: all references to `protocol.md` in your role refer to "
-            f"the file at the absolute path: {protocol_path})"
-            if protocol_path is not None and "protocol.md" in role_content
-            else ""
-        )
+
+        protocol_block = ""
+        if protocol_path is not None and "protocol.md" in role_content:
+            try:
+                with open(protocol_path, "r", encoding="utf-8") as _pf:
+                    _protocol_content = _pf.read()
+                protocol_block = (
+                    f"\n\n---\n\n"
+                    f"Your role above references `protocol.md`. The full "
+                    f"shared coordination protocol is inlined below for "
+                    f"convenience (source: {protocol_path}). Treat this as "
+                    f"authoritative — do NOT attempt to re-read the file "
+                    f"from disk; your CWD may not contain it.\n\n"
+                    f"=== BEGIN protocol.md ===\n\n"
+                    f"{_protocol_content}\n\n"
+                    f"=== END protocol.md ==="
+                )
+            except OSError as exc:
+                logger.warning("protocol.md not readable: %s", exc)
+                protocol_block = (
+                    f"\n\n(Note: your role references `protocol.md` at "
+                    f"{protocol_path}, but it could not be read at "
+                    f"injection time: {exc}. Ask the user to provide it "
+                    f"if you need to consult it.)"
+                )
 
         prompt = (
             f"You have been assigned a specific role for this session. "
             f"Read and internalize the following role description from "
             f"{role_basename}, then confirm briefly that you understand "
-            f"your role and are ready to begin:\n\n{role_content}{protocol_note}"
+            f"your role and are ready to begin:\n\n{role_content}{protocol_block}"
         )
 
         attempts = 1 + self.guide_retries

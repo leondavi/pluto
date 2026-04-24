@@ -49,7 +49,7 @@ sys.path.insert(0, os.path.join(_REPO, "src_py"))
 sys.path.insert(0, os.path.join(_REPO, "tests"))
 
 from pluto_client import PlutoHttpClient  # noqa: E402
-from pluto_test_server import PlutoTestServer  # noqa: E402
+from pluto_test_server import PlutoTestServer, PLUTO_HOST, PLUTO_HTTP_PORT  # noqa: E402
 
 ROLES_DIR = os.path.join(_REPO, "library", "roles")
 PROTOCOL_PATH = os.path.join(_REPO, "library", "protocol.md")
@@ -561,7 +561,7 @@ class FractalCollaborationDemo(unittest.TestCase):
 
     def test_fractal_collaboration(self):
         trace = Trace()
-        host, port = "127.0.0.1", 9001  # HTTP port
+        host, port = PLUTO_HOST, PLUTO_HTTP_PORT  # HTTP port from config
 
         orch = RoleAgent("orchestrator-1", host, port, trace)
         spec = RoleAgent("specialist-1", host, port, trace)
@@ -595,7 +595,8 @@ class FractalCollaborationDemo(unittest.TestCase):
         os.makedirs(out_dir, exist_ok=True)
         with open(os.path.join(out_dir, "trace.json"), "w") as f:
             json.dump({"trace": trace.dump(), "result": result,
-                       "tasks": tasks, "workspace": DEMO_ROOT}, f, indent=2,
+                       "tasks": tasks, "workspace": DEMO_ROOT,
+                       "pluto_http_port": port}, f, indent=2,
                       default=str)
 
         # Render the human report.

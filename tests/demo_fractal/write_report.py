@@ -22,7 +22,8 @@ def render(trace_path: str, out_md: str) -> None:
     lines.append("")
     lines.append("## Setup")
     lines.append("")
-    lines.append("- Pluto server: real Erlang server on `127.0.0.1:9001` (HTTP)")
+    pluto_http_port = data.get("pluto_http_port", 9201)
+    lines.append(f"- Pluto server: real Erlang server on `127.0.0.1:{pluto_http_port}` (HTTP)")
     lines.append(f"- Workspace:    `{workspace}`")
     lines.append("- Roles loaded from `library/roles/`:")
     lines.append("  - **orchestrator-1** (Python harness driving the protocol)")
@@ -65,11 +66,23 @@ def render(trace_path: str, out_md: str) -> None:
                 lines.append(f"  - `{fc.get('name')}`")
         lines.append("")
 
-    lines.append("## Message Trace (chronological)")
+    lines.append("## Message Trace (chronological, filtered)")
+    lines.append("")
+    lines.append("_Filtering: payload_type=None and duplicate consecutive recv events are suppressed; capped at 200 rows._")
     lines.append("")
     lines.append("| t (s) | actor | kind | summary |")
     lines.append("|------:|-------|------|---------|")
+    rendered = 0
+    last_key = None
     for e in trace:
+        # Suppress noise: empty-payload recvs and consecutive duplicates.
+        if e.get("kind") == "recv" and not e.get("payload_type"):
+            continue
+        key = (e.get("actor"), e.get("kind"), e.get("payload_type"),
+               e.get("to"), e.get("frm"), e.get("op"), e.get("resource"))
+        if key == last_key and e.get("kind") in ("recv", "send"):
+            continue
+        last_key = key
         summary = ""
         if e["kind"] == "send":
             summary = f"→ **{e.get('to')}** type=`{e.get('payload_type')}`"
@@ -85,7 +98,10 @@ def render(trace_path: str, out_md: str) -> None:
         elif e["kind"] == "note":
             summary = f"`{e.get('event', '')}` {e.get('err', '')}"
         lines.append(f"| {e['t']:>5.2f} | `{e['actor']}` | `{e['kind']}` | {summary} |")
-    lines.append("")
+        rendered += 1
+        if rendered >= 200:
+            lines.append(f"| ... | ... | ... | _trace truncated; full data in trace.json ({len(trace)} total events)_ |")
+            break
 
     lines.append("## Notes")
     lines.append("")

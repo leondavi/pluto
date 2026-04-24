@@ -1,6 +1,6 @@
 # Demo: Fractal Collaboration (real Pluto + real Copilot)
 
-_Generated: 2026-04-24T02:34:38+00:00_
+_Generated: 2026-04-24T02:54:44+00:00_
 
 ## Setup
 
@@ -9,7 +9,7 @@ _Generated: 2026-04-24T02:34:38+00:00_
 - Roles loaded from `library/roles/`:
   - **orchestrator-1** (Python harness driving the protocol)
   - **specialist-1**   (real `copilot -p ... --model <default>`)
-  - **reviewer-1**     (deterministic static checks)
+  - **reviewer-1**     (real `copilot -p ... --model <default>`, JSON verdict)
   - **qa-1**           (real `pytest` runner)
 
 ## Task Decomposition
@@ -60,53 +60,60 @@ _Filtering: payload_type=None and duplicate consecutive recv events are suppress
 
 | t (s) | actor | kind | summary |
 |------:|-------|------|---------|
-|  0.01 | `reviewer-1` | `note` | `registered`  |
-|  0.01 | `specialist-1` | `note` | `registered`  |
-|  0.01 | `orchestrator-1` | `note` | `registered`  |
 |  0.01 | `qa-1` | `note` | `registered`  |
+|  0.01 | `reviewer-1` | `note` | `registered`  |
+|  0.01 | `orchestrator-1` | `note` | `registered`  |
+|  0.01 | `specialist-1` | `note` | `registered`  |
 |  0.01 | `orchestrator-1` | `note` | `task_list_broadcast`  |
 |  0.01 | `orchestrator-1` | `send` | → **specialist-1** type=`task_assigned` |
 |  0.01 | `specialist-1` | `recv` | ← **orchestrator-1** type=`task_assigned` |
 |  0.01 | `specialist-1` | `lock` | `acquire_request` file:/tmp/pluto/demo/fractal_collaboration/src/fractals/mandelbrot.py |
-|  0.02 | `specialist-1` | `lock` | `acquire_response` file:/tmp/pluto/demo/fractal_collaboration/src/fractals/mandelbrot.py |
-|  0.02 | `specialist-1` | `shell` | `copilot -p ...` |
-| 32.11 | `specialist-1` | `shell` | `copilot_done` rc=0 |
-| 32.11 | `specialist-1` | `send` | → **orchestrator-1** type=`task_result` |
-| 32.11 | `orchestrator-1` | `recv` | ← **specialist-1** type=`task_result` |
-| 32.11 | `orchestrator-1` | `send` | → **reviewer-1** type=`task_assigned_for_review` |
-| 32.11 | `reviewer-1` | `recv` | ← **orchestrator-1** type=`task_assigned_for_review` |
-| 32.11 | `reviewer-1` | `send` | → **orchestrator-1** type=`review` |
-| 32.11 | `orchestrator-1` | `recv` | ← **reviewer-1** type=`review` |
-| 32.11 | `orchestrator-1` | `send` | → **specialist-1** type=`task_assigned` |
-| 32.12 | `specialist-1` | `recv` | ← **orchestrator-1** type=`task_assigned` |
-| 32.12 | `specialist-1` | `lock` | `acquire_request` file:/tmp/pluto/demo/fractal_collaboration/scripts/run_mandelbrot.py |
-| 32.12 | `specialist-1` | `lock` | `acquire_response` file:/tmp/pluto/demo/fractal_collaboration/scripts/run_mandelbrot.py |
-| 32.12 | `specialist-1` | `shell` | `copilot -p ...` |
-| 70.51 | `specialist-1` | `shell` | `copilot_done` rc=0 |
-| 70.51 | `specialist-1` | `release` | lock_ref=`LOCK-1` |
-| 70.51 | `specialist-1` | `send` | → **orchestrator-1** type=`task_result` |
-| 70.51 | `orchestrator-1` | `recv` | ← **specialist-1** type=`task_result` |
-| 70.52 | `orchestrator-1` | `send` | → **reviewer-1** type=`task_assigned_for_review` |
-| 70.52 | `specialist-1` | `recv` | ← **orchestrator-1** type=`task_assigned` |
-| 70.52 | `specialist-1` | `lock` | `acquire_request` file:/tmp/pluto/demo/fractal_collaboration/tests/test_mandelbrot.py |
-| 70.52 | `specialist-1` | `lock` | `acquire_response` file:/tmp/pluto/demo/fractal_collaboration/tests/test_mandelbrot.py |
-| 70.52 | `specialist-1` | `shell` | `copilot -p ...` |
-| 70.52 | `reviewer-1` | `recv` | ← **orchestrator-1** type=`task_assigned_for_review` |
-| 70.52 | `reviewer-1` | `send` | → **orchestrator-1** type=`review` |
-| 70.52 | `orchestrator-1` | `recv` | ← **reviewer-1** type=`review` |
-| 99.47 | `specialist-1` | `shell` | `copilot_done` rc=0 |
-| 99.47 | `specialist-1` | `release` | lock_ref=`LOCK-2` |
-| 99.47 | `specialist-1` | `send` | → **orchestrator-1** type=`task_result` |
-| 99.48 | `orchestrator-1` | `recv` | ← **specialist-1** type=`task_result` |
-| 99.48 | `orchestrator-1` | `send` | → **reviewer-1** type=`task_assigned_for_review` |
-| 99.48 | `reviewer-1` | `recv` | ← **orchestrator-1** type=`task_assigned_for_review` |
-| 99.48 | `reviewer-1` | `send` | → **orchestrator-1** type=`review` |
-| 99.48 | `orchestrator-1` | `recv` | ← **reviewer-1** type=`review` |
-| 99.48 | `orchestrator-1` | `send` | → **qa-1** type=`qa_request` |
-| 99.48 | `qa-1` | `recv` | ← **orchestrator-1** type=`qa_request` |
-| 99.75 | `qa-1` | `shell` | `pytest_done` rc=0 |
-| 99.75 | `qa-1` | `send` | → **orchestrator-1** type=`qa_result` |
-| 99.76 | `orchestrator-1` | `recv` | ← **qa-1** type=`qa_result` |
+|  0.01 | `specialist-1` | `lock` | `acquire_response` file:/tmp/pluto/demo/fractal_collaboration/src/fractals/mandelbrot.py |
+|  0.01 | `specialist-1` | `shell` | `copilot -p ...` |
+| 24.34 | `specialist-1` | `shell` | `copilot_done` rc=0 |
+| 24.34 | `specialist-1` | `release` | lock_ref=`LOCK-5` |
+| 24.34 | `specialist-1` | `send` | → **orchestrator-1** type=`task_result` |
+| 24.34 | `orchestrator-1` | `recv` | ← **specialist-1** type=`task_result` |
+| 24.34 | `orchestrator-1` | `send` | → **reviewer-1** type=`task_assigned_for_review` |
+| 24.35 | `reviewer-1` | `recv` | ← **orchestrator-1** type=`task_assigned_for_review` |
+| 24.35 | `reviewer-1` | `shell` | `copilot_start` |
+| 57.66 | `reviewer-1` | `shell` | `copilot_done` rc=0 |
+| 57.66 | `reviewer-1` | `send` | → **orchestrator-1** type=`review` |
+| 57.66 | `orchestrator-1` | `recv` | ← **reviewer-1** type=`review` |
+| 57.66 | `orchestrator-1` | `send` | → **specialist-1** type=`task_assigned` |
+| 57.66 | `specialist-1` | `recv` | ← **orchestrator-1** type=`task_assigned` |
+| 57.66 | `specialist-1` | `lock` | `acquire_request` file:/tmp/pluto/demo/fractal_collaboration/scripts/run_mandelbrot.py |
+| 57.66 | `specialist-1` | `lock` | `acquire_response` file:/tmp/pluto/demo/fractal_collaboration/scripts/run_mandelbrot.py |
+| 57.66 | `specialist-1` | `shell` | `copilot -p ...` |
+| 103.09 | `specialist-1` | `shell` | `copilot_done` rc=0 |
+| 103.09 | `specialist-1` | `release` | lock_ref=`LOCK-6` |
+| 103.09 | `specialist-1` | `send` | → **orchestrator-1** type=`task_result` |
+| 103.09 | `specialist-1` | `recv` | ← **orchestrator-1** type=`task_assigned` |
+| 103.09 | `specialist-1` | `lock` | `acquire_request` file:/tmp/pluto/demo/fractal_collaboration/tests/test_mandelbrot.py |
+| 103.09 | `orchestrator-1` | `recv` | ← **specialist-1** type=`task_result` |
+| 103.09 | `specialist-1` | `lock` | `acquire_response` file:/tmp/pluto/demo/fractal_collaboration/tests/test_mandelbrot.py |
+| 103.09 | `orchestrator-1` | `send` | → **reviewer-1** type=`task_assigned_for_review` |
+| 103.09 | `specialist-1` | `shell` | `copilot -p ...` |
+| 103.09 | `reviewer-1` | `recv` | ← **orchestrator-1** type=`task_assigned_for_review` |
+| 103.09 | `reviewer-1` | `shell` | `copilot_start` |
+| 127.48 | `specialist-1` | `shell` | `copilot_done` rc=0 |
+| 127.48 | `specialist-1` | `release` | lock_ref=`LOCK-7` |
+| 127.48 | `specialist-1` | `send` | → **orchestrator-1** type=`task_result` |
+| 127.48 | `orchestrator-1` | `recv` | ← **specialist-1** type=`task_result` |
+| 127.48 | `orchestrator-1` | `send` | → **reviewer-1** type=`task_assigned_for_review` |
+| 139.87 | `reviewer-1` | `shell` | `copilot_done` rc=0 |
+| 139.87 | `reviewer-1` | `send` | → **orchestrator-1** type=`review` |
+| 139.87 | `reviewer-1` | `recv` | ← **orchestrator-1** type=`task_assigned_for_review` |
+| 139.87 | `reviewer-1` | `shell` | `copilot_start` |
+| 139.87 | `orchestrator-1` | `recv` | ← **reviewer-1** type=`review` |
+| 162.08 | `reviewer-1` | `shell` | `copilot_done` rc=0 |
+| 162.08 | `reviewer-1` | `send` | → **orchestrator-1** type=`review` |
+| 162.08 | `orchestrator-1` | `recv` | ← **reviewer-1** type=`review` |
+| 162.08 | `orchestrator-1` | `send` | → **qa-1** type=`qa_request` |
+| 162.08 | `qa-1` | `recv` | ← **orchestrator-1** type=`qa_request` |
+| 162.29 | `qa-1` | `shell` | `pytest_done` rc=0 |
+| 162.29 | `qa-1` | `send` | → **orchestrator-1** type=`qa_result` |
+| 162.30 | `orchestrator-1` | `recv` | ← **qa-1** type=`qa_result` |
 ## Notes
 
 - Every file mutation by the Specialist was preceded by a real

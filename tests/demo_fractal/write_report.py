@@ -28,7 +28,7 @@ def render(trace_path: str, out_md: str) -> None:
     lines.append("- Roles loaded from `library/roles/`:")
     lines.append("  - **orchestrator-1** (Python harness driving the protocol)")
     lines.append("  - **specialist-1**   (real `copilot -p ... --model <default>`)")
-    lines.append("  - **reviewer-1**     (deterministic static checks)")
+    lines.append("  - **reviewer-1**     (real `copilot -p ... --model <default>`, JSON verdict)")
     lines.append("  - **qa-1**           (real `pytest` runner)")
     lines.append("")
     lines.append("## Task Decomposition")

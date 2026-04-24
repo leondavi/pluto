@@ -11,12 +11,11 @@ Architecture
   Coordination       Real /locks/acquire + /agents/send + /agents/poll
                      traffic between the four sessions.
 
-  LLM work           The Specialist shells out to ``copilot -p`` (real
-                     non-interactive GitHub Copilot CLI calls) to actually
-                     write the fractal source files inside the demo
-                     workspace.  Other roles run deterministic checks
-                     informed by their loaded role.md files; a future
-                     extension can route them through copilot too.
+  LLM work           The Specialist and Reviewer both shell out to
+                     ``copilot -p`` (real non-interactive GitHub Copilot CLI
+                     calls). Specialist writes the fractal source files
+                     inside the demo workspace; Reviewer reads each
+                     file and emits a structured JSON verdict.
 
   Output             - Real source/test files under
                      /tmp/pluto/demo/fractal_collaboration/
@@ -329,36 +328,113 @@ def specialist_handle_task(agent: RoleAgent, msg: dict, role_text: str,
     })
 
 
-# ── Reviewer (deterministic) ─────────────────────────────────────────────────
+# ── Reviewer (real copilot LLM call) ─────────────────────────────────────────
 
 
-def reviewer_handle_review(agent: RoleAgent, msg: dict, workdir: str) -> None:
+REVIEWER_PROMPT_TMPL = """You are a Pluto Reviewer. Your loaded role and the
+shared coordination protocol are inlined below — do NOT attempt to read them
+from disk; your CWD may not contain them.
+
+=== ROLE: REVIEWER ===
+{role}
+
+=== PROTOCOL ===
+{protocol}
+
+=== TASK BEING REVIEWED ===
+{task}
+
+=== SPECIALIST RESULT ===
+{result}
+
+=== FILES UNDER REVIEW ===
+{files_block}
+
+Review the file(s) against the task's `definition_of_done` and
+`verification_hint`. Be strict but fair. Respond with EXACTLY ONE JSON
+object (and nothing else, no markdown fence) of this shape:
+
+{{
+  "verdict": "approved" | "needs_changes",
+  "findings": ["<short bullet>", ...],
+  "suggested_fixes": ["<short bullet>", ...]
+}}
+"""
+
+
+def reviewer_handle_review(agent: RoleAgent, msg: dict, workdir: str,
+                           role_text: str, protocol_text: str) -> None:
     payload = msg["payload"]
     task = payload["task"]
     task_id = task["task_id"]
-    findings: list[dict] = []
+    result = payload.get("result", {})
 
-    # Static check: every file in task.files exists and is non-empty.
+    # Hard sanity check (kept as a fast-fail gate before paying for an LLM
+    # call): if the file is missing, there is nothing to review.
+    findings: list[dict] = []
+    blocks: list[str] = []
     for resource in task.get("files", []):
         path = resource.removeprefix("file:")
         if not os.path.isfile(path):
             findings.append({"severity": "major", "file": resource,
-                             "message": "file missing"})
+                             "message": "file missing on disk"})
+            blocks.append(f"--- {path} ---\n<MISSING>\n")
             continue
-        size = os.path.getsize(path)
-        if size == 0:
+        try:
+            content = open(path, encoding="utf-8").read()
+        except OSError as exc:
             findings.append({"severity": "major", "file": resource,
-                             "message": "file empty"})
+                             "message": f"unreadable: {exc}"})
+            content = "<unreadable>"
+        blocks.append(f"--- {path} ---\n{content}\n")
 
-    # Static check: verification_hint is concrete (we expect non-empty).
-    if not task.get("verification_hint"):
-        findings.append({"severity": "major", "file": "<task>",
-                         "message": "no verification_hint"})
+    if findings:
+        # Files missing → don't burn an LLM call, fail fast.
+        agent.send("orchestrator-1", {
+            "type": "review", "task_id": task_id, "status": "needs_changes",
+            "findings": findings, "suggested_fixes": [],
+        })
+        return
 
-    status = "needs_changes" if findings else "approved"
+    prompt = REVIEWER_PROMPT_TMPL.format(
+        role=role_text, protocol=protocol_text,
+        task=json.dumps(task, indent=2, default=str),
+        result=json.dumps(result, indent=2, default=str),
+        files_block="\n".join(blocks),
+    )
+    agent.trace.add(agent.agent_id, "shell", op="copilot_start",
+                    task_id=task_id)
+    rc, out, err = run_copilot(prompt, workdir=workdir, timeout=600)
+    agent.trace.add(agent.agent_id, "shell", op="copilot_done",
+                    task_id=task_id, rc=rc,
+                    stdout_tail=out[-300:], stderr_tail=err[-300:])
+
+    # Parse the JSON object from the LLM response.
+    verdict = "approved"
+    parsed_findings: list = []
+    parsed_fixes: list = []
+    try:
+        s, e = out.find("{"), out.rfind("}")
+        if s != -1 and e > s:
+            obj = json.loads(out[s:e + 1])
+            verdict = obj.get("verdict", "approved")
+            parsed_findings = obj.get("findings") or []
+            parsed_fixes = obj.get("suggested_fixes") or []
+    except Exception as exc:  # noqa: BLE001
+        agent.trace.add(agent.agent_id, "note",
+                        event="reviewer_parse_failed", err=repr(exc))
+        # Couldn't parse → conservative: needs_changes with raw tail.
+        verdict = "needs_changes"
+        parsed_findings = [{"severity": "minor",
+                            "message": "reviewer LLM output not JSON",
+                            "raw": out[-400:]}]
+
+    if verdict not in ("approved", "needs_changes"):
+        verdict = "needs_changes"
+
     agent.send("orchestrator-1", {
-        "type": "review", "task_id": task_id, "status": status,
-        "findings": findings, "suggested_fixes": [],
+        "type": "review", "task_id": task_id, "status": verdict,
+        "findings": parsed_findings, "suggested_fixes": parsed_fixes,
     })
 
 
@@ -513,10 +589,10 @@ def orchestrate(orch: RoleAgent, tasks: list[dict], workdir: str,
 # ── Reviewer wires a tiny adapter for the orchestrator's custom msg type ─────
 
 
-def reviewer_adapter(agent: RoleAgent, workdir: str) -> Callable[[dict], None]:
+def reviewer_adapter(agent: RoleAgent, workdir: str, role_text: str,
+                     protocol_text: str) -> Callable[[dict], None]:
     def handler(msg: dict) -> None:
-        # Repackage to the standard review handler.
-        reviewer_handle_review(agent, msg, workdir)
+        reviewer_handle_review(agent, msg, workdir, role_text, protocol_text)
     return handler
 
 
@@ -569,10 +645,14 @@ class FractalCollaborationDemo(unittest.TestCase):
         qa = RoleAgent("qa-1", host, port, trace)
 
         spec_role = load_role("specialist")
+        rev_role = load_role("reviewer")
+        with open(PROTOCOL_PATH, encoding="utf-8") as _pf:
+            protocol_text = _pf.read()
         spec.on("task_assigned",
                 lambda m: specialist_handle_task(spec, m, spec_role,
                                                  DEMO_ROOT, model=None))
-        rev.on("task_assigned_for_review", reviewer_adapter(rev, DEMO_ROOT))
+        rev.on("task_assigned_for_review",
+               reviewer_adapter(rev, DEMO_ROOT, rev_role, protocol_text))
         qa.on("qa_request", qa_adapter(qa, DEMO_ROOT))
 
         for a in (orch, spec, rev, qa):

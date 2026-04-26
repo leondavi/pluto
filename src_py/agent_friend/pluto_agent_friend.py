@@ -315,6 +315,8 @@ class PlutoAgentFriend(TerminalProxy):
             guide_content = ""
 
         if guide_content:
+            _g_host = self.pluto.host if self.pluto else "localhost"
+            _g_port = self.pluto.http_port if self.pluto else 9001
             prompt = (
                 f"This is your skill guide ({guide_basename}) for working with "
                 f"PlutoAgentFriend — the coordination wrapper you are currently "
@@ -324,14 +326,20 @@ class PlutoAgentFriend(TerminalProxy):
                 f"Your agent ID is \"{actual_id}\". "
                 f"Use this as your identity when interacting with the Pluto server."
                 f"{token_part} "
+                f"Pluto server: http://{_g_host}:{_g_port} "
+                f"(REST API base URL — use this host and port for all /agents/* and /locks/* calls). "
                 f"Do NOT register again — the wrapper already did it for you. "
                 f"Incoming messages will be injected into your input automatically. "
                 f"Confirm briefly when done."
             )
         else:
+            _g_host = self.pluto.host if self.pluto else "localhost"
+            _g_port = self.pluto.http_port if self.pluto else 9001
             prompt = (
                 f"Your skill guide ({guide_basename}) could not be loaded. "
-                f"Your agent ID is \"{actual_id}\"."
+                f"Your agent ID is \"{actual_id}\". "
+                f"Pluto server: http://{_g_host}:{_g_port} "
+                f"(use this host and port for all API calls)."
                 f"{token_part} "
                 f"Incoming messages will be injected automatically. "
                 f"Confirm briefly when ready."
@@ -477,11 +485,25 @@ class PlutoAgentFriend(TerminalProxy):
                     f"if you need to consult it.)"
                 )
 
+        # Build a connection-info block so the agent always knows the live
+        # host/port regardless of what the role file says (role files must not
+        # hardcode addresses).
+        _host = self.pluto.host if self.pluto else "localhost"
+        _http_port = self.pluto.http_port if self.pluto else 9001
+        connection_block = (
+            f"\n\n---\n\n"
+            f"**Live Pluto server connection** (injected by PlutoAgentFriend — "
+            f"use these values; do not hardcode addresses from the role file):\n"
+            f"  Host:      {_host}\n"
+            f"  HTTP port: {_http_port}   (REST API: /agents/*, /locks/*)\n"
+            f"  Base URL:  http://{_host}:{_http_port}"
+        )
+
         prompt = (
             f"You have been assigned a specific role for this session. "
             f"Read and internalize the following role description from "
             f"{role_basename}, then confirm briefly that you understand "
-            f"your role and are ready to begin:\n\n{role_content}{protocol_block}"
+            f"your role and are ready to begin:\n\n{role_content}{protocol_block}{connection_block}"
         )
 
         attempts = 1 + self.guide_retries

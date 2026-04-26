@@ -191,6 +191,11 @@ class PlutoAgentFriend(TerminalProxy):
         self._injection_thread: threading.Thread | None = None
         self._guide_injected = False
         self._role_injected = False
+        # Messages whose text was already written to the PTY buffer but whose
+        # echo was not confirmed (TUI was busy/loading).  On the next cycle we
+        # send Enter rather than re-writing the same text, avoiding buffer
+        # accumulation that causes multiple copies to be submitted at once.
+        self._pending_enter_messages: list[dict] = []
 
     # ── Public entry point ────────────────────────────────────────────────
 
@@ -562,6 +567,24 @@ class PlutoAgentFriend(TerminalProxy):
                     )
                 continue
 
+            # If a previous injection wrote text to the PTY but echo was not
+            # confirmed (e.g. TUI was in a loading/reading state), the text is
+            # already in the agent's input buffer.  Just send Enter this cycle
+            # rather than writing the text again (which would accumulate copies).
+            if self._pending_enter_messages:
+                self._info(
+                    f"Sending Enter for {len(self._pending_enter_messages)}"
+                    f" buffered message(s) (echo was not confirmed last cycle)"
+                )
+                try:
+                    os.write(self._master_fd, b"\r")
+                except OSError:
+                    pass
+                self.pluto.confirm_delivered(self._pending_enter_messages)
+                self._pending_enter_messages = []
+                self.detector.state = AGENT_STATE_BUSY
+                continue
+
             messages = self.pluto.drain_messages()
             if not messages:
                 continue
@@ -595,12 +618,18 @@ class PlutoAgentFriend(TerminalProxy):
         )
         if ok:
             self.pluto.confirm_delivered(messages)
+            self._pending_enter_messages = []
             self.detector.state = AGENT_STATE_BUSY
         else:
-            self.pluto.abort_delivery(messages)
+            # Text was written to the PTY buffer but echo was not confirmed.
+            # The TUI (e.g. Copilot in a loading/reading state) received the
+            # bytes but didn't echo them.  Store the messages and send only
+            # Enter on the next cycle — do NOT re-write the text, which would
+            # accumulate multiple copies in the input buffer.
+            self._pending_enter_messages = messages
             logger.warning(
                 "Injection of %d message(s) not confirmed by echo; "
-                "will retry on next peek cycle",
+                "will send Enter on next ready cycle",
                 len(messages),
             )
 

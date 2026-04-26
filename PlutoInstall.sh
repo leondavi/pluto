@@ -663,7 +663,7 @@ main() {
 
     # Banner (always shown, even for --check)
     local version
-    version=$(cat "${SCRIPT_DIR}/VERSION.md" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')
+    version=$(head -1 "${SCRIPT_DIR}/VERSION.md" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')
     echo ""
     echo -e "                    ${GREEN}.am######mp.${NC}"
     echo -e "                ${GREEN}.a################a.${NC}"

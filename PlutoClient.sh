@@ -21,7 +21,7 @@ set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUTO_VERSION="$(cat "${SCRIPT_DIR}/VERSION.md" | tr -d '\n')"
+PLUTO_VERSION="$(head -1 "${SCRIPT_DIR}/VERSION.md" | tr -d '[:space:]')"
 PY_SRC_DIR="${SCRIPT_DIR}/src_py"
 VENV_DIR="/tmp/pluto/.venv"
 PYTHON_SCRIPT="${PY_SRC_DIR}/pluto_client.py"

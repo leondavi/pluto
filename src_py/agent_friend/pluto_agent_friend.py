@@ -69,7 +69,7 @@ def _read_version() -> str:
     ):
         try:
             with open(os.path.normpath(candidate)) as _f:
-                v = _f.read().strip()
+                v = _f.readline().strip()
                 if v:
                     return v
         except OSError:

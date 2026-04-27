@@ -69,7 +69,7 @@ def _read_version() -> str:
     ):
         try:
             with open(os.path.normpath(candidate)) as _f:
-                v = _f.read().strip()
+                v = _f.readline().strip()
                 if v:
                     return v
         except OSError:
@@ -111,6 +111,7 @@ from agent_friend.frameworks import (  # noqa: E402,F401
     check_pluto_status,
     detect_available_frameworks,
     get_framework_cmd,
+    get_framework_model_flag,
     get_framework_ready_pattern,
     list_roles,
     load_pluto_config,
@@ -190,6 +191,11 @@ class PlutoAgentFriend(TerminalProxy):
         self._injection_thread: threading.Thread | None = None
         self._guide_injected = False
         self._role_injected = False
+        # Messages whose text was already written to the PTY buffer but whose
+        # echo was not confirmed (TUI was busy/loading).  On the next cycle we
+        # send Enter rather than re-writing the same text, avoiding buffer
+        # accumulation that causes multiple copies to be submitted at once.
+        self._pending_enter_messages: list[dict] = []
 
     # ── Public entry point ────────────────────────────────────────────────
 
@@ -314,6 +320,8 @@ class PlutoAgentFriend(TerminalProxy):
             guide_content = ""
 
         if guide_content:
+            _g_host = self.pluto.host if self.pluto else "localhost"
+            _g_port = self.pluto.http_port if self.pluto else 9001
             prompt = (
                 f"This is your skill guide ({guide_basename}) for working with "
                 f"PlutoAgentFriend — the coordination wrapper you are currently "
@@ -323,14 +331,20 @@ class PlutoAgentFriend(TerminalProxy):
                 f"Your agent ID is \"{actual_id}\". "
                 f"Use this as your identity when interacting with the Pluto server."
                 f"{token_part} "
+                f"Pluto server: http://{_g_host}:{_g_port} "
+                f"(REST API base URL — use this host and port for all /agents/* and /locks/* calls). "
                 f"Do NOT register again — the wrapper already did it for you. "
                 f"Incoming messages will be injected into your input automatically. "
                 f"Confirm briefly when done."
             )
         else:
+            _g_host = self.pluto.host if self.pluto else "localhost"
+            _g_port = self.pluto.http_port if self.pluto else 9001
             prompt = (
                 f"Your skill guide ({guide_basename}) could not be loaded. "
-                f"Your agent ID is \"{actual_id}\"."
+                f"Your agent ID is \"{actual_id}\". "
+                f"Pluto server: http://{_g_host}:{_g_port} "
+                f"(use this host and port for all API calls)."
                 f"{token_part} "
                 f"Incoming messages will be injected automatically. "
                 f"Confirm briefly when ready."
@@ -427,11 +441,74 @@ class PlutoAgentFriend(TerminalProxy):
             return
 
         role_basename = os.path.basename(self.role_file)
+
+        # Resolve protocol.md robustly so this works whether Pluto is invoked
+        # from the repo root, the install dir, or anywhere else. We try, in
+        # order:
+        #   1. one level up from the role file's directory (handles roles
+        #      passed by absolute path that live in some library/roles/ tree)
+        #   2. library/protocol.md inside the Pluto project root (the source
+        #      checkout that ships with this script)
+        # If found, we INLINE the content into the prompt — same approach as
+        # the guide in v0.2.5 — so the agent never has to locate the file on
+        # disk regardless of its CWD or filesystem sandbox.
+        _role_dir = os.path.dirname(os.path.abspath(self.role_file))
+        _project_root_local = os.path.normpath(
+            os.path.join(_THIS_DIR, "..", "..")
+        )
+        protocol_path = None
+        for _candidate in (
+            os.path.normpath(os.path.join(_role_dir, "..", "protocol.md")),
+            os.path.join(_project_root_local, "library", "protocol.md"),
+        ):
+            if os.path.isfile(_candidate):
+                protocol_path = _candidate
+                break
+
+        protocol_block = ""
+        if protocol_path is not None and "protocol.md" in role_content:
+            try:
+                with open(protocol_path, "r", encoding="utf-8") as _pf:
+                    _protocol_content = _pf.read()
+                protocol_block = (
+                    f"\n\n---\n\n"
+                    f"Your role above references `protocol.md`. The full "
+                    f"shared coordination protocol is inlined below for "
+                    f"convenience (source: {protocol_path}). Treat this as "
+                    f"authoritative — do NOT attempt to re-read the file "
+                    f"from disk; your CWD may not contain it.\n\n"
+                    f"=== BEGIN protocol.md ===\n\n"
+                    f"{_protocol_content}\n\n"
+                    f"=== END protocol.md ==="
+                )
+            except OSError as exc:
+                logger.warning("protocol.md not readable: %s", exc)
+                protocol_block = (
+                    f"\n\n(Note: your role references `protocol.md` at "
+                    f"{protocol_path}, but it could not be read at "
+                    f"injection time: {exc}. Ask the user to provide it "
+                    f"if you need to consult it.)"
+                )
+
+        # Build a connection-info block so the agent always knows the live
+        # host/port regardless of what the role file says (role files must not
+        # hardcode addresses).
+        _host = self.pluto.host if self.pluto else "localhost"
+        _http_port = self.pluto.http_port if self.pluto else 9001
+        connection_block = (
+            f"\n\n---\n\n"
+            f"**Live Pluto server connection** (injected by PlutoAgentFriend — "
+            f"use these values; do not hardcode addresses from the role file):\n"
+            f"  Host:      {_host}\n"
+            f"  HTTP port: {_http_port}   (REST API: /agents/*, /locks/*)\n"
+            f"  Base URL:  http://{_host}:{_http_port}"
+        )
+
         prompt = (
             f"You have been assigned a specific role for this session. "
             f"Read and internalize the following role description from "
             f"{role_basename}, then confirm briefly that you understand "
-            f"your role and are ready to begin:\n\n{role_content}"
+            f"your role and are ready to begin:\n\n{role_content}{protocol_block}{connection_block}"
         )
 
         attempts = 1 + self.guide_retries
@@ -490,6 +567,24 @@ class PlutoAgentFriend(TerminalProxy):
                     )
                 continue
 
+            # If a previous injection wrote text to the PTY but echo was not
+            # confirmed (e.g. TUI was in a loading/reading state), the text is
+            # already in the agent's input buffer.  Just send Enter this cycle
+            # rather than writing the text again (which would accumulate copies).
+            if self._pending_enter_messages:
+                self._info(
+                    f"Sending Enter for {len(self._pending_enter_messages)}"
+                    f" buffered message(s) (echo was not confirmed last cycle)"
+                )
+                try:
+                    os.write(self._master_fd, b"\r")
+                except OSError:
+                    pass
+                self.pluto.confirm_delivered(self._pending_enter_messages)
+                self._pending_enter_messages = []
+                self.detector.state = AGENT_STATE_BUSY
+                continue
+
             messages = self.pluto.drain_messages()
             if not messages:
                 continue
@@ -523,12 +618,18 @@ class PlutoAgentFriend(TerminalProxy):
         )
         if ok:
             self.pluto.confirm_delivered(messages)
+            self._pending_enter_messages = []
             self.detector.state = AGENT_STATE_BUSY
         else:
-            self.pluto.abort_delivery(messages)
+            # Text was written to the PTY buffer but echo was not confirmed.
+            # The TUI (e.g. Copilot in a loading/reading state) received the
+            # bytes but didn't echo them.  Store the messages and send only
+            # Enter on the next cycle — do NOT re-write the text, which would
+            # accumulate multiple copies in the input buffer.
+            self._pending_enter_messages = messages
             logger.warning(
                 "Injection of %d message(s) not confirmed by echo; "
-                "will retry on next peek cycle",
+                "will send Enter on next ready cycle",
                 len(messages),
             )
 
@@ -641,6 +742,14 @@ def main() -> None:
         "--framework", choices=list(KNOWN_FRAMEWORKS.keys()),
         help="Agent framework: claude, copilot, aider, cursor. "
              "Auto-detected if omitted.",
+    )
+    parser.add_argument(
+        "--model", default=None, metavar="NAME",
+        help="Model to pass to the underlying agent CLI "
+             "(e.g. 'gpt-5.2', 'claude-sonnet-4.5', 'claude-haiku-4.5'). "
+             "Forwarded as the framework's model flag (e.g. copilot/claude/aider "
+             "all use --model). Ignored when an explicit command is given "
+             "after `--`.",
     )
     parser.add_argument(
         "--host", default=None,
@@ -774,7 +883,7 @@ def main() -> None:
 
     if not cmd:
         if args.framework:
-            cmd = get_framework_cmd(args.framework)
+            cmd = get_framework_cmd(args.framework, model=args.model)
             if not ready_pattern:
                 ready_pattern = get_framework_ready_pattern(args.framework)
         else:
@@ -792,7 +901,7 @@ def main() -> None:
                     f"Auto-detected: {fw['display']} ({fw['path']})",
                     file=sys.stderr,
                 )
-                cmd = [fw["cmd"]]
+                cmd = get_framework_cmd(fw["key"], model=args.model)
                 if not ready_pattern:
                     ready_pattern = get_framework_ready_pattern(fw["key"])
             else:
@@ -806,7 +915,7 @@ def main() -> None:
                     idx = int(choice) - 1
                     if 0 <= idx < len(available):
                         fw = available[idx]
-                        cmd = [fw["cmd"]]
+                        cmd = get_framework_cmd(fw["key"], model=args.model)
                         if not ready_pattern:
                             ready_pattern = get_framework_ready_pattern(
                                 fw["key"])
@@ -816,6 +925,16 @@ def main() -> None:
                 except (ValueError, EOFError):
                     print("Invalid choice.", file=sys.stderr)
                     sys.exit(1)
+    elif args.model:
+        # Explicit command after `--` was provided; warn that --model is ignored
+        # so the user is not surprised when the underlying CLI starts with its
+        # default model.
+        print(
+            f"{YELLOW}[pluto-friend]{NC} --model={args.model} ignored: an "
+            f"explicit command was supplied after `--`. Add the model flag "
+            f"to the command yourself if needed.",
+            file=sys.stderr,
+        )
 
     # --- Show Pluto server status ---
     print(

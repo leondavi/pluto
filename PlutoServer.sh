@@ -20,13 +20,46 @@ set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUTO_VERSION="$(cat "${SCRIPT_DIR}/VERSION.md" | tr -d '\n')"
+PLUTO_VERSION="$(head -1 "${SCRIPT_DIR}/VERSION.md" | tr -d '[:space:]')"
 SRC_DIR="${SCRIPT_DIR}/src_erl"
 BUILD_DIR="/tmp/pluto/build"
 REL_DIR="${BUILD_DIR}/_build/default/rel/pluto"
 PID_FILE="/tmp/pluto/pluto.pid"
 PING_TOOL="${SCRIPT_DIR}/src_py/utils/ping.py"
 INFO_TOOL="${SCRIPT_DIR}/src_py/utils/server_info.py"
+CONFIG_FILE="${SCRIPT_DIR}/config/pluto_config.json"
+
+# ── Config loader ─────────────────────────────────────────────────────────────
+# Read a single key from config/pluto_config.json's "pluto_server" section,
+# with a fallback default. Keeps PlutoServer.sh in sync with PlutoAgentFriend.sh
+# and the Erlang server, which all read the same file.
+read_config() {
+    local key="$1"
+    local default="$2"
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        local val
+        val=$(python3 -c "
+import json
+try:
+    with open('${CONFIG_FILE}') as f:
+        c = json.load(f)
+    print(c.get('pluto_server', {}).get('${key}', ''))
+except Exception:
+    pass
+" 2>/dev/null)
+        if [[ -n "${val}" ]]; then
+            echo "${val}"
+            return
+        fi
+    fi
+    echo "${default}"
+}
+
+# Load network settings once. Env vars (PLUTO_HOST/PLUTO_PORT/PLUTO_HTTP_PORT)
+# still override, matching the rest of the codebase.
+PLUTO_HOST="${PLUTO_HOST:-$(read_config host_ip 127.0.0.1)}"
+PLUTO_PORT="${PLUTO_PORT:-$(read_config host_tcp_port 9200)}"
+PLUTO_HTTP_PORT="${PLUTO_HTTP_PORT:-$(read_config host_http_port 9201)}"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -45,7 +78,7 @@ err()   { echo -e "${RED}[pluto]${NC} $*" >&2; }
 # Ping the Pluto server via the Python utility (OS-independent).
 # Returns 0 if the server responds with "pong", 1 otherwise.
 pluto_ping() {
-    python3 "${PING_TOOL}" -q --timeout "${1:-2}" 2>/dev/null
+    python3 "${PING_TOOL}" -q --host "${PLUTO_HOST}" --port "${PLUTO_PORT}" --timeout "${1:-2}" 2>/dev/null
 }
 
 # Check that rebar3 is on the PATH
@@ -57,13 +90,13 @@ require_rebar3() {
     fi
 }
 
-# Find PIDs of processes holding the Pluto TCP port (9000) or matching beam.
+# Find PIDs of processes holding the Pluto TCP port or matching beam.
 # Returns space-separated PIDs (may be empty).
 find_pluto_pids() {
     local pids=""
-    # Primary: find process holding port 9000
+    # Primary: find process holding the configured TCP port
     local port_pids
-    port_pids=$(lsof -ti :9000 2>/dev/null || true)
+    port_pids=$(lsof -ti :${PLUTO_PORT} 2>/dev/null || true)
     if [[ -n "${port_pids}" ]]; then
         pids="${port_pids}"
     fi
@@ -87,7 +120,7 @@ check_node_conflict() {
         epmd_conflict=true
     fi
 
-    if lsof -ti :9000 &>/dev/null; then
+    if lsof -ti :${PLUTO_PORT} &>/dev/null; then
         port_conflict=true
     fi
 
@@ -96,7 +129,7 @@ check_node_conflict() {
     fi
 
     $epmd_conflict && warn "An Erlang node named 'pluto' is already registered with epmd."
-    $port_conflict && warn "Port 9000 is already in use."
+    $port_conflict && warn "Port ${PLUTO_PORT} is already in use."
 
     # Find and kill all Pluto-related processes
     local pids
@@ -135,7 +168,7 @@ check_node_conflict() {
     if command -v epmd &>/dev/null && epmd -names 2>/dev/null | grep -q 'name pluto '; then
         still_epmd=true
     fi
-    if lsof -ti :9000 &>/dev/null; then
+    if lsof -ti :${PLUTO_PORT} &>/dev/null; then
         still_port=true
     fi
 
@@ -143,11 +176,11 @@ check_node_conflict() {
         echo
         err "════════════════════════════════════════════════════════════════"
         err "Failed to clean up the previous Pluto instance."
-        $still_port && err "  Port 9000 is still in use."
+        $still_port && err "  Port ${PLUTO_PORT} is still in use."
         $still_epmd && err "  'pluto' node is still in epmd."
         err ""
         err "Please run these commands manually:"
-        err "  ${CYAN}kill -9 \$(lsof -ti :9000)${NC}"
+        err "  ${CYAN}kill -9 \$(lsof -ti :${PLUTO_PORT})${NC}"
         err "  ${CYAN}pkill -x epmd${NC}"
         err "════════════════════════════════════════════════════════════════"
         echo
@@ -207,7 +240,7 @@ cmd_start_foreground() {
         exit 1
     fi
     info "Starting Pluto server (foreground) ..."
-    exec "${REL_DIR}/bin/pluto" foreground
+    PLUTO_CONFIG="${CONFIG_FILE}" exec "${REL_DIR}/bin/pluto" foreground
 }
 
 cmd_start_daemon() {
@@ -217,7 +250,7 @@ cmd_start_daemon() {
         exit 1
     fi
     info "Starting Pluto server (daemon) ..."
-    "${REL_DIR}/bin/pluto" daemon
+    PLUTO_CONFIG="${CONFIG_FILE}" "${REL_DIR}/bin/pluto" daemon
 
     # Wait for the server to come up
     local attempts=0
@@ -226,7 +259,7 @@ cmd_start_daemon() {
         if pluto_ping 1; then
             # Store the OS PID for --kill convenience
             local os_pid
-            os_pid=$(lsof -ti :9000 2>/dev/null || echo "unknown")
+            os_pid=$(lsof -ti :${PLUTO_PORT} 2>/dev/null || echo "unknown")
             echo "${os_pid}" > "${PID_FILE}"
             ok "Pluto daemon is running (pid ${os_pid})."
             return 0
@@ -267,7 +300,7 @@ cmd_kill() {
         rm -f "${PID_FILE}"
     fi
 
-    # 3. Fallback: kill processes holding port 9000 or matching beam.*pluto
+    # 3. Fallback: kill processes holding the Pluto TCP port or matching beam.*pluto
     if ! $stopped; then
         local pids
         pids=$(find_pluto_pids)
@@ -336,9 +369,12 @@ LOGO
         return 1
     fi
 
-    # Query detailed server info from the running Erlang server
+    # Query detailed server info from the running Erlang server.
+    # Host/port come from config/pluto_config.json (PLUTO_HOST/PLUTO_PORT env
+    # overrides honoured); without these, server_info.py would default to
+    # localhost:9000 and every field would render as "?".
     local info_json
-    info_json=$(python3 "${INFO_TOOL}" --timeout 3 2>/dev/null || echo "{}")
+    info_json=$(python3 "${INFO_TOOL}" --host "${PLUTO_HOST}" --port "${PLUTO_PORT}" --timeout 3 2>/dev/null || echo "{}")
 
     # Parse fields from the JSON response using python3 for reliability
     local version otp_release erts_version node_name hostname os_type

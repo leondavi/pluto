@@ -16,6 +16,7 @@ Usage in test classes:
             cls.server.stop()           # only stops if we started it
 """
 
+import json
 import os
 import socket
 import subprocess
@@ -23,9 +24,24 @@ import time
 
 _PROJECT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _SERVER_SCRIPT = os.path.join(_PROJECT, "PlutoServer.sh")
+_CONFIG_PATH = os.path.join(_PROJECT, "config", "pluto_config.json")
 
-PLUTO_HOST = "127.0.0.1"
-PLUTO_PORT = 9000
+
+def _read_config_ports():
+    """Return (host, tcp_port, http_port) from pluto_config.json with defaults."""
+    host, tcp_port, http_port = "127.0.0.1", 9200, 9201
+    try:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            cfg = json.load(f).get("pluto_server", {})
+        host = cfg.get("host_ip", host)
+        tcp_port = int(cfg.get("host_tcp_port", tcp_port))
+        http_port = int(cfg.get("host_http_port", http_port))
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return host, tcp_port, http_port
+
+
+PLUTO_HOST, PLUTO_PORT, PLUTO_HTTP_PORT = _read_config_ports()
 
 
 def _tcp_reachable(host=PLUTO_HOST, port=PLUTO_PORT, timeout=2):
@@ -49,6 +65,7 @@ class PlutoTestServer:
 
     host = PLUTO_HOST
     port = PLUTO_PORT
+    http_port = PLUTO_HTTP_PORT
 
     def __init__(self):
         self._we_started = False

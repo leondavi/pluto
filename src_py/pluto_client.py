@@ -580,8 +580,21 @@ class PlutoHttpClient:
         return resp
 
     def list_agents(self) -> List[str]:
-        """List all connected agents via HTTP."""
+        """List IDs of currently connected agents via HTTP."""
         resp = self._get("/agents")
+        agents = resp.get("agents", [])
+        # Defensive: basic /agents always returns strings; guard against stale servers.
+        return [a if isinstance(a, str) else a.get("agent_id", "?") for a in agents]
+
+    def list_agents_detailed(self) -> List[dict]:
+        """List all agents (including offline) as full detail dicts via HTTP.
+
+        Each dict contains at least: agent_id, status, last_seen,
+        custom_status, attributes, subscriptions.
+        Use this when you need to call .get('agent_id') on the results —
+        the basic list_agents() returns plain strings.
+        """
+        resp = self._get("/agents?detailed=true")
         return resp.get("agents", [])
 
     # ── Lock resource introspection ─────────────────────────────────────

@@ -217,11 +217,13 @@ route('GET', <<"/agents">>, _Body, _Sock) ->
     {200, #{<<"status">> => <<"ok">>, <<"agents">> => Agents}};
 route('GET', <<"/agents?", Query/binary>>, _Body, _Sock) ->
     Params = parse_query(Query),
-    case maps:get(<<"include_offline">>, Params, <<"false">>) of
-        <<"true">> ->
+    Detailed      = maps:get(<<"detailed">>,        Params, <<"false">>) =:= <<"true">>,
+    IncludeOffline = maps:get(<<"include_offline">>, Params, <<"false">>) =:= <<"true">>,
+    case Detailed orelse IncludeOffline of
+        true ->
             AgentMaps = pluto_msg_hub:list_agents_detailed(),
             {200, #{<<"status">> => <<"ok">>, <<"agents">> => AgentMaps}};
-        _ ->
+        false ->
             Agents = pluto_msg_hub:list_agents(),
             {200, #{<<"status">> => <<"ok">>, <<"agents">> => Agents}}
     end;

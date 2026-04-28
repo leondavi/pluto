@@ -122,7 +122,7 @@ The simplest way to start a coordinated AI agent — wraps Claude Code, Copilot 
 
 # Target a specific framework
 ./PlutoAgentFriend.sh --agent-id coder-1 --framework claude
-./PlutoAgentFriend.sh --agent-id coder-1 --framework copilot
+./PlutoAgentFriend.sh --agent-id coder-1 --framework copilot (not supported due to safe layer restriction)
 
 # Wrap a custom command
 ./PlutoAgentFriend.sh --agent-id worker-1 -- python3 my_agent.py

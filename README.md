@@ -9,6 +9,10 @@
   Resource locking · Agent discovery · Message routing · Deadlock detection
 </p>
 
+<p align="center">
+  <em>By using Pluto you accept the terms of the <a href="#disclaimer--liability">Disclaimer &amp; Liability</a> and <a href="CONSENT.md">CONSENT.md</a>.</em>
+</p>
+
 ---
 
 ## What Is Pluto?

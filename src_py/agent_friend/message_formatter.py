@@ -25,37 +25,34 @@ class MessageFormatter:
                 ):
                     continue
                 parts.append(
-                    f"[Pluto Message from {sender}]\n"
+                    f"[Pluto msg from {sender}]\n"
                     f"{json.dumps(payload, indent=2)}"
                 )
             elif event == "broadcast":
                 parts.append(
-                    f"[Pluto Broadcast from {sender}]\n"
+                    f"[Pluto bcast from {sender}]\n"
                     f"{json.dumps(payload, indent=2)}"
                 )
             elif event == "task_assigned":
                 task_id = msg.get("task_id", "?")
                 desc = msg.get("description", "")
                 parts.append(
-                    f"[Pluto Task Assignment - {task_id}]\n"
+                    f"[Pluto task {task_id}]\n"
                     f"From: {sender}\n"
-                    f"Description: {desc}\n"
+                    f"Desc: {desc}\n"
                     f"Payload: {json.dumps(payload, indent=2)}\n"
-                    f"\nWork on this task. When done, update it with "
+                    f"\nWhen done, update with "
                     f'pluto_task_update("{task_id}", "completed", '
                     f'{{"result": ...}}).'
                 )
             elif event == "topic_message":
                 topic = msg.get("topic", "?")
                 parts.append(
-                    f"[Pluto Topic '{topic}' from {sender}]\n"
+                    f"[Pluto topic '{topic}' from {sender}]\n"
                     f"{json.dumps(payload, indent=2)}"
                 )
             else:
                 continue
 
-        header = (
-            "You have received the following Pluto coordination messages. "
-            "Process them and take appropriate action.\n\n"
-        )
+        header = "Pluto coordination msgs — process each:\n\n"
         return header + "\n\n".join(parts)

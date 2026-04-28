@@ -905,8 +905,9 @@ do_register_http_with_token(AgentId, Token, Attrs, Mode, TtlMs) ->
     {Token, SessionId}.
 
 %% @private Generate a cryptographically random HTTP session token.
+%% 16 bytes = 128-bit entropy (32 hex chars). Bump to 32/64 if needed.
 generate_http_token() ->
-    Hex = binary:encode_hex(crypto:strong_rand_bytes(24)),
+    Hex = binary:encode_hex(crypto:strong_rand_bytes(16)),
     <<"PLUTO-", Hex/binary>>.
 
 %% @private Generate an HTTP session ID.

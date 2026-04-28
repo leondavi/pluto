@@ -42,30 +42,30 @@ When Pluto has messages for you, they are injected into your stdin as
 natural-language blocks.  They always start with a header line:
 
 ```
-You have received the following Pluto coordination messages. Process them and take appropriate action.
+Pluto coordination msgs — process each:
 
-[Pluto Message from coder-2]
+[Pluto msg from coder-2]
 {
   "type": "review_request",
   "file": "src/main.py"
 }
 
-[Pluto Task Assignment - TASK-7]
+[Pluto task TASK-7]
 From: orchestrator
-Description: Refactor the auth module
+Desc: Refactor the auth module
 Payload: { ... }
 
-Work on this task. When done, update it with pluto_task_update("TASK-7", "completed", {"result": ...}).
+When done, update with pluto_task_update("TASK-7", "completed", {"result": ...}).
 ```
 
 ### Message Types You May Receive
 
 | Header | What It Means |
 |--------|---------------|
-| `[Pluto Message from <agent>]` | A direct message from another agent |
-| `[Pluto Broadcast from <agent>]` | A message sent to all agents |
-| `[Pluto Topic '<name>' from <agent>]` | A pub/sub message for a topic you subscribed to |
-| `[Pluto Task Assignment - <id>]` | A task assigned to you — work on it and report back |
+| `[Pluto msg from <agent>]` | A direct message from another agent |
+| `[Pluto bcast from <agent>]` | A message sent to all agents |
+| `[Pluto topic '<name>' from <agent>]` | A pub/sub message for a topic you subscribed to |
+| `[Pluto task <id>]` | A task assigned to you — work on it and report back |
 | `[Pluto Event: <type>]` | Any other server event |
 
 ---
@@ -436,18 +436,18 @@ Here is what a typical session looks like from your perspective:
 
 # 2. While you're idle, you suddenly receive in stdin:
 
-You have received the following Pluto coordination messages. Process them and take appropriate action.
+Pluto coordination msgs — process each:
 
-[Pluto Task Assignment - TASK-3]
+[Pluto task TASK-3]
 From: orchestrator
-Description: Add input validation to the login endpoint in src/auth.py
+Desc: Add input validation to the login endpoint in src/auth.py
 Payload: {
   "priority": "high",
   "files": ["src/auth.py"],
   "requirements": "Validate email format and password length"
 }
 
-Work on this task. When done, update it with pluto_task_update("TASK-3", "completed", {"result": ...}).
+When done, update with pluto_task_update("TASK-3", "completed", {"result": ...}).
 
 # 3. You process this like a normal user request:
 #    a. Lock the file

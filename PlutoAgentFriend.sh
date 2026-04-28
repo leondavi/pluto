@@ -45,6 +45,28 @@ ok()    { echo -e "${GREEN}[pluto-friend]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[pluto-friend]${NC} $*"; }
 err()   { echo -e "${RED}[pluto-friend]${NC} $*" >&2; }
 
+# Disclaimer printed at startup so every user sees it before launching
+# an agent. Mirrors the wording in pluto_injection_consent.md and
+# docs/guide/pluto-agent-friend.md.
+show_disclaimer() {
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  DISCLAIMER                                                      ║${NC}"
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "  Pluto is provided ${BOLD}as-is${NC} for research and development purposes only,"
+    echo -e "  with no warranty of any kind. The repository maintainers and developers"
+    echo -e "  do not take any responsibility for the use of this software. Pluto has"
+    echo -e "  no harmful intent and is built in good faith for legitimate multi-agent"
+    echo -e "  coordination experiments."
+    echo ""
+    echo -e "  ${BOLD}You, the user, are solely responsible${NC} for any harm, damage, data loss,"
+    echo -e "  security incident, or other issue caused by your use or misuse of Pluto"
+    echo -e "  — including granting consent to AI agents, running automated injections,"
+    echo -e "  exposing the local message bus to untrusted networks, or coordinating"
+    echo -e "  agents that take destructive actions on your systems. Use only in"
+    echo -e "  environments you control."
+    echo ""
+}
+
 # ── Signal handling ──────────────────────────────────────────────────────────
 # Track the python child so we can relay signals and guarantee cleanup when
 # the user hits Ctrl-C, closes the terminal, or sends SIGTERM to this script.
@@ -352,6 +374,7 @@ main() {
     ╚═══════════════════════════════════════════════╝
 BANNER
         echo -e "${NC}"
+        show_disclaimer
 
         # If invoked from a different directory, show where Pluto is installed
         # so users can tell which installation is in use.
@@ -484,6 +507,7 @@ BANNER
     ╚═══════════════════════════════════════════════╝
 BANNER
         echo -e "${NC}"
+        show_disclaimer
 
         # If invoked from a different directory, show where Pluto is installed.
         if [[ "${SCRIPT_DIR}" != "${PWD}" ]]; then
@@ -614,6 +638,42 @@ BANNER
 
     if [[ ${#extra_cmd[@]} -gt 0 ]]; then
         py_args+=("--" "${extra_cmd[@]}")
+    fi
+
+    # ── Copilot-specific: NOT SUPPORTED ──────────────────────────────────
+    # GitHub Copilot CLI enforces a safe-layer that rejects unsolicited
+    # text injected into its input stream even when the user has given
+    # explicit consent. Because of this restriction PlutoAgentFriend
+    # cannot automate Copilot: guides, role files, and Pluto messages
+    # are all blocked. All coordination must go through PlutoClient with
+    # active polling from the agent side — there is no injection path.
+    if [[ "${framework}" == "copilot" ]]; then
+        echo ""
+        echo -e "${RED}╔══════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║  COPILOT CLI — NOT SUPPORTED BY PlutoAgentFriend                 ║${NC}"
+        echo -e "${RED}╚══════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  GitHub Copilot CLI uses an internal ${BOLD}safe-layer${NC} that rejects"
+        echo -e "  unsolicited text written to its input stream. This restriction"
+        echo -e "  applies ${BOLD}even when the user has explicitly given consent${NC}."
+        echo ""
+        echo -e "  As a result, PlutoAgentFriend ${RED}cannot${NC} inject prompts into Copilot:"
+        echo -e "    • Guide and role files will not be delivered."
+        echo -e "    • Pluto messages will not reach the agent."
+        echo -e "    • Automated agent coordination is not possible."
+        echo ""
+        echo -e "  ${BOLD}What you can do instead:${NC}"
+        echo -e "    Use ${CYAN}PlutoClient${NC} for all communication with Copilot."
+        echo -e "    The Copilot agent must actively poll Pluto for messages"
+        echo -e "    using the HTTP API — push injection is not available."
+        echo ""
+        echo -e "  See ${CYAN}docs/guide/pluto-agent-friend.md${NC} → Copilot Limitations"
+        echo -e "  for full details and the recommended polling pattern."
+        echo ""
+        echo -e "  ${YELLOW}Starting Copilot in pass-through mode (no injection).${NC}"
+        echo -e "  ${DIM}Pluto will still register your agent ID and route messages${NC}"
+        echo -e "  ${DIM}to its inbox — you must fetch them manually via PlutoClient.${NC}"
+        echo ""
     fi
 
     info "Starting agent wrapper..."

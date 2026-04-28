@@ -5,7 +5,7 @@
 <h1 align="center">Pluto</h1>
 
 <p align="center">
-  <strong>A coordination and messaging server for AI agents</strong><br>
+  <strong>Multi-Agent Coordination and Messaging Server</strong><br>
   Resource locking · Agent discovery · Message routing · Deadlock detection
 </p>
 
@@ -13,8 +13,8 @@
 
 ## What Is Pluto?
 
-Pluto is a high-performance coordination server built on Erlang/OTP that enables safe, real-time collaboration between multiple AI agents. It provides resource locking with deadlock detection, lease-based ownership, fencing tokens, agent discovery, and inter-agent messaging.
-giving multi-agent systems the infrastructure they need to operate concur
+Pluto is a coordination server built on Erlang/OTP that gives multiple AI agents a shared infrastructure for safe concurrent operation. It provides resource locking with deadlock detection, lease-based ownership, fencing tokens, agent discovery, and inter-agent messaging.
+
 It does **not** plan or assign tasks — that is the agent's job. Pluto exclusively handles:
 
 - **Resource locking** — exclusive (write) and shared (read) locks with automatic expiration
@@ -27,15 +27,20 @@ It does **not** plan or assign tasks — that is the agent's job. Pluto exclusiv
 
 ## Why Do You Need Pluto?
 
-When multiple agents operate concurrently, they run into:
+Most multi-agent frameworks today (LangGraph, CrewAI, AutoGen, OpenAI Agents SDK, Claude's agent SDK) focus on task planning, tool use, and orchestrating agent-to-agent calls. What they generally do not provide is a coordination layer for agents that run as separate processes — especially when those agents are heterogeneous (different models, runtimes, or languages).
 
-| Problem | Without Pluto | With Pluto |
-|---------|--------------|------------|
-| **File conflicts** | Two agents edit the same file at once | Exclusive lock ensures one writer at a time |
-| **Resource races** | Agents compete for GPUs, ports, temp dirs | Locks with FIFO fairness prevent starvation |
-| **Duplicate work** | Multiple agents attempt the same task | Agents discover peers and coordinate via messages |
-| **Silent failures** | No way to know if a peer crashed | Heartbeat monitoring detects dead agents and releases their locks |
-| **Deadlocks** | Circular waits cause permanent hangs | Automatic cycle detection breaks deadlocks immediately |
+Concretely, what is missing and what Pluto adds:
+
+| Gap in current frameworks | What Pluto provides |
+|--------------------------|---------------------|
+| Agents share state through memory or files with no conflict prevention | Distributed resource locks (exclusive / shared) with FIFO fairness |
+| No mechanism to detect or break circular waits between agents | Automatic deadlock detection with cycle analysis and victim selection |
+| Locks held by a crashed agent are never released | Heartbeat monitoring releases locks when an agent goes silent |
+| No protection against a stale agent writing after a lock was revoked | Monotonically increasing fencing tokens tied to each lock grant |
+| Agents can only communicate via shared state or framework-internal calls | Language-agnostic TCP and HTTP messaging bus any runtime can join |
+| No live view of which agents are running and what they hold | Agent registry with live discovery and event history |
+
+Pluto does not replace orchestration frameworks — it complements them by providing the missing concurrency primitives that make multi-process, multi-runtime agent systems safe to run.
 
 ## Architecture
 
@@ -557,6 +562,33 @@ pluto/
 │       └── flow_runner.py        # JSON flow executor
 └── tests/                  # Integration & demo tests
 ```
+
+## Disclaimer & Liability
+
+> **Read this before using Pluto.**
+
+Pluto is provided **as-is**, without warranty of any kind — express or implied — including but not limited to warranties of merchantability, fitness for a particular purpose, or non-infringement.
+
+**The maintainers and developers of this repository bear no responsibility or liability** of any kind — direct, indirect, incidental, special, exemplary, or consequential — for any damages, losses, security incidents, data corruption, system damage, or any other harm arising from the use, misuse, or inability to use this software.
+
+**You, the user, are solely and fully responsible for:**
+
+- Any harm, damage, data loss, or security incident caused by running Pluto
+- Granting consent to AI agents to receive injected messages
+- Running automated injections into agent input streams
+- Exposing the Pluto message bus to networks you do not fully control
+- Coordinating AI agents that take destructive, irreversible, or harmful actions on your systems
+- Any wrong, unauthorized, or unintended usage of Pluto
+
+### Purpose & Intent
+
+Pluto is built with entirely **positive intentions**, solely for **research and development** in legitimate multi-agent AI coordination scenarios. The code injection capability — writing messages directly into an AI agent's input stream — is a **powerful and potentially dangerous action**. Users must carefully inspect and understand what Pluto does before enabling it.
+
+The maintainers and developers of Pluto have **no malicious intent**. This project exists for beneficial, experimental, and research purposes only. Nevertheless, this tool can cause unintended effects if misused, and you are responsible for how you use it.
+
+Use Pluto only in environments you own and control. Do not use it on production systems, shared machines, or with agents that have access to sensitive resources, unless you fully understand the risks.
+
+---
 
 ## License
 

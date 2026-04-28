@@ -75,6 +75,27 @@ ok()    { echo -e "${GREEN}[pluto]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[pluto]${NC} $*"; }
 err()   { echo -e "${RED}[pluto]${NC} $*" >&2; }
 
+show_disclaimer() {
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  DISCLAIMER & LIABILITY NOTICE                                   ║${NC}"
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "  Pluto is provided ${BOLD}as-is${NC} for research and development purposes only,"
+    echo -e "  with no warranty of any kind. The repository maintainers and developers"
+    echo -e "  bear ${BOLD}no responsibility or liability${NC} for any damages, losses, security"
+    echo -e "  incidents, or harm arising from the use or misuse of this software."
+    echo ""
+    echo -e "  ${BOLD}You, the user, are solely responsible${NC} for any harm, damage, data loss,"
+    echo -e "  security incident, or other issue caused by running this server —"
+    echo -e "  including exposing it to untrusted networks, granting agents access to"
+    echo -e "  sensitive resources, or coordinating agents that take destructive actions."
+    echo ""
+    echo -e "  Pluto is built with positive intentions for legitimate multi-agent R&D."
+    echo -e "  Code injection is a powerful action — inspect and understand the tool"
+    echo -e "  before use. Run only in environments you own and control."
+    echo -e "  See ${CYAN}CONSENT.md${NC} and ${CYAN}README.md${NC} for the full disclaimer."
+    echo ""
+}
+
 # Ping the Pluto server via the Python utility (OS-independent).
 # Returns 0 if the server responds with "pong", 1 otherwise.
 pluto_ping() {
@@ -234,6 +255,7 @@ cmd_clean() {
 }
 
 cmd_start_foreground() {
+    show_disclaimer
     do_build
     if ! check_node_conflict; then
         err "Cannot start — another Pluto node is already running."
@@ -244,6 +266,7 @@ cmd_start_foreground() {
 }
 
 cmd_start_daemon() {
+    show_disclaimer
     do_build
     if ! check_node_conflict; then
         err "Cannot start — another Pluto node is already running."

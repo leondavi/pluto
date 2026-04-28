@@ -160,6 +160,71 @@ Create or edit this file to avoid repeating `--host` / `--http-port` on every la
 
 ---
 
+## Copilot CLI — Not Supported
+
+> **PlutoAgentFriend does not work with GitHub Copilot CLI.**
+
+GitHub Copilot CLI enforces an internal **safe layer** that rejects
+unsolicited text written to its input stream. This restriction applies
+**even when the user has explicitly given consent** — the safe layer
+operates at the CLI level and is outside Pluto's control.
+
+### What this means
+
+- Guide and role files **cannot** be injected into Copilot.
+- Pluto messages **cannot** be delivered to a Copilot agent automatically.
+- Automated agent coordination through prompt injection is **not available**.
+- The consent handshake (previous versions of this doc) does not overcome
+  the restriction — Copilot will reject the injected handshake question
+  itself, so the gate can never be opened.
+
+### What to do instead
+
+All communication with a Copilot-based agent must go through
+**PlutoClient** with **active polling** from the agent side:
+
+1. The Copilot agent (or a human using Copilot) periodically calls
+   `./PlutoClient.sh poll` (or the equivalent HTTP endpoint) to fetch
+   pending messages from its Pluto inbox.
+2. The agent reads the messages and responds or acts accordingly —
+   there is no push/injection path.
+3. Replies are sent back via `./PlutoClient.sh send` or the HTTP API.
+
+This polling pattern works reliably with Copilot because it does not
+require writing anything to Copilot's stdin.
+
+### Other agents
+
+Claude Code, Cursor, Aider, and custom commands are **fully
+supported** — prompt injection works as documented in the sections
+above. `--require-consent` is not needed for these frameworks.
+
+---
+
+## Disclaimer & Liability
+
+Pluto is provided **as-is**, without warranty of any kind — express or
+implied. The repository maintainers and developers bear **no
+responsibility or liability** of any kind for any damages, losses,
+security incidents, or harm arising from the use or misuse of this
+software.
+
+**You, the user, are solely responsible** for any harm, damage, data
+loss, security incident, or other issue caused by your use or misuse of
+Pluto — including granting consent to AI agents, running automated
+injections, exposing the local message bus to untrusted networks, or
+coordinating agents that take destructive actions on your systems.
+
+The code injection capability is a **powerful and potentially dangerous
+action**. Carefully inspect what Pluto injects before enabling automated
+mode, and use it only in environments you own and control.
+
+Pluto is built with entirely positive intentions for legitimate
+multi-agent research and development. See [CONSENT.md](../../CONSENT.md)
+for the full disclaimer and user-responsibility statement.
+
+---
+
 ## See Also
 
 - [PlutoClient.sh guide](pluto-client.md) — inspect agents, stats, locks

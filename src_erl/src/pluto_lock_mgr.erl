@@ -523,7 +523,7 @@ sweep_expired_locks(State) ->
                     <<"resource">> => Res,
                     <<"message">>  => iolist_to_binary(io_lib:format(
                         "Lock ~s on ~s has expired. Re-acquire before continuing "
-                        "work on this resource — another agent may now hold it.",
+                        "work on this resource - another agent may now hold it.",
                         [Ref, Res]))
                 },
                 pluto_msg_hub:push_event_to_agent(AId, ExpiredEvt),
@@ -540,7 +540,7 @@ sweep_expired_locks(State) ->
                     <<"message">>       => iolist_to_binary(io_lib:format(
                         "Lock ~s on ~s expires in ~wms. Renew now with "
                         "{\"op\":\"renew\",\"lock_ref\":\"~s\",\"ttl_ms\":30000} "
-                        "or re-acquire after expiry — it may be granted to another agent.",
+                        "or re-acquire after expiry - it may be granted to another agent.",
                         [Ref, Res, ExpiresIn, Ref]))
                 },
                 pluto_msg_hub:push_event_to_agent(AId, WarnEvt),

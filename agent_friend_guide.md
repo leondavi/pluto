@@ -5,20 +5,14 @@
 
 ## Abbreviations Used in This Guide and Pluto Messages
 
-To save tokens without losing meaning, this guide and the msgs Pluto
-injects into your stdin use these short forms consistently:
+This guide and the msgs Pluto injects into your stdin use these short
+forms. Treat each short form as identical in meaning to its long form.
 
-| Short | Long |
-|-|-|
-| `msg` | message |
-| `msgs` | messages |
-| `bcast` | broadcast |
-| `req` | request |
-| `resp` | response |
-| `desc` | description |
+`{short, long}`:
+{msg, message} {msgs, messages} {bcast, broadcast} {req, request}
+{resp, response} {desc, description}
 
-Treat the short and long forms as identical in meaning. Use the short forms
-in your own msgs back to Pluto where natural.
+Use the short forms in your own msgs back to Pluto where natural.
 
 ---
 
@@ -461,8 +455,8 @@ This section is for the **user** (or for you to suggest to the user).
 | `/agents/peek` | GET | Non-destructive inbox read (`?token=...[&since_token=N]`) |
 | `/agents/ack` | POST | Ack msgs `{token, up_to_seq}` (idempotent) |
 | `/agents/find` | POST | Find agents by attributes |
-| `/msg` | POST | Send a direct msg |
-| `/broadcast` | POST | Bcast to all agents |
+| `/messages/send` | POST | Send a direct msg |
+| `/messages/broadcast` | POST | Bcast to all agents |
 | `/agents/subscribe` | POST | Subscribe to a topic |
 | `/agents/publish` | POST | Publish to a topic |
 | `/lock` | POST | Acquire a lock |

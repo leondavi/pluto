@@ -224,9 +224,44 @@ sync_source() {
         "${SRC_DIR}/" "${BUILD_DIR}/"
 }
 
+# Detect the version of the currently-built release (if any).
+# Echoes the highest-numbered release directory name, or empty if no build.
+get_built_version() {
+    if [[ ! -d "${REL_DIR}/releases" ]]; then
+        return
+    fi
+    ls -1 "${REL_DIR}/releases" 2>/dev/null \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sort -V | tail -1
+}
+
+# If the source version (from VERSION.md) differs from the built release,
+# wipe stale build artefacts so do_build produces a fresh release that
+# matches the source. Stale releases dirs (e.g. releases/0.2.6 when source
+# is 0.2.7) can otherwise leave the runtime confused about which version
+# to boot.
+auto_clean_if_stale() {
+    local source_ver="${PLUTO_VERSION#v}"
+    local built_ver
+    built_ver=$(get_built_version)
+
+    [[ -z "${built_ver}" ]] && return                        # nothing built yet
+    [[ "${source_ver}" == "${built_ver}" ]] && return        # already in sync
+
+    local sorted_top
+    sorted_top=$(printf '%s\n%s\n' "${source_ver}" "${built_ver}" | sort -V | tail -1)
+    if [[ "${sorted_top}" == "${source_ver}" ]]; then
+        warn "Source ${source_ver} is newer than built ${built_ver} — auto-cleaning."
+    else
+        warn "Source ${source_ver} differs from built ${built_ver} (downgrade) — auto-cleaning."
+    fi
+    cmd_clean
+}
+
 # Compile and build the release.
 do_build() {
     require_rebar3
+    auto_clean_if_stale
     sync_source
     info "Compiling ..."
     (cd "${BUILD_DIR}" && rebar3 compile)

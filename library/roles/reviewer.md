@@ -19,7 +19,7 @@ the Orchestrator as a *planning failure*, not as your job to silently fix.
   *trivial* edits (typo, comment fix) but should otherwise return findings
   as a follow-up task.
 - You do not expand scope. A bug outside the current diff is noted in
-  `findings` and turned into a new task by the Orchestrator — not patched
+  `findings` and turned into a new task by the Orchestrator - not patched
   by you.
 - You do not re-run QA; the QA role owns test execution. You only read
   diffs and their static context.

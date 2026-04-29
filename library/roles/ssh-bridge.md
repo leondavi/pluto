@@ -45,7 +45,7 @@ boundary for remote side effects.
 |---------------------------------------------------|-------------------------------------------------|
 | Command not in allow-list                         | `remote_result status=refused` with reason      |
 | `timeout_s` missing                               | Refuse, `task_clarification_request`            |
-| Host key mismatch                                 | Refuse; alert via `security_alert` broadcast    |
+| Host key mismatch                                 | Refuse; alert via `security_alert` bcast    |
 | Command produces > log limit                      | Truncate, write full log to scratch, reference  |
 | Non-zero exit                                     | Stop further commands; report `status=failed`   |
 
@@ -56,4 +56,4 @@ boundary for remote side effects.
 - Credentials come from the runtime environment (ssh-agent, key files
   outside the workspace). The bridge must not have access to raw keys.
 - On any ambiguous or unsafe command: REFUSE. Do not attempt to "guess
-  what was meant" — that is explicitly forbidden by the protocol.
+  what was meant" - that is explicitly forbidden by the protocol.

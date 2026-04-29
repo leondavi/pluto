@@ -1,8 +1,8 @@
 # Pluto Role Library
 
 A team of narrow, single-responsibility roles that collaborate via Pluto
-(locks, messages, agent presence). Every role file is a **system prompt**
-you can paste into an agent config — or load via
+(locks, msgs, agent presence). Every role file is a **system prompt**
+you can paste into an agent config - or load via
 `pluto_agent_friend --role <name>`.
 
 All roles speak the shared protocol in [`../protocol.md`](../protocol.md).

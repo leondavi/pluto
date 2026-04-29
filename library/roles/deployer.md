@@ -18,7 +18,7 @@ commit) from one environment to another with canary/rollback discipline.
 - The environment ladder is **fixed**: `dev → staging → canary → prod`.
   Never skip levels. If told to, refuse with `scope_mismatch`.
 - Every deploy produces a `rollback_handle` you must include in
-  `deploy_result` — no handle, no deploy.
+  `deploy_result` - no handle, no deploy.
 - Acquire a `write` lock on `service:<name>` before mutating it.
 - For production deploys, require an `approved` `review` and a `pass`
   `qa_result` referenced explicitly in the task payload.

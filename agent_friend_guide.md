@@ -3,6 +3,23 @@
 > Read this guide to understand how to use PlutoAgentFriend and the Pluto
 > coordination system when working inside a wrapped terminal session.
 
+## Abbreviations Used in This Guide and Pluto Messages
+
+To save tokens without losing meaning, this guide and the msgs Pluto
+injects into your stdin use these short forms consistently:
+
+| Short | Long |
+|-|-|
+| `msg` | message |
+| `msgs` | messages |
+| `bcast` | broadcast |
+| `req` | request |
+| `resp` | response |
+| `desc` | description |
+
+Treat the short and long forms as identical in meaning. Use the short forms
+in your own msgs back to Pluto where natural.
+
 ---
 
 ## What Is PlutoAgentFriend?
@@ -13,12 +30,12 @@ between you (the AI agent) and your terminal.  It does two things:
 1. **Proxies all I/O** — everything you read and write passes through
    unchanged.  The user sees exactly what you output and you receive exactly
    what the user types.
-2. **Injects Pluto coordination messages** — when you are idle (not
+2. **Injects Pluto coordination msgs** — when you are idle (not
    producing output and not asking the user a question), the wrapper may
-   type messages into your stdin on behalf of other agents or the Pluto
+   type msgs into your stdin on behalf of other agents or the Pluto
    server.
 
-You do **not** need to change how you work.  The messages arrive as
+You do **not** need to change how you work.  The msgs arrive as
 natural-language text in your input, prefixed with `[Pluto …]`.  Process
 them like any other instruction from the user.
 
@@ -32,7 +49,7 @@ User terminal <-> PlutoAgentFriend (PTY proxy) <-> You (agent)
 
 ## How Messages Appear
 
-When Pluto has messages for you, they are injected into your stdin as
+When Pluto has msgs for you, they are injected into your stdin as
 natural-language blocks.  They always start with a header line:
 
 ```
@@ -53,9 +70,9 @@ When done, update with pluto_task_update("TASK-7","completed",{"result":...}).
 
 | Header | What It Means |
 |-|-|
-| `[Pluto msg from <agent>]` | A direct message from another agent |
-| `[Pluto bcast from <agent>]` | A message sent to all agents |
-| `[Pluto topic '<name>' from <agent>]` | A pub/sub message for a topic you subscribed to |
+| `[Pluto msg from <agent>]` | A direct msg from another agent |
+| `[Pluto bcast from <agent>]` | A msg sent to all agents |
+| `[Pluto topic '<name>' from <agent>]` | A pub/sub msg for a topic you subscribed to |
 | `[Pluto task <id>]` | A task assigned to you — work on it and report back |
 | `[Pluto Event: <type>]` | Any other server event |
 
@@ -70,14 +87,14 @@ Pluto API directly (there is no SDK in your session).  Instead:
 > server when it launched.  **Do NOT register again** — that would create a
 > duplicate session.  Your agent ID and session token are provided in the
 > startup prompt.  Use the token in `curl` calls that require authentication
-> (e.g. `/agents/send`, `/agents/broadcast`).  Incoming messages are
+> (e.g. `/agents/send`, `/agents/broadcast`).  Incoming msgs are
 > delivered to you automatically by the wrapper — you do not need to poll.
 
 ### Option A — Use shell commands (recommended)
 
 The Pluto server exposes an HTTP API on `localhost:9001`.  Use `curl` to
 interact with it.  Use your session token (provided in the startup prompt)
-for authenticated calls like sending messages:
+for authenticated calls like sending msgs:
 
 ```bash
 # Send a message to another agent (use YOUR token from the startup prompt)
@@ -117,6 +134,46 @@ curl -s -X POST http://localhost:9001/task/update \
 curl -s http://localhost:9001/health
 ```
 
+### Sending Complex JSON Payloads — Use a Heredoc to a File
+
+The inline `-d '...'` form above works for simple payloads, but **breaks
+the moment your JSON contains a quote character or newline** — your shell
+will mis-parse the command and fail with errors like:
+
+```
+(eval):20: unmatched "
+```
+
+For any payload that includes free-form text, code snippets, or nested
+objects, write the JSON to a file via a quoted heredoc and use `-d @file`:
+
+```bash
+cat > /tmp/payload.json << 'EOF'
+{
+  "token": "YOUR-TOKEN-HERE",
+  "to": "orchestrator",
+  "payload": {
+    "type": "task_result",
+    "task_id": "t-002",
+    "status": "done",
+    "summary": "Refactored auth module; added tests",
+    "details": {
+      "files_changed": ["src/auth.py"],
+      "notes": "user input contained \"quoted\" strings — handled correctly"
+    }
+  }
+}
+EOF
+
+curl -s -X POST http://localhost:9001/agents/send \
+  -H "Content-Type: application/json" \
+  -d @/tmp/payload.json
+```
+
+The `'EOF'` (with single quotes) is critical — it tells the shell **not**
+to interpret `$variables` or backslashes inside the heredoc, so any
+embedded JSON is preserved verbatim.
+
 ### Option B — Use the PlutoClient.sh CLI (if available)
 
 ```bash
@@ -138,11 +195,11 @@ PlutoAgentFriend operates in one of three modes (set by the user at launch):
 
 | Mode | Behavior |
 |-|-|
-| **auto** | Messages are injected into your stdin automatically when you are idle. This is the default. |
-| **confirm** | A notification appears to the user; if they don't intervene within 10 seconds, the message is injected. |
-| **manual** | The user is notified of pending messages but must manually paste or type them to you. |
+| **auto** | Msgs are injected into your stdin automatically when you are idle. This is the default. |
+| **confirm** | A notification appears to the user; if they don't intervene within 10 seconds, the msg is injected. |
+| **manual** | The user is notified of pending msgs but must manually paste or type them to you. |
 
-You do not need to know which mode is active — just process messages as they
+You do not need to know which mode is active — just process msgs as they
 arrive.
 
 ---
@@ -150,14 +207,14 @@ arrive.
 ## Safety Rules
 
 These are enforced by PlutoAgentFriend (not by you), but understanding them
-helps you know when to expect messages:
+helps you know when to expect msgs:
 
 1. **User input has priority** — if the user is actively typing, injection
    is delayed until they stop for 5 seconds.
 2. **Never during questions** — if you are asking the user a question
    (detected by patterns like `?`, `[y/n]`, `Confirm?`), injection is
    paused until you resume normal output.
-3. **Transparency** — every injected message is shown to the user on stderr
+3. **Transparency** — every injected msg is shown to the user on stderr
    so they can see what you received.
 
 ---
@@ -195,7 +252,7 @@ it first**.  This prevents data corruption from concurrent writes.
   ```
 - **Handle `unavailable`** — if `try_acquire` returns `unavailable`, the
   resource is held by another agent.  Wait and retry, or use `acquire` to
-  queue for it (you'll receive the lock via a Pluto message when it's
+  queue for it (you'll receive the lock via a Pluto msg when it's
   granted).
 
 ### Inspecting who holds or is waiting for a resource
@@ -254,7 +311,7 @@ When to use these:
 
 ## Message Delivery (peek / ack)
 
-PlutoAgentFriend uses **at-least-once delivery**.  Messages stay in the
+PlutoAgentFriend uses **at-least-once delivery**.  Msgs stay in the
 server inbox until you ack them, so if the wrapper crashes mid-inject
 the next attempt will see them again.
 
@@ -266,12 +323,12 @@ The wrapper handles this automatically:
 3. `/agents/ack` — drain the server inbox up to the last confirmed
    `seq_token`.
 
-Each peeked message carries a `seq_token` (monotonically increasing
+Each peeked msg carries a `seq_token` (monotonically increasing
 integer).  Ack is idempotent: re-acking a `seq_token` you already
 drained returns `{"drained": 0}`.
 
 You can use these endpoints directly, for example to recover a lost
-message or to inspect the inbox without disturbing it:
+msg or to inspect the inbox without disturbing it:
 
 ```bash
 # Peek (does not drain)
@@ -400,12 +457,12 @@ This section is for the **user** (or for you to suggest to the user).
 | `/agents` | GET | List all connected agents |
 | `/agents/register` | POST | Register (HTTP session mode) |
 | `/agents/unregister` | POST | Unregister |
-| `/agents/poll` | GET | Long-poll for messages (destructive; `?token=...&timeout=30`) |
+| `/agents/poll` | GET | Long-poll for msgs (destructive; `?token=...&timeout=30`) |
 | `/agents/peek` | GET | Non-destructive inbox read (`?token=...[&since_token=N]`) |
-| `/agents/ack` | POST | Ack messages `{token, up_to_seq}` (idempotent) |
+| `/agents/ack` | POST | Ack msgs `{token, up_to_seq}` (idempotent) |
 | `/agents/find` | POST | Find agents by attributes |
-| `/message` | POST | Send a direct message |
-| `/broadcast` | POST | Broadcast to all agents |
+| `/msg` | POST | Send a direct msg |
+| `/broadcast` | POST | Bcast to all agents |
 | `/agents/subscribe` | POST | Subscribe to a topic |
 | `/agents/publish` | POST | Publish to a topic |
 | `/lock` | POST | Acquire a lock |
@@ -467,8 +524,8 @@ curl -s -X POST http://localhost:9001/message \
 ## Summary
 
 - You are running inside PlutoAgentFriend — a transparent PTY wrapper.
-- Messages from other agents arrive as natural-language text in your stdin.
-- Use `curl` against `localhost:9001` to send messages, acquire locks, and update tasks.
+- Msgs from other agents arrive as natural-language text in your stdin.
+- Use `curl` against `localhost:9001` to send msgs, acquire locks, and update tasks.
 - Always lock resources before editing shared files.
 - Always update task status when assigned work.
-- The user can see everything — all injected messages are logged to stderr.
+- The user can see everything — all injected msgs are logged to stderr.

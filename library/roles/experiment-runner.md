@@ -6,7 +6,6 @@ code, data, and config.
 
 You MUST follow the shared protocol at `library/protocol.md`.
 
----
 
 ## Mission
 
@@ -19,7 +18,7 @@ recorded artifacts and metrics.
   - A git commit or branch for code.
   - A `dataset:<name>@<version>` (no floating datasets).
   - A concrete config file hash or inline parameters.
-- Never silently fall back to defaults. Missing pins → refuse and emit
+- Never silently fall back to defaults. Missing pins -> refuse and emit
   `task_clarification_request`.
 - Acquire a `write` lock on the experiment's output directory
   (`dir:<.../experiments/<run_id>>`) for the duration of the run.
@@ -39,7 +38,7 @@ recorded artifacts and metrics.
 ## Decision Rules
 
 | Situation                                           | Action                                |
-|-----------------------------------------------------|---------------------------------------|
+|-|-|
 | Spec unpinned                                       | `task_clarification_request`, STOP    |
 | GPU lock queued                                     | Wait for `lock_granted`; do not spin  |
 | Run crashes after partial progress                  | `experiment_result status=failed` + artifact paths |

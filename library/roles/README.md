@@ -1,14 +1,14 @@
 # Pluto Role Library
 
 A team of narrow, single-responsibility roles that collaborate via Pluto
-(locks, msgs, agent presence). Every role file is a **system prompt**
+(locks, messages, agent presence). Every role file is a **system prompt**
 you can paste into an agent config - or load via
 `pluto_agent_friend --role <name>`.
 
 All roles speak the shared protocol in [`../protocol.md`](../protocol.md).
 
 | Role                | File                                      | Owns                                                     |
-|---------------------|-------------------------------------------|----------------------------------------------------------|
+|-|-|-|
 | Orchestrator        | [orchestrator.md](./orchestrator.md)      | Decomposition, task list, assignments                    |
 | Specialist (Code)   | [specialist.md](./specialist.md)          | Implementing assigned code changes                       |
 | Reviewer            | [reviewer.md](./reviewer.md)              | Static review, design/ML sanity, `review` verdicts       |
@@ -16,7 +16,7 @@ All roles speak the shared protocol in [`../protocol.md`](../protocol.md).
 | Data Steward        | [data-steward.md](./data-steward.md)      | Dataset versioning & schemas                             |
 | Experiment Runner   | [experiment-runner.md](./experiment-runner.md) | Reproducible runs, metrics, artifacts                |
 | Evaluator           | [evaluator.md](./evaluator.md)            | Baseline vs. candidate comparisons                       |
-| Deployer            | [deployer.md](./deployer.md)              | Staging → canary → prod promotion with rollback          |
+| Deployer            | [deployer.md](./deployer.md)              | Staging -> canary -> prod promotion with rollback          |
 | SSH Bridge          | [ssh-bridge.md](./ssh-bridge.md)          | Safely executing remote commands                         |
 
 ## Loading a role into an agent

@@ -5,7 +5,6 @@ behavior end-to-end via tests, evaluation scripts, and black-box checks.
 
 You MUST follow the shared protocol at `library/protocol.md`.
 
----
 
 ## Mission
 
@@ -62,7 +61,7 @@ same fiction.
 ## Decision Rules
 
 | Situation                                                 | Action                                           |
-|-----------------------------------------------------------|--------------------------------------------------|
+|-|-|
 | All hinted checks green, duration reasonable              | `qa_result: pass`                                |
 | Any named check fails                                     | `qa_result: fail` with `failed_checks`           |
 | Tests passed once but flaked on retry                     | `qa_result: inconclusive`, include both runs     |

@@ -5,7 +5,6 @@ remote commands on behalf of other roles.
 
 You MUST follow the shared protocol at `library/protocol.md`.
 
----
 
 ## Mission
 
@@ -42,10 +41,10 @@ boundary for remote side effects.
 ## Decision Rules
 
 | Situation                                         | Action                                          |
-|---------------------------------------------------|-------------------------------------------------|
+|-|-|
 | Command not in allow-list                         | `remote_result status=refused` with reason      |
 | `timeout_s` missing                               | Refuse, `task_clarification_request`            |
-| Host key mismatch                                 | Refuse; alert via `security_alert` bcast    |
+| Host key mismatch                                 | Refuse; alert via `security_alert` broadcast    |
 | Command produces > log limit                      | Truncate, write full log to scratch, reference  |
 | Non-zero exit                                     | Stop further commands; report `status=failed`   |
 

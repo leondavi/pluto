@@ -1,35 +1,36 @@
-# Pluto Collaboration Protocol
+# Pluto Collaboration Protocol (v0.2.7)
 
-Shared ontology and typed msg schemas every role in a Pluto team
-must speak. No ad-hoc shapes: extend this doc first, then implement.
+Defines the **shared ontology** and **typed message schemas** every role
+in a Pluto-coordinated team must speak. No ad-hoc message shapes: if a
+new interaction is needed, extend this doc first, then implement.
 
-All msgs travel over `agents/send` / `agents/broadcast` and arrive
-as the `payload` of `msg_recv` events.
+All messages travel over Pluto's `agents/send` / `agents/broadcast`
+channels; delivered as the `payload` of `msg_recv` events.
 
 ## 1. Resource Naming (URN-like)
 
-Stable string IDs used in lock requests and msg payloads.
+Every coordinatable resource has a **stable string ID**, used in both
+lock requests and message payloads.
 
-| Resource | Format | Example |
-|-|-|-|
-| File | `file:/abs/path` | `file:/workspaces/pluto/src/x.py` |
-| Directory | `dir:/abs/path` | `dir:/tmp/pluto/demo/fractal` |
-| Dataset | `dataset:<name>@<version>` | `dataset:mnist@v3` |
-| Experiment run | `experiment:<proj>/<run_id>` | `experiment:fractal/run-2026-04-23-01` |
-| Model artifact | `model:<name>@<version>` | `model:mandelbrot-stats@v1` |
-| Service | `service:<name>` | `service:feature-store` |
-| GPU | `gpu:<host>:<index>` | `gpu:node-7:2` |
-| Cluster slot | `cluster:<name>:<partition>` | `cluster:prod:a100` |
-| Shared scratch | `scratch:<demo_name>` | `scratch:fractal_demo` |
+`{Resource, Format, Example}`:
+{File, `file:/abs/path`, `file:/workspaces/pluto/src/x.py`}
+{Directory, `dir:/abs/path`, `dir:/tmp/pluto/demo/fractal`}
+{Dataset, `dataset:<name>@<version>`, `dataset:mnist@v3`}
+{Experiment run, `experiment:<proj>/<run_id>`, `experiment:fractal/run-2026-04-23-01`}
+{Model artifact, `model:<name>@<version>`, `model:mandelbrot-stats@v1`}
+{Service, `service:<name>`, `service:feature-store`}
+{GPU, `gpu:<host>:<index>`, `gpu:node-7:2`}
+{Cluster slot, `cluster:<name>:<partition>`, `cluster:prod:a100`}
+{Shared scratch, `scratch:<demo_name>`, `scratch:fractal_demo`}
 
 Rules:
-- IDs are case-sensitive; no whitespace.
+- IDs are **case-sensitive**; no whitespace.
 - Absolute paths required for `file:` and `dir:`; no `~` or relative paths.
 - Dataset/model versions required; never lock a bare `dataset:name`.
 
 ## 2. Task & Run IDs
 
-- `task_id`: slug with optional dotted children. Example: `t-001`, `t-001.2`.
+- `task_id`: slug with optional dotted children. e.g. `t-001`, `t-001.2`.
 - `parent_task_id`: the immediate parent, or omitted for roots.
 - `run_id`: free-form, conventionally `run-<ISO-date>-<n>`.
 
@@ -37,8 +38,8 @@ Task states: `pending | in_progress | blocked | completed | failed | cancelled`.
 
 ## 3. Shared Task List
 
-A single JSON document bcast whenever it changes; optionally mirrored to
-`scratch:<demo_name>/tasks.json`.
+A **single JSON document** broadcast to the Pluto message hub whenever it
+changes; optionally mirrored to disk at `scratch:<demo_name>/tasks.json`.
 
 Schema:
 
@@ -48,10 +49,10 @@ Schema:
 
 ## 4. Message Types
 
-Every payload MUST include `type` (and `task_id` if applicable). Unknown
-types MUST be ignored with a warning, never acted on.
+Every message payload MUST include `"type"` (and `"task_id"` if applicable).
+Unknown types MUST be ignored with a warning, never acted on.
 
-### 4.1 `task_assigned` (Orchestrator -> Specialist / worker)
+### 4.1 `task_assigned` (Orchestrator -> Specialist / other worker)
 
 ```json
 {"type":"task_assigned","task":{"...":"full task object from §3"},"constraints":["no network calls","no changes outside listed files"],"acceptance_criteria":["unit test test_iterate passes"],"verification_hints":["pytest tests/test_mandelbrot.py -k iterate"]}
@@ -59,8 +60,8 @@ types MUST be ignored with a warning, never acted on.
 
 ### 4.2 `task_clarification_request` (Worker -> Orchestrator)
 
-Emitted when the assignment is ambiguous or under-specified. Worker MUST NOT
-proceed until a clarifying `task_assigned` arrives.
+Emitted when the assignment is ambiguous or under-specified. The worker
+MUST NOT proceed until a clarifying `task_assigned` arrives.
 
 ```json
 {"type":"task_clarification_request","task_id":"t-001","questions":["Should escape-time be capped at max_iter or returned as -1 on non-escape?"],"proposed_decomposition":[{"title":"Decide escape-time return convention","owner":"orchestrator"}]}
@@ -134,12 +135,12 @@ Used when a task is under-specified or overlapping with another.
 
 1. **Write-before-edit invariant:** no agent writes to a `file:` or `dir:`
    resource without a confirmed `write` lock.
-2. `POST /lock` → if the response body contains `ref`, the lock is queued.
-   Wait for a `lock_granted` event. Do **not** spin-poll.
+2. `POST /locks/acquire` -> if the response body contains `ref`, the lock
+   is queued. Wait for a `lock_granted` event. Do **not** spin-poll.
 3. Always pass an explicit `ttl_ms`; never rely on defaults.
 4. Release every lock you acquire, even on error paths.
 5. Orchestrator may pre-acquire locks on behalf of a worker and pass the
-   lock handles in `task_assigned.constraints`, but default is "worker locks
+   lock handles in `task_assigned.constraints`; default is "worker locks
    its own files".
 
 ## 6. Ambiguity Rule (applies to all roles)

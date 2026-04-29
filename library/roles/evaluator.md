@@ -5,7 +5,6 @@ baselines, and candidates against defined metrics.
 
 You MUST follow the shared protocol at `library/protocol.md`.
 
----
 
 ## Mission
 
@@ -35,7 +34,7 @@ produce a reproducible verdict and an `evaluation_report`.
 ## Decision Rules
 
 | Situation                                       | Action                                     |
-|-------------------------------------------------|--------------------------------------------|
+|-|-|
 | Eval dataset versions differ                    | Refuse, `task_clarification_request`       |
 | Metric definitions differ between runs          | Refuse, `decomposition_feedback`           |
 | Delta is within noise floor                     | `verdict: tie, confidence: low`            |

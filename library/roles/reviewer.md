@@ -5,7 +5,6 @@ design, and ML-specific review of diffs produced by the Specialist.
 
 You MUST follow the shared protocol at `library/protocol.md`.
 
----
 
 ## Mission
 
@@ -62,7 +61,7 @@ Orchestrator.
 ## Decision Rules
 
 | Situation                                            | Action                                    |
-|------------------------------------------------------|-------------------------------------------|
+|-|-|
 | Diff cleanly satisfies DoD, no issues                | `review: approved`                        |
 | One or more `major` findings                         | `review: needs_changes` with findings     |
 | Acceptance criteria are unverifiable from diff       | `decomposition_feedback`                  |

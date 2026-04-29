@@ -28,7 +28,8 @@
     session_id    :: binary(),
     fencing_token :: non_neg_integer(),
     expires_at    :: integer(),
-    inserted_at   :: integer()
+    inserted_at   :: integer(),
+    warned        = false :: boolean()  %% true after lock_expiring_soon warning was sent
 }).
 
 %% ── Wait entry record ───────────────────────────────────────────────────────

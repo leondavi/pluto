@@ -92,9 +92,10 @@
 %% ── Event types (pushed to clients asynchronously) ──────────────────────────
 -define(EVT_MESSAGE,           <<"message">>).
 -define(EVT_BROADCAST,         <<"broadcast">>).
--define(EVT_LOCK_GRANTED,      <<"lock_granted">>).
--define(EVT_LOCK_EXPIRED,      <<"lock_expired">>).
--define(EVT_LOCK_RELEASED,     <<"lock_released">>).
+-define(EVT_LOCK_GRANTED,        <<"lock_granted">>).
+-define(EVT_LOCK_EXPIRING_SOON,  <<"lock_expiring_soon">>).
+-define(EVT_LOCK_EXPIRED,        <<"lock_expired">>).
+-define(EVT_LOCK_RELEASED,       <<"lock_released">>).
 -define(EVT_WAIT_TIMEOUT,      <<"wait_timeout">>).
 -define(EVT_DEADLOCK_DETECTED, <<"deadlock_detected">>).
 -define(EVT_AGENT_JOINED,      <<"agent_joined">>).

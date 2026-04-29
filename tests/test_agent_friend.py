@@ -280,7 +280,7 @@ class TestMessageFormatting(unittest.TestCase):
              "payload": {"type": "review_done", "file": "main.py"}}
         ]
         result = MessageFormatter.format(messages)
-        self.assertIn("Pluto Message from reviewer-1", result)
+        self.assertIn("Pluto msg from reviewer-1", result)
         self.assertIn("review_done", result)
         self.assertIn("main.py", result)
 
@@ -290,7 +290,7 @@ class TestMessageFormatting(unittest.TestCase):
              "payload": {"type": "build_complete"}}
         ]
         result = MessageFormatter.format(messages)
-        self.assertIn("Pluto Broadcast from lead", result)
+        self.assertIn("Pluto bcast from lead", result)
 
     def test_format_task_assigned(self):
         messages = [
@@ -309,7 +309,7 @@ class TestMessageFormatting(unittest.TestCase):
              "from": "ci", "payload": {"status": "passed"}}
         ]
         result = MessageFormatter.format(messages)
-        self.assertIn("Topic 'builds'", result)
+        self.assertIn("topic 'builds'", result)
 
     def test_format_multiple_messages(self):
         messages = [
@@ -326,7 +326,7 @@ class TestMessageFormatting(unittest.TestCase):
         result = MessageFormatter.format(messages)
         self.assertNotIn("delivery_ack", result)
         # Only the header should remain
-        self.assertIn("Pluto coordination messages", result)
+        self.assertIn("Pluto coordination msgs", result)
 
     def test_format_filters_ack_keeps_real(self):
         """Formatter skips acks but keeps actionable messages."""

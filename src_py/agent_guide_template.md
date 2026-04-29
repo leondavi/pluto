@@ -163,7 +163,8 @@ Events have an `"event"` key (responses have `"status"`). Handle them as they ar
 | `broadcast` | Broadcast received |
 | `topic_message` | Published to a topic you subscribed to |
 | `lock_granted` | Queued lock was granted |
-| `lock_expired` | Your lock's TTL elapsed |
+| `lock_expiring_soon` | Lock TTL < 15 s — renew immediately or re-acquire after expiry |
+| `lock_expired` | Lock TTL elapsed — re-acquire before continuing; another agent may hold it now |
 | `task_assigned` | Task assigned to you |
 | `task_updated` | Task status changed |
 | `tasks_orphaned` | Agent disconnected with unfinished tasks |
@@ -682,6 +683,8 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
 ## Key Rules
 
 1. **Always release locks.** Use try/finally. Default TTL: 30 s.
+   - You'll receive a `lock_expiring_soon` event ~15 s before the TTL runs out. Renew immediately with `{"op":"renew","lock_ref":"<ref>","ttl_ms":30000}`.
+   - If the lock expires, you'll receive `lock_expired`. **Stop writing** and re-acquire before continuing — another agent may have been granted the lock.
 2. **Heartbeat continuously.** Keep sending pings (TCP) or polls/heartbeats (HTTP). Only stop when the user explicitly requests a disconnect or deregistration — silence is treated as a crash and the server will evict the agent and release all its locks.
 3. **Resource naming.** Use `file:/path/to/file` for files, `workspace:<name>` for logical scopes.
 4. **Prefer topics over broadcast.** Subscribe to specific channels instead of broadcasting everything.

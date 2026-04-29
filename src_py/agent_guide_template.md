@@ -11,7 +11,7 @@ Pluto is a coordination server for AI agents. Connect, discover peers, lock
 shared resources, exchange messages, and track tasks — all through JSON.
 
 | Feature | What It Does |
-|---|---|
+|-|-|
 | **Locking** | Exclusive/shared locks with TTL, fencing tokens, deadlock detection |
 | **Messaging** | Direct messages, broadcast, topic pub/sub, offline inbox |
 | **Discovery** | Find agents by role or attributes; presence & status tracking |
@@ -32,7 +32,7 @@ curl -s http://{{host}}:9001/ping
 ```
 
 | Method | Port | When to Use |
-|---|---|---|
+|-|-|-|
 | **TCP** | {{port}} | You can open TCP sockets — gives push events, real-time lock grants |
 | **HTTP Sessions** | 9001 | Can't maintain TCP (e.g. Claude Code, sandboxed envs) — register once, **poll repeatedly** to receive events |
 | **HTTP One-Shot** | 9001 | Quick lock/message operations without registering |
@@ -96,9 +96,9 @@ Set your own status:
 → Queued: `{"status":"wait","wait_ref":"WAIT-99"}` (then async `lock_granted` event)
 
 | Mode | Behavior |
-|------|----------|
-| `write` | Exclusive — no other locks allowed |
-| `read` | Shared — multiple readers OK, writers wait |
+|-|-|
+| `write` | Exclusive, no other locks allowed |
+| `read` | Shared, multiple readers OK, writers wait |
 
 ```json
 {"op":"try_acquire","resource":"file:/src/main.py","mode":"write","ttl_ms":30000}
@@ -158,7 +158,7 @@ When an agent disconnects with unfinished tasks, all agents get a `tasks_orphane
 Events have an `"event"` key (responses have `"status"`). Handle them as they arrive:
 
 | Event | Trigger |
-|---|---|
+|-|-|
 | `message` | Direct message received |
 | `broadcast` | Broadcast received |
 | `topic_message` | Published to a topic you subscribed to |
@@ -300,7 +300,7 @@ returns `{"count":0}` after the timeout.
 #### Optional Query Parameters
 
 | Parameter | Default | Description |
-|---|---|---|
+|-|-|-|
 | `timeout` | `0` | Long-poll timeout in seconds (max 60). `0` = immediate return. |
 | `ack` | `false` | Send delivery receipts back to message senders. |
 | `auto_busy` | `false` | Auto-set your status to "processing" for 30s after receiving messages. |
@@ -653,7 +653,7 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
 ### API Quick Reference
 
 | Category | PlutoClient (TCP) | PlutoHttpClient (HTTP) |
-|---|---|---|
+|-|-|-|
 | Connect | `connect()` / context manager | `register()` / context manager |
 | Lock | `acquire()`, `try_acquire()`, `release()`, `renew()` | — (use one-shot HTTP) |
 | Message | `send()`, `broadcast()`, `publish()` | `send()`, `broadcast()` |
@@ -695,7 +695,7 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
 ## Response Statuses
 
 | Status | Meaning |
-|---|---|
+|-|-|
 | `ok` | Success |
 | `wait` | Lock queued — expect `lock_granted` event |
 | `error` | Failed — see `reason` field |

@@ -1239,7 +1239,7 @@ tcp_registration_guide(HbMs) ->
     [
         #{<<"step">> => 1,
           <<"title">> => <<"Save Registration Details">>,
-          <<"description">> => <<"From the response you just received, save: session_id (your session identifier) and agent_id (may differ from requested if the name was taken — server appends a suffix). Always use the returned agent_id for subsequent operations.">>
+          <<"description">> => <<"From the response you just received, save: session_id (your session identifier) and agent_id (may differ from requested if the name was taken; server appends a suffix). Always use the returned agent_id for subsequent operations.">>
         },
         #{<<"step">> => 2,
           <<"title">> => <<"Send Heartbeat">>,
@@ -1250,14 +1250,15 @@ tcp_registration_guide(HbMs) ->
           <<"title">> => <<"Listen for Push Events">>,
           <<"description">> => <<"Your TCP connection is bidirectional. The server pushes events (messages, lock grants, broadcasts) directly to your socket as newline-delimited JSON. Read from the socket continuously in a background thread/loop.">>,
           <<"push_events">> => [
-              <<"message — Direct message from another agent">>,
-              <<"broadcast — Broadcast from another agent">>,
-              <<"lock_granted — A queued lock request has been granted">>,
-              <<"lock_expired — A held lock expired (TTL elapsed without renewal)">>,
-              <<"agent_joined — A new agent connected">>,
-              <<"agent_left — An agent disconnected">>,
-              <<"deadlock_detected — Circular wait detected, victim is notified">>,
-              <<"task_assigned — A task was assigned to you">>
+              <<"message: direct msg from another agent">>,
+              <<"broadcast: bcast from another agent">>,
+              <<"lock_granted: queued lock request granted">>,
+              <<"lock_expiring_soon: TTL <15s, renew now or re-acquire after expiry">>,
+              <<"lock_expired: held lock expired, re-acquire to continue">>,
+              <<"agent_joined: new agent connected">>,
+              <<"agent_left: agent disconnected">>,
+              <<"deadlock_detected: circular wait, victim notified">>,
+              <<"task_assigned: task assigned to you">>
           ]
         },
         #{<<"step">> => 4,
@@ -1291,9 +1292,9 @@ tcp_registration_guide(HbMs) ->
           <<"title">> => <<"Key Rules">>,
           <<"rules">> => [
               <<"Heartbeat: Send ping at the interval shown above or your session will be killed.">>,
-              <<"Push events: Read from your socket continuously — messages, lock grants, and broadcasts arrive as push events.">>,
+              <<"Push events: Read from your socket continuously; messages, lock grants, and broadcasts arrive as push events.">>,
               <<"Always release locks when done, or they expire after the TTL.">>,
-              <<"Handle lock_granted events — if a resource is busy, you get a WAIT-* reference and the lock arrives later as a push event.">>,
+              <<"Handle lock_granted events: if a resource is busy, you get a WAIT-* reference and the lock arrives later as a push event.">>,
               <<"Use the agent_id from this response, not the one you requested.">>
           ]
         }

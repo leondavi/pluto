@@ -23,15 +23,9 @@ natural-language text in your input, prefixed with `[Pluto …]`.  Process
 them like any other instruction from the user.
 
 ```
-┌───────────┐       ┌──────────────────┐       ┌──────────┐
-│   User    │ ←───→ │ PlutoAgentFriend  │ ←───→ │   You    │
-│ terminal  │       │  (PTY proxy)     │       │ (agent)  │
-└───────────┘       └────────┬─────────┘       └──────────┘
-                             │
-                    ┌────────┴─────────┐
-                    │   Pluto Server   │
-                    │  (coordination)  │
-                    └──────────────────┘
+User terminal <-> PlutoAgentFriend (PTY proxy) <-> You (agent)
+                          |
+                     Pluto Server (coordination)
 ```
 
 ---
@@ -42,26 +36,23 @@ When Pluto has messages for you, they are injected into your stdin as
 natural-language blocks.  They always start with a header line:
 
 ```
-Pluto coordination msgs — process each:
+Pluto coordination msgs, process each:
 
 [Pluto msg from coder-2]
-{
-  "type": "review_request",
-  "file": "src/main.py"
-}
+{"type":"review_request","file":"src/main.py"}
 
 [Pluto task TASK-7]
 From: orchestrator
 Desc: Refactor the auth module
-Payload: { ... }
+Payload: {...}
 
-When done, update with pluto_task_update("TASK-7", "completed", {"result": ...}).
+When done, update with pluto_task_update("TASK-7","completed",{"result":...}).
 ```
 
 ### Message Types You May Receive
 
 | Header | What It Means |
-|--------|---------------|
+|-|-|
 | `[Pluto msg from <agent>]` | A direct message from another agent |
 | `[Pluto bcast from <agent>]` | A message sent to all agents |
 | `[Pluto topic '<name>' from <agent>]` | A pub/sub message for a topic you subscribed to |
@@ -146,7 +137,7 @@ curl -s http://localhost:9001/health
 PlutoAgentFriend operates in one of three modes (set by the user at launch):
 
 | Mode | Behavior |
-|------|----------|
+|-|-|
 | **auto** | Messages are injected into your stdin automatically when you are idle. This is the default. |
 | **confirm** | A notification appears to the user; if they don't intervene within 10 seconds, the message is injected. |
 | **manual** | The user is notified of pending messages but must manually paste or type them to you. |
@@ -187,7 +178,7 @@ it first**.  This prevents data corruption from concurrent writes.
 ### Lock modes
 
 | Mode | Use When |
-|------|----------|
+|-|-|
 | `write` | You need exclusive access (editing a file) |
 | `read` | You only need to read (multiple readers allowed simultaneously) |
 
@@ -388,7 +379,7 @@ This section is for the **user** (or for you to suggest to the user).
 ### CLI Options
 
 | Option | Default | Description |
-|--------|---------|-------------|
+|-|-|-|
 | `--agent-id <name>` | *required* | Your identity in the Pluto network |
 | `--framework <name>` | auto-detect | `claude`, `copilot`, `aider`, or `cursor` |
 | `--mode <mode>` | `auto` | `auto`, `confirm`, or `manual` |
@@ -403,7 +394,7 @@ This section is for the **user** (or for you to suggest to the user).
 ## Pluto Server Quick Reference
 
 | Endpoint | Method | Purpose |
-|----------|--------|---------|
+|-|-|-|
 | `/health` | GET | Server health check |
 | `/ping` | GET | Simple ping |
 | `/agents` | GET | List all connected agents |
@@ -436,18 +427,14 @@ Here is what a typical session looks like from your perspective:
 
 # 2. While you're idle, you suddenly receive in stdin:
 
-Pluto coordination msgs — process each:
+Pluto coordination msgs, process each:
 
 [Pluto task TASK-3]
 From: orchestrator
 Desc: Add input validation to the login endpoint in src/auth.py
-Payload: {
-  "priority": "high",
-  "files": ["src/auth.py"],
-  "requirements": "Validate email format and password length"
-}
+Payload: {"priority":"high","files":["src/auth.py"],"requirements":"Validate email format and password length"}
 
-When done, update with pluto_task_update("TASK-3", "completed", {"result": ...}).
+When done, update with pluto_task_update("TASK-3","completed",{"result":...}).
 
 # 3. You process this like a normal user request:
 #    a. Lock the file

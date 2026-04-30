@@ -11,7 +11,7 @@ Pluto is a coordination server for AI agents. Connect, discover peers, lock
 shared resources, exchange messages, and track tasks — all through JSON.
 
 | Feature | What It Does |
-|---|---|
+|-|-|
 | **Locking** | Exclusive/shared locks with TTL, fencing tokens, deadlock detection |
 | **Messaging** | Direct messages, broadcast, topic pub/sub, offline inbox |
 | **Discovery** | Find agents by role or attributes; presence & status tracking |
@@ -32,9 +32,9 @@ curl -s http://{{host}}:9001/ping
 ```
 
 | Method | Port | When to Use |
-|---|---|---|
+|-|-|-|
 | **TCP** | {{port}} | You can open TCP sockets — gives push events, real-time lock grants |
-| **HTTP Sessions** | 9001 | Cannot maintain TCP (e.g. Claude Code, sandboxed envs) — register once, **poll repeatedly** to receive events |
+| **HTTP Sessions** | 9001 | Can't maintain TCP (e.g. Claude Code, sandboxed envs) — register once, **poll repeatedly** to receive events |
 | **HTTP One-Shot** | 9001 | Quick lock/message operations without registering |
 | **Python `PlutoClient`** | {{port}} | High-level wrapper over TCP with heartbeat and event dispatch |
 | **Python `PlutoHttpClient`** | 9001 | High-level wrapper over HTTP sessions (handles token, you call `poll()`) |
@@ -58,10 +58,10 @@ If `my-agent` is already taken, the server assigns a unique name (e.g.
 
 ### Heartbeat
 
-Send `{"op":"ping"}` every 15 s for the **entire lifetime of the session** —
+Send `{"op":"ping"}` every 15 s for the **entire session** —
 continuously, not just once. Only stop when the user explicitly requests a
-disconnect or removal of the agent's registration. Sessions expire after 30 s
-of silence; the server will drop the connection and release all held locks.
+disconnect or deregistration. Sessions expire after 30 s of silence; the
+server will drop the connection and release all held locks.
 
 **Never stop heartbeating** because the agent is idle or has no active work.
 Silence is indistinguishable from a crash.
@@ -96,9 +96,9 @@ Set your own status:
 → Queued: `{"status":"wait","wait_ref":"WAIT-99"}` (then async `lock_granted` event)
 
 | Mode | Behavior |
-|------|----------|
-| `write` | Exclusive — no other locks allowed |
-| `read` | Shared — multiple readers OK, writers wait |
+|-|-|
+| `write` | Exclusive, no other locks allowed |
+| `read` | Shared, multiple readers OK, writers wait |
 
 ```json
 {"op":"try_acquire","resource":"file:/src/main.py","mode":"write","ttl_ms":30000}
@@ -158,12 +158,13 @@ When an agent disconnects with unfinished tasks, all agents get a `tasks_orphane
 Events have an `"event"` key (responses have `"status"`). Handle them as they arrive:
 
 | Event | Trigger |
-|---|---|
+|-|-|
 | `message` | Direct message received |
 | `broadcast` | Broadcast received |
 | `topic_message` | Published to a topic you subscribed to |
 | `lock_granted` | Queued lock was granted |
-| `lock_expired` | Your lock's TTL elapsed |
+| `lock_expiring_soon` | Lock TTL < 15 s — renew immediately or re-acquire after expiry |
+| `lock_expired` | Lock TTL elapsed — re-acquire before continuing; another agent may hold it now |
 | `task_assigned` | Task assigned to you |
 | `task_updated` | Task status changed |
 | `tasks_orphaned` | Agent disconnected with unfinished tasks |
@@ -205,16 +206,16 @@ Events have an `"event"` key (responses have `"status"`). Handle them as they ar
 
 ## Method 2 — HTTP Sessions (No Persistent Connection)
 
-For agents that **cannot maintain a TCP socket** (CLI tools, sandboxed
+For agents that **can't maintain a TCP socket** (CLI tools, sandboxed
 environments, serverless functions). You register via HTTP and receive a
 **token** for subsequent requests.
 
 > **IMPORTANT — How HTTP differs from TCP:**
-> Unlike TCP, the server **cannot push events to you**. You do not have an
+> Unlike TCP, the server **can't push events to you**. You don't have an
 > open socket. Instead, the server queues messages in your inbox and you
 > **must poll** to retrieve them. Use **long-poll** (`timeout=30`) to block
 > until messages arrive instead of polling every few seconds. If you never
-> poll, you will never see messages, task assignments, broadcasts, or lock
+> poll, you'll never see messages, task assignments, broadcasts, or lock
 > grants sent to you.
 
 ### How It Works
@@ -299,7 +300,7 @@ returns `{"count":0}` after the timeout.
 #### Optional Query Parameters
 
 | Parameter | Default | Description |
-|---|---|---|
+|-|-|-|
 | `timeout` | `0` | Long-poll timeout in seconds (max 60). `0` = immediate return. |
 | `ack` | `false` | Send delivery receipts back to message senders. |
 | `auto_busy` | `false` | Auto-set your status to "processing" for 30s after receiving messages. |
@@ -325,7 +326,7 @@ What you will receive in the `messages` array:
 - Task updates (`"event":"task_updated"`)
 - Lock grants (`"event":"lock_granted"`)
 
-Messages are delivered **once** and removed from the inbox after polling.
+Msgs are delivered **once** and removed from the inbox after polling.
 If `count` is 0, there are no new events — poll again later.
 
 **Each poll also acts as a heartbeat**, resetting your session TTL timer.
@@ -341,10 +342,9 @@ messages without polling (useful for shell-based agents with `inotifywait`).
 
 ### Heartbeat
 
-Keep the session alive for its **entire lifetime** — send heartbeats (or poll)
-continuously until the user explicitly requests a disconnect or removal of the
-agent's registration. If you stop, the server treats it as a crash and evicts
-the agent.
+Keep the session alive — send heartbeats (or poll) continuously until the
+user explicitly requests a disconnect or deregistration. If you stop, the
+server treats it as a crash and evicts the agent.
 
 If you are not polling frequently, send explicit heartbeats to prevent
 session expiry:
@@ -602,7 +602,7 @@ wait_msg("agent-b", timeout=30)
 
 ### PlutoHttpClient (HTTP Sessions)
 
-For agents that cannot maintain TCP connections. Use **`long_poll()`** (v0.2.2)
+For agents that can't maintain TCP connections. Use **`long_poll()`** (v0.2.2)
 to block until messages arrive, or `poll()` for periodic polling:
 
 ```python
@@ -653,7 +653,7 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
 ### API Quick Reference
 
 | Category | PlutoClient (TCP) | PlutoHttpClient (HTTP) |
-|---|---|---|
+|-|-|-|
 | Connect | `connect()` / context manager | `register()` / context manager |
 | Lock | `acquire()`, `try_acquire()`, `release()`, `renew()` | — (use one-shot HTTP) |
 | Message | `send()`, `broadcast()`, `publish()` | `send()`, `broadcast()` |
@@ -683,7 +683,9 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
 ## Key Rules
 
 1. **Always release locks.** Use try/finally. Default TTL: 30 s.
-2. **Heartbeat continuously.** Keep sending pings (TCP) or polls/heartbeats (HTTP) for the entire session lifetime. Only stop when the user explicitly requests a disconnect or deregistration — silence is treated as a crash and the server will evict the agent and release all its locks.
+   - You'll receive a `lock_expiring_soon` event ~15 s before the TTL runs out. Renew immediately with `{"op":"renew","lock_ref":"<ref>","ttl_ms":30000}`.
+   - If the lock expires, you'll receive `lock_expired`. **Stop writing** and re-acquire before continuing — another agent may have been granted the lock.
+2. **Heartbeat continuously.** Keep sending pings (TCP) or polls/heartbeats (HTTP). Only stop when the user explicitly requests a disconnect or deregistration — silence is treated as a crash and the server will evict the agent and release all its locks.
 3. **Resource naming.** Use `file:/path/to/file` for files, `workspace:<name>` for logical scopes.
 4. **Prefer topics over broadcast.** Subscribe to specific channels instead of broadcasting everything.
 5. **Use task primitives** for work assignment — they are tracked and generate lifecycle events. HTTP agents can use `task_assign()` and `task_update()` directly.
@@ -693,7 +695,7 @@ with PlutoHttpClient(host="{{host}}", http_port=9001, agent_id="my-agent") as cl
 ## Response Statuses
 
 | Status | Meaning |
-|---|---|
+|-|-|
 | `ok` | Success |
 | `wait` | Lock queued — expect `lock_granted` event |
 | `error` | Failed — see `reason` field |

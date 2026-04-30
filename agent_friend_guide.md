@@ -1,92 +1,136 @@
-# PlutoAgentFriend — Skill Guide for AI Agents
+# PlutoAgentFriend - Skill Guide for AI Agents
 
 > Read this guide to understand how to use PlutoAgentFriend and the Pluto
 > coordination system when working inside a wrapped terminal session.
 
----
+## Abbreviations Used in This Guide and Pluto Messages
+
+This guide and the messages Pluto injects into your stdin use these short
+forms. Treat each short form as identical in meaning to its long form.
+
+`{short, long}`:
+{msg, message} {msgs, messages} {bcast, broadcast} {req, request}
+{resp, response} {desc, description}
+
+Use the short forms in your own messages back to Pluto where natural.
 
 ## What Is PlutoAgentFriend?
 
 PlutoAgentFriend is a transparent PTY (pseudo-terminal) wrapper that sits
-between you (the AI agent) and your terminal.  It does two things:
+between you (the AI agent) and your terminal. It does two things:
 
-1. **Proxies all I/O** — everything you read and write passes through
-   unchanged.  The user sees exactly what you output and you receive exactly
-   what the user types.
-2. **Injects Pluto coordination messages** — when you are idle (not
+1. **Proxies all I/O**: everything you read and write passes through
+   unchanged. The user sees exactly what you output, and you receive
+   exactly what the user types.
+2. **Injects Pluto coordination messages**: when you are idle (not
    producing output and not asking the user a question), the wrapper may
    type messages into your stdin on behalf of other agents or the Pluto
    server.
 
-You do **not** need to change how you work.  The messages arrive as
-natural-language text in your input, prefixed with `[Pluto …]`.  Process
+You do **not** need to change how you work. The messages arrive as
+natural-language text in your input, prefixed with `[Pluto ...]`. Process
 them like any other instruction from the user.
 
 ```
-┌───────────┐       ┌──────────────────┐       ┌──────────┐
-│   User    │ ←───→ │ PlutoAgentFriend  │ ←───→ │   You    │
-│ terminal  │       │  (PTY proxy)     │       │ (agent)  │
-└───────────┘       └────────┬─────────┘       └──────────┘
-                             │
-                    ┌────────┴─────────┐
-                    │   Pluto Server   │
-                    │  (coordination)  │
-                    └──────────────────┘
+User terminal <-> PlutoAgentFriend (PTY proxy) <-> You (agent)
+                          |
+                     Pluto Server (coordination)
 ```
-
----
 
 ## How Messages Appear
 
 When Pluto has messages for you, they are injected into your stdin as
-natural-language blocks.  They always start with a header line:
+natural-language blocks. They always start with a header line:
 
 ```
-You have received the following Pluto coordination messages. Process them and take appropriate action.
+Pluto coordination msgs, process each:
 
-[Pluto Message from coder-2]
-{
-  "type": "review_request",
-  "file": "src/main.py"
-}
+[Pluto msg from coder-2]
+{"type":"review_request","file":"src/main.py"}
 
-[Pluto Task Assignment - TASK-7]
+[Pluto task TASK-7]
 From: orchestrator
-Description: Refactor the auth module
-Payload: { ... }
+Desc: Refactor the auth module
+Payload: {...}
 
-Work on this task. When done, update it with pluto_task_update("TASK-7", "completed", {"result": ...}).
+When done, update with pluto_task_update("TASK-7","completed",{"result":...}).
 ```
 
 ### Message Types You May Receive
 
-| Header | What It Means |
-|--------|---------------|
-| `[Pluto Message from <agent>]` | A direct message from another agent |
-| `[Pluto Broadcast from <agent>]` | A message sent to all agents |
-| `[Pluto Topic '<name>' from <agent>]` | A pub/sub message for a topic you subscribed to |
-| `[Pluto Task Assignment - <id>]` | A task assigned to you — work on it and report back |
-| `[Pluto Event: <type>]` | Any other server event |
-
----
+`{Header, What It Means}`:
+{`[Pluto msg from <agent>]`, A direct message from another agent.}
+{`[Pluto bcast from <agent>]`, A message sent to all agents.}
+{`[Pluto topic '<name>' from <agent>]`, A pub/sub message for a topic you subscribed to.}
+{`[Pluto task <id>]`, A task assigned to you; work on it and report back.}
+{`[Pluto Event: <type>]`, Any other server event.}
 
 ## How to Respond to Pluto Messages
 
-You are an AI agent running inside a terminal.  You **cannot** call the
-Pluto API directly (there is no SDK in your session).  Instead:
+You are an AI agent running inside a terminal. You **cannot** call the
+Pluto API directly (there is no SDK in your session). Instead:
 
 > **Important:** PlutoAgentFriend **already registered you** with the Pluto
-> server when it launched.  **Do NOT register again** — that would create a
-> duplicate session.  Your agent ID and session token are provided in the
-> startup prompt.  Use the token in `curl` calls that require authentication
-> (e.g. `/agents/send`, `/agents/broadcast`).  Incoming messages are
-> delivered to you automatically by the wrapper — you do not need to poll.
+> server when it launched. **Do NOT register again**; that would create a
+> duplicate session. Your agent ID and session token are provided in the
+> startup prompt. Use the token in `curl` calls that require authentication
+> (e.g. `/agents/send`, `/agents/broadcast`). Incoming messages are
+> delivered to you automatically by the wrapper; you do not need to poll.
 
-### Option A — Use shell commands (recommended)
+### API Conventions (read this before writing any curl command)
 
-The Pluto server exposes an HTTP API on `localhost:9001`.  Use `curl` to
-interact with it.  Use your session token (provided in the startup prompt)
-for authenticated calls like sending messages:
+Pluto's HTTP API is **flat, not RESTful**. Endpoints live at fixed paths.
+Three rules:
+
+1. **Authentication goes in the request, not in a header.** For POST
+   endpoints the token is a JSON body field `"token"`. For GET endpoints
+   it is a query string parameter `?token=...`. There is **no
+   `Authorization: Bearer ...` header**; the server ignores HTTP auth
+   headers entirely.
+2. **Agent IDs go in the body**, not in the URL path. To send to `orch`,
+   POST to `/agents/send` with body `{"token":"...","to":"orch","payload":{...}}`.
+   There is no `/agents/orch/send`, no `/agents/<id>/inbox`, no
+   `/agents/<id>/messages`, no top-level `/send`.
+3. **The full route list is the "Pluto Server Quick Reference" table near
+   the bottom of this guide.** If a path is not in that table, it does
+   not exist; do not invent path shapes from generic REST intuition.
+
+Common wrong patterns that all return `404 not_found`:
+
+```bash
+# WRONG: Bearer auth header is ignored; path doesn't exist
+curl -H "Authorization: Bearer PLUTO-..." http://localhost:9001/agents/orch/inbox
+curl -H "Authorization: Bearer PLUTO-..." http://localhost:9001/agents/orch/messages
+
+# WRONG: agent ID embedded in path
+curl -X POST http://localhost:9001/agents/orch/send -d '{...}'
+curl -X POST http://localhost:9001/send -d '{"to":"orch",...}'
+
+# WRONG: token is missing from the body or query string
+curl -X POST http://localhost:9001/agents/send -d '{"to":"orch","payload":{...}}'
+```
+
+Right pattern:
+
+```bash
+# Send a direct message
+curl -s -X POST http://localhost:9001/agents/send \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"PLUTO-...","to":"orch","payload":{"type":"task_result"}}'
+
+# Read your inbox (non-destructive)
+curl -s "http://localhost:9001/agents/peek?token=PLUTO-...&since_token=0"
+```
+
+Under PlutoAgentFriend the wrapper handles peek/ack for you, so in
+practice you mainly need `/agents/send` and `/agents/broadcast`.
+
+### Option A - Use shell commands (recommended)
+
+The Pluto server exposes an HTTP API on `localhost:9001` (or whichever
+port the wrapper injected at startup). Use `curl` to interact with it.
+Use your session token (provided in the startup prompt) for authenticated
+calls like sending messages:
 
 ```bash
 # Send a message to another agent (use YOUR token from the startup prompt)
@@ -118,15 +162,55 @@ curl -s -X POST http://localhost:9001/agents/find \
   -d '{"filter":{"role":"reviewer"}}'
 
 # Update a task
-curl -s -X POST http://localhost:9001/task/update \
+curl -s -X POST http://localhost:9001/agents/task_update \
   -H "Content-Type: application/json" \
-  -d '{"task_id":"TASK-7","status":"completed","result":{"summary":"done"}}'
+  -d '{"token":"YOUR-TOKEN-HERE","task_id":"TASK-7","status":"completed","result":{"summary":"done"}}'
 
 # Check server health
 curl -s http://localhost:9001/health
 ```
 
-### Option B — Use the PlutoClient.sh CLI (if available)
+### Sending Complex JSON Payloads - Use a Heredoc to a File
+
+The inline `-d '...'` form above works for simple payloads, but **breaks
+the moment your JSON contains a quote character or newline**: your shell
+will mis-parse the command and fail with errors like:
+
+```
+(eval):20: unmatched "
+```
+
+For any payload that includes free-form text, code snippets, or nested
+objects, write the JSON to a file via a quoted heredoc and use `-d @file`:
+
+```bash
+cat > /tmp/payload.json << 'EOF'
+{
+  "token": "YOUR-TOKEN-HERE",
+  "to": "orchestrator",
+  "payload": {
+    "type": "task_result",
+    "task_id": "t-002",
+    "status": "done",
+    "summary": "Refactored auth module; added tests",
+    "details": {
+      "files_changed": ["src/auth.py"],
+      "notes": "user input contained \"quoted\" strings; handled correctly"
+    }
+  }
+}
+EOF
+
+curl -s -X POST http://localhost:9001/agents/send \
+  -H "Content-Type: application/json" \
+  -d @/tmp/payload.json
+```
+
+The `'EOF'` (with single quotes) is critical: it tells the shell **not**
+to interpret `$variables` or backslashes inside the heredoc, so any
+embedded JSON is preserved verbatim.
+
+### Option B - Use the PlutoClient.sh CLI (if available)
 
 ```bash
 # Send a message
@@ -139,79 +223,76 @@ curl -s http://localhost:9001/health
 ./PlutoClient.sh lock --resource "file:/src/main.py" --mode write --ttl 30000
 ```
 
----
-
 ## Injection Modes
 
 PlutoAgentFriend operates in one of three modes (set by the user at launch):
 
-| Mode | Behavior |
-|------|----------|
-| **auto** | Messages are injected into your stdin automatically when you are idle. This is the default. |
-| **confirm** | A notification appears to the user; if they don't intervene within 10 seconds, the message is injected. |
-| **manual** | The user is notified of pending messages but must manually paste or type them to you. |
+`{Mode, Behaviour}`:
+{**auto**, Messages are injected into your stdin automatically when you are idle. Default.}
+{**confirm**, A notification appears to the user; if they don't intervene within 10 seconds; the message is injected.}
+{**manual**, The user is notified of pending messages but must manually paste or type them to you.}
 
-You do not need to know which mode is active — just process messages as they
-arrive.
-
----
+You do not need to know which mode is active; just process messages as
+they arrive.
 
 ## Safety Rules
 
-These are enforced by PlutoAgentFriend (not by you), but understanding them
-helps you know when to expect messages:
+These are enforced by PlutoAgentFriend (not by you), but understanding
+them helps you know when to expect messages:
 
-1. **User input has priority** — if the user is actively typing, injection
+1. **User input has priority**: if the user is actively typing, injection
    is delayed until they stop for 5 seconds.
-2. **Never during questions** — if you are asking the user a question
+2. **Never during questions**: if you are asking the user a question
    (detected by patterns like `?`, `[y/n]`, `Confirm?`), injection is
    paused until you resume normal output.
-3. **Transparency** — every injected message is shown to the user on stderr
-   so they can see what you received.
+3. **Transparency**: every injected message is shown to the user on
+   stderr so they can see what you received.
 
----
+## Resource Locking - When and How
 
-## Resource Locking — When and How
-
-If you are about to modify a file that other agents might also touch, **lock
-it first**.  This prevents data corruption from concurrent writes.
+If you are about to modify a file that other agents might also touch,
+**lock it first**. This prevents data corruption from concurrent writes.
 
 ### Lock lifecycle
 
 ```
-1. Acquire   →  curl POST /lock  { resource, mode, ttl_ms }
-2. Work      →  edit the file
-3. Release   →  curl POST /release  { lock_ref }
+1. Acquire   ->  curl POST /locks/acquire  { resource, mode, ttl_ms }
+2. Work      ->  edit the file
+3. Release   ->  curl POST /locks/release  { lock_ref }
 ```
 
 ### Lock modes
 
-| Mode | Use When |
-|------|----------|
-| `write` | You need exclusive access (editing a file) |
-| `read` | You only need to read (multiple readers allowed simultaneously) |
+`{Mode, Use When}`:
+{`write`, You need exclusive access (editing a file).}
+{`read`, You only need to read (multiple readers allowed simultaneously).}
 
 ### Important rules
 
-- **Always release locks** when done.  If you forget, the lock expires after
-  the TTL (typically 30 seconds), but this blocks other agents in the
-  meantime.
-- **Renew long operations** — if your work will take longer than the TTL,
-  renew the lock before it expires:
+- **Always release locks** when done. If you forget, the lock expires
+  after the TTL (typically 30 seconds), but this blocks other agents in
+  the meantime.
+- **Renew long operations**: if your work will take longer than the TTL,
+  renew the lock before it expires. You will also receive a
+  `lock_expiring_soon` event ~15 s before TTL elapses; renew on that
+  signal:
   ```bash
-  curl -s -X POST http://localhost:9001/renew \
+  curl -s -X POST http://localhost:9001/locks/renew \
     -d '{"lock_ref":"LOCK-42","ttl_ms":30000}'
   ```
-- **Handle `unavailable`** — if `try_acquire` returns `unavailable`, the
-  resource is held by another agent.  Wait and retry, or use `acquire` to
+- **Handle `unavailable`**: if `try_acquire` returns `unavailable`, the
+  resource is held by another agent. Wait and retry, or use `acquire` to
   queue for it (you'll receive the lock via a Pluto message when it's
   granted).
+- **Handle `lock_expired`**: if your TTL elapsed before you renewed,
+  another agent may now hold the lock. Stop writing to the resource and
+  re-acquire before continuing.
 
 ### Inspecting who holds or is waiting for a resource
 
 Before you decide to wait on a busy resource (or ping whoever is blocking
-you), ask the server who currently holds it, who held it last, and how long
-the waiting queue is.  Three read-only HTTP endpoints are available:
+you), ask the server who currently holds it, who held it last, and how
+long the waiting queue is. Three read-only HTTP endpoints are available:
 
 ```bash
 # Full picture: current holders + last holder + queue
@@ -227,60 +308,39 @@ curl -s "http://localhost:9001/locks/queue?resource=file:/src/main.py"
 Example response from `/locks/resource`:
 
 ```json
-{
-  "status": "ok",
-  "resource": "file:/src/main.py",
-  "now_ms": 1734123456789,
-  "current_holders": [
-    {"agent_id": "alice", "mode": "write", "lock_ref": "LOCK-42",
-     "expires_at": 1734123486789, "fencing_token": 17}
-  ],
-  "last_holder": {
-    "agent_id": "bob", "lock_ref": "LOCK-41",
-    "released_at": 1734123450000, "reason": "released"
-  },
-  "queue_length": 2,
-  "queue": [
-    {"agent_id": "carol", "mode": "write", "requested_at": 1734123455000,
-     "max_wait_until": 1734123515000, "wait_ref": "WAIT-8"},
-    {"agent_id": "dave",  "mode": "write", "requested_at": 1734123456100,
-     "max_wait_until": null,             "wait_ref": "WAIT-9"}
-  ]
-}
+{"status":"ok","resource":"file:/src/main.py","now_ms":1734123456789,"current_holders":[{"agent_id":"alice","mode":"write","lock_ref":"LOCK-42","expires_at":1734123486789,"fencing_token":17}],"last_holder":{"agent_id":"bob","lock_ref":"LOCK-41","released_at":1734123450000,"reason":"released"},"queue_length":2,"queue":[{"agent_id":"carol","mode":"write","requested_at":1734123455000,"max_wait_until":1734123515000,"wait_ref":"WAIT-8"},{"agent_id":"dave","mode":"write","requested_at":1734123456100,"max_wait_until":null,"wait_ref":"WAIT-9"}]}
 ```
 
 When to use these:
-- **Before acquiring** — if `queue_length` is high, consider working on a
+- **Before acquiring**: if `queue_length` is high, consider working on a
   different resource first.
-- **While blocked** — ask `last_holder` for the agent that just released
-  (useful for coordination: "hey bob, I saw you released main.py, I'll take
-  it now").
-- **Debugging stuck work** — `reason` is `"released"` after a clean
+- **While blocked**: ask `last_holder` for the agent that just released
+  (useful for coordination: "hey bob, I saw you released main.py, I'll
+  take it now").
+- **Debugging stuck work**: `reason` is `"released"` after a clean
   release and `"expired"` when a TTL timed out (agent probably died).
 - `last_holder` is `null` if the server has never seen this resource.
 
----
-
 ## Message Delivery (peek / ack)
 
-PlutoAgentFriend uses **at-least-once delivery**.  Messages stay in the
+PlutoAgentFriend uses **at-least-once delivery**. Messages stay in the
 server inbox until you ack them, so if the wrapper crashes mid-inject
 the next attempt will see them again.
 
 The wrapper handles this automatically:
 
-1. `/agents/peek` — non-destructive read (still uses your HTTP token).
+1. `/agents/peek`: non-destructive read (still uses your HTTP token).
 2. Inject into the editor and wait for the echo to confirm the paste
    actually landed.
-3. `/agents/ack` — drain the server inbox up to the last confirmed
+3. `/agents/ack`: drain the server inbox up to the last confirmed
    `seq_token`.
 
 Each peeked message carries a `seq_token` (monotonically increasing
-integer).  Ack is idempotent: re-acking a `seq_token` you already
-drained returns `{"drained": 0}`.
+integer). Ack is idempotent: re-acking a `seq_token` you already drained
+returns `{"drained":0}`.
 
-You can use these endpoints directly, for example to recover a lost
-message or to inspect the inbox without disturbing it:
+You can use these endpoints directly, e.g. to recover a lost message or
+to inspect the inbox without disturbing it:
 
 ```bash
 # Peek (does not drain)
@@ -292,75 +352,68 @@ curl -s -X POST http://localhost:9001/agents/ack \
   -d '{"token":"<TOKEN>","up_to_seq":42}'
 ```
 
-> ⚠ `/agents/poll` is still available (destructive long-poll) for
+> WARNING: `/agents/poll` is still available (destructive long-poll) for
 > custom clients, but if you are running under PlutoAgentFriend the
-> wrapper owns polling — don't call `/poll` yourself or you'll race the
-> wrapper.  Use `/peek` for observation and let the wrapper ack.
-
----
+> wrapper owns polling; do not call `/poll` yourself or you will race
+> the wrapper. Use `/peek` for observation and let the wrapper ack.
 
 ## Task Workflow
 
-1. **Read the description and payload** — they tell you what to do.
+1. **Read the description and payload**: they tell you what to do.
 2. **Update status to `in_progress`**:
    ```bash
-   curl -s -X POST http://localhost:9001/task/update \
-     -d '{"task_id":"TASK-7","status":"in_progress"}'
+   curl -s -X POST http://localhost:9001/agents/task_update \
+     -d '{"token":"YOUR-TOKEN-HERE","task_id":"TASK-7","status":"in_progress"}'
    ```
-3. **Do the work** — follow the task instructions.
+3. **Do the work**: follow the task instructions.
 4. **Update status to `completed`** (or `failed`) with a result:
    ```bash
-   curl -s -X POST http://localhost:9001/task/update \
-     -d '{"task_id":"TASK-7","status":"completed","result":{"summary":"Refactored auth module","files_changed":["src/auth.py"]}}'
+   curl -s -X POST http://localhost:9001/agents/task_update \
+     -d '{"token":"YOUR-TOKEN-HERE","task_id":"TASK-7","status":"completed","result":{"summary":"Refactored auth module","files_changed":["src/auth.py"]}}'
    ```
-
----
 
 ## Multi-Agent Coordination Patterns
 
-### Pattern 1 — Lock-Edit-Unlock
+### Pattern 1 - Lock-Edit-Unlock
 
 ```
-Agent A                    Pluto                    Agent B
-  │                          │                         │
-  ├─ acquire write lock ────→│                         │
-  │←── lock granted ─────────│                         │
-  │                          │                         │
-  │  ... edit file ...       │                         │
-  │                          │     acquire write lock ─┤
-  │                          │←────────────────────────┤
-  │                          │     (queued — A holds)  │
-  ├─ release lock ──────────→│                         │
-  │                          ├── lock granted ────────→│
-  │                          │     ... edit file ...   │
+Agent A                   Pluto                    Agent B
+   |                        |                         |
+   |- acquire write lock -->|                         |
+   |<- lock granted --------|                         |
+   |                        |                         |
+   | ... edit file ...      |                         |
+   |                        | <- acquire write lock --|
+   |                        | (queued; A holds)       |
+   |- release lock -------->|                         |
+   |                        |-- lock granted -------->|
+   |                        |     ... edit file ...   |
 ```
 
-### Pattern 2 — Request-Review
+### Pattern 2 - Request-Review
 
 ```
-Agent A (coder)             Pluto              Agent B (reviewer)
-  │                          │                         │
-  │  ... finish coding ...   │                         │
-  ├─ send review_request ───→│                         │
-  │                          ├── inject message ──────→│
-  │                          │     ... reviews code ...│
-  │                          │←── send feedback ───────┤
-  │←── inject message ───────│                         │
-  │  ... apply feedback ...  │                         │
+Agent A (coder)           Pluto             Agent B (reviewer)
+   |                        |                         |
+   | ... finish coding ...  |                         |
+   |- send review_request ->|                         |
+   |                        |-- inject message ------>|
+   |                        |     ... reviews code ...|
+   |                        |<-- send feedback -------|
+   |<- inject message ------|                         |
+   | ... apply feedback ... |                         |
 ```
 
-### Pattern 3 — Broadcast Announce
+### Pattern 3 - Broadcast Announce
 
 ```
-Agent A                    Pluto              All Agents
-  │                          │                    │
-  ├─ broadcast "done" ──────→│                    │
-  │                          ├── inject to B ────→│
-  │                          ├── inject to C ────→│
-  │                          ├── inject to D ────→│
+Agent A                  Pluto             All Agents
+   |                        |                    |
+   |- broadcast "done" ---->|                    |
+   |                        |-- inject to B ---->|
+   |                        |-- inject to C ---->|
+   |                        |-- inject to D ---->|
 ```
-
----
 
 ## Launching PlutoAgentFriend
 
@@ -387,67 +440,59 @@ This section is for the **user** (or for you to suggest to the user).
 
 ### CLI Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--agent-id <name>` | *required* | Your identity in the Pluto network |
-| `--framework <name>` | auto-detect | `claude`, `copilot`, `aider`, or `cursor` |
-| `--mode <mode>` | `auto` | `auto`, `confirm`, or `manual` |
-| `--host <ip>` | from config | Pluto server host |
-| `--http-port <port>` | from config | Pluto HTTP port |
-| `--ready-pattern <regex>` | per framework | Regex matching the agent's idle prompt |
-| `--silence-timeout <sec>` | `3.0` | Seconds of silence before agent is considered idle |
-| `--verbose` | off | Enable debug logging |
-
----
+`{Option, Default, Description}`:
+{`--agent-id <name>`, *required*, Your identity in the Pluto network.}
+{`--framework <name>`, auto-detect, `claude`/`copilot`/`aider`/`cursor`.}
+{`--mode <mode>`, `auto`, `auto`/`confirm`/`manual`.}
+{`--host <ip>`, from config, Pluto server host.}
+{`--http-port <port>`, from config, Pluto HTTP port.}
+{`--ready-pattern <regex>`, per framework, Regex matching the agent's idle prompt.}
+{`--silence-timeout <sec>`, `3.0`, Seconds of silence before agent is considered idle.}
+{`--verbose`, off, Enable debug logging.}
 
 ## Pluto Server Quick Reference
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/health` | GET | Server health check |
-| `/ping` | GET | Simple ping |
-| `/agents` | GET | List all connected agents |
-| `/agents/register` | POST | Register (HTTP session mode) |
-| `/agents/unregister` | POST | Unregister |
-| `/agents/poll` | GET | Long-poll for messages (destructive; `?token=...&timeout=30`) |
-| `/agents/peek` | GET | Non-destructive inbox read (`?token=...[&since_token=N]`) |
-| `/agents/ack` | POST | Ack messages `{token, up_to_seq}` (idempotent) |
-| `/agents/find` | POST | Find agents by attributes |
-| `/message` | POST | Send a direct message |
-| `/broadcast` | POST | Broadcast to all agents |
-| `/agents/subscribe` | POST | Subscribe to a topic |
-| `/agents/publish` | POST | Publish to a topic |
-| `/lock` | POST | Acquire a lock |
-| `/release` | POST | Release a lock |
-| `/renew` | POST | Renew a lock TTL |
-| `/task/assign` | POST | Assign a task |
-| `/task/update` | POST | Update task status |
-| `/task/list` | GET | List tasks |
-
----
+`{Endpoint, Method, Purpose}`:
+{`/health`, GET, Server health check.}
+{`/ping`, GET, Simple ping.}
+{`/agents`, GET, List all connected agents.}
+{`/agents/register`, POST, Register (HTTP session mode).}
+{`/agents/unregister`, POST, Unregister.}
+{`/agents/poll`, GET, Long-poll for messages (destructive; `?token=...&timeout=30`).}
+{`/agents/peek`, GET, Non-destructive inbox read (`?token=...[&since_token=N]`).}
+{`/agents/ack`, POST, Ack messages `{token; up_to_seq}` (idempotent).}
+{`/agents/find`, POST, Find agents by attributes.}
+{`/agents/send`, POST, Send a direct message (token required).}
+{`/agents/broadcast`, POST, Broadcast to all agents (token required).}
+{`/messages/send`, POST, Send a direct message (one-shot; no token).}
+{`/messages/broadcast`, POST, Broadcast to all agents (one-shot; no token).}
+{`/agents/subscribe`, POST, Subscribe to a topic.}
+{`/agents/publish`, POST, Publish to a topic.}
+{`/locks/acquire`, POST, Acquire a lock.}
+{`/locks/release`, POST, Release a lock.}
+{`/locks/renew`, POST, Renew a lock TTL.}
+{`/agents/task_assign`, POST, Assign a task.}
+{`/agents/task_update`, POST, Update task status.}
+{`/agents/task_list`, POST, List tasks.}
 
 ## Example: Full Agent Session
 
 Here is what a typical session looks like from your perspective:
 
 ```
-# 1. You start up normally — the user launched you with PlutoAgentFriend.
+# 1. You start up normally; the user launched you with PlutoAgentFriend.
 #    You see your normal prompt and can work as usual.
 
 # 2. While you're idle, you suddenly receive in stdin:
 
-You have received the following Pluto coordination messages. Process them and take appropriate action.
+Pluto coordination msgs, process each:
 
-[Pluto Task Assignment - TASK-3]
+[Pluto task TASK-3]
 From: orchestrator
-Description: Add input validation to the login endpoint in src/auth.py
-Payload: {
-  "priority": "high",
-  "files": ["src/auth.py"],
-  "requirements": "Validate email format and password length"
-}
+Desc: Add input validation to the login endpoint in src/auth.py
+Payload: {"priority":"high","files":["src/auth.py"],"requirements":"Validate email format and password length"}
 
-Work on this task. When done, update it with pluto_task_update("TASK-3", "completed", {"result": ...}).
+When done, update with pluto_task_update("TASK-3","completed",{"result":...}).
 
 # 3. You process this like a normal user request:
 #    a. Lock the file
@@ -457,31 +502,30 @@ Work on this task. When done, update it with pluto_task_update("TASK-3", "comple
 #    e. Optionally notify other agents
 
 # Example of what you might do:
-curl -s -X POST http://localhost:9001/task/update \
-  -d '{"task_id":"TASK-3","status":"in_progress"}'
+curl -s -X POST http://localhost:9001/agents/task_update \
+  -d '{"token":"YOUR-TOKEN-HERE","task_id":"TASK-3","status":"in_progress"}'
 
-curl -s -X POST http://localhost:9001/lock \
+curl -s -X POST http://localhost:9001/locks/acquire \
   -d '{"agent_id":"coder-1","resource":"file:/src/auth.py","mode":"write","ttl_ms":60000}'
 
 # ... edit the file ...
 
-curl -s -X POST http://localhost:9001/release \
+curl -s -X POST http://localhost:9001/locks/release \
   -d '{"lock_ref":"LOCK-15"}'
 
-curl -s -X POST http://localhost:9001/task/update \
-  -d '{"task_id":"TASK-3","status":"completed","result":{"summary":"Added email and password validation","files_changed":["src/auth.py"]}}'
+curl -s -X POST http://localhost:9001/agents/task_update \
+  -d '{"token":"YOUR-TOKEN-HERE","task_id":"TASK-3","status":"completed","result":{"summary":"Added email and password validation","files_changed":["src/auth.py"]}}'
 
-curl -s -X POST http://localhost:9001/message \
+curl -s -X POST http://localhost:9001/messages/send \
   -d '{"from":"coder-1","to":"orchestrator","payload":{"type":"task_done","task_id":"TASK-3"}}'
 ```
 
----
-
 ## Summary
 
-- You are running inside PlutoAgentFriend — a transparent PTY wrapper.
+- You are running inside PlutoAgentFriend; a transparent PTY wrapper.
 - Messages from other agents arrive as natural-language text in your stdin.
-- Use `curl` against `localhost:9001` to send messages, acquire locks, and update tasks.
+- Use `curl` against `localhost:9001` to send messages, acquire locks,
+  and update tasks.
 - Always lock resources before editing shared files.
 - Always update task status when assigned work.
-- The user can see everything — all injected messages are logged to stderr.
+- The user can see everything; all injected messages are logged to stderr.

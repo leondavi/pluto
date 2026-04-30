@@ -52,6 +52,8 @@
 
 %% Sweep interval for expired locks (5 seconds)
 -define(SWEEP_INTERVAL_MS, 5000).
+%% Send lock_expiring_soon warning this many ms before the lock expires.
+-define(WARN_BEFORE_EXPIRY_MS, 15000).
 
 %%====================================================================
 %% API
@@ -229,7 +231,8 @@ handle_call({renew, LockRef, Opts}, _From, State) ->
         [Lock = #lock{}] ->
             TtlMs = maps:get(ttl_ms, Opts, 30000),
             NewExpiry = pluto_lease:make_expires_at(TtlMs),
-            ets:insert(?ETS_LOCKS, Lock#lock{expires_at = NewExpiry}),
+            %% Reset warned so the agent gets a fresh warning on the next cycle.
+            ets:insert(?ETS_LOCKS, Lock#lock{expires_at = NewExpiry, warned = false}),
             pluto_stats:inc(locks_renewed),
             {reply, ok, State};
         [] ->
@@ -499,21 +502,50 @@ notify_lock_granted(_, State) ->
     State.
 
 %% @private Sweep and remove expired locks, advancing queues where needed.
+%% Also sends a lock_expiring_soon warning once per lock when the remaining
+%% TTL drops below WARN_BEFORE_EXPIRY_MS, giving the agent a chance to renew.
 sweep_expired_locks(State) ->
     Now = pluto_lease:now_ms(),
     AllLocks = ets:tab2list(?ETS_LOCKS),
     lists:foldl(fun(#lock{lock_ref = Ref, resource = Res,
-                          agent_id = AId, expires_at = Exp}, AccState) ->
+                          agent_id = AId, expires_at = Exp,
+                          warned = Warned} = Lock, AccState) ->
         case Now >= Exp of
             true ->
-                ?LOG_INFO("Lock ~s expired for agent ~s on ~s",
-                          [Ref, AId, Res]),
+                %% Lock has expired — notify the agent and advance the queue.
+                ?LOG_INFO("Lock ~s expired for agent ~s on ~s", [Ref, AId, Res]),
                 ets:delete(?ETS_LOCKS, Ref),
                 pluto_stats:inc(locks_expired),
                 pluto_stats:inc_agent(AId, locks_expired),
-                Acc1 = record_last_holder(Res, AId, Ref,
-                                          expired, AccState),
+                ExpiredEvt = #{
+                    <<"event">>    => ?EVT_LOCK_EXPIRED,
+                    <<"lock_ref">> => Ref,
+                    <<"resource">> => Res,
+                    <<"message">>  => iolist_to_binary(io_lib:format(
+                        "Lock ~s on ~s has expired. Re-acquire before continuing "
+                        "work on this resource - another agent may now hold it.",
+                        [Ref, Res]))
+                },
+                pluto_msg_hub:push_event_to_agent(AId, ExpiredEvt),
+                Acc1 = record_last_holder(Res, AId, Ref, expired, AccState),
                 advance_queue(Res, Acc1);
+            false when not Warned andalso (Exp - Now) =< ?WARN_BEFORE_EXPIRY_MS ->
+                %% Lock is about to expire — warn once so the agent can renew.
+                ExpiresIn = Exp - Now,
+                WarnEvt = #{
+                    <<"event">>         => ?EVT_LOCK_EXPIRING_SOON,
+                    <<"lock_ref">>      => Ref,
+                    <<"resource">>      => Res,
+                    <<"expires_in_ms">> => ExpiresIn,
+                    <<"message">>       => iolist_to_binary(io_lib:format(
+                        "Lock ~s on ~s expires in ~wms. Renew now with "
+                        "{\"op\":\"renew\",\"lock_ref\":\"~s\",\"ttl_ms\":30000} "
+                        "or re-acquire after expiry - it may be granted to another agent.",
+                        [Ref, Res, ExpiresIn, Ref]))
+                },
+                pluto_msg_hub:push_event_to_agent(AId, WarnEvt),
+                ets:insert(?ETS_LOCKS, Lock#lock{warned = true}),
+                AccState;
             false ->
                 AccState
         end

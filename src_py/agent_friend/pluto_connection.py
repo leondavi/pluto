@@ -132,9 +132,59 @@ class PlutoConnection:
                 return True
         return False
 
+    @staticmethod
+    def _is_session_lost(exc: BaseException) -> bool:
+        """Return True if *exc* indicates the server has forgotten our token.
+
+        Triggers re-registration. Covers both:
+          - HTTP 404/401 with reason "session_not_found" (server restart, TTL
+            expiry on the server side, or token wiped)
+          - Connection-refused style errors during a peek that already had a
+            valid token (server bounced; will need a fresh registration once
+            it comes back).
+        """
+        text = str(exc).lower()
+        return (
+            "session_not_found" in text
+            or "404" in text
+            or "401" in text
+            or "not registered" in text
+        )
+
+    def _reregister(self) -> bool:
+        """Drop the current HTTP client and create a fresh registration.
+
+        Used when the server has lost our session (restart, TTL expiry).
+        Returns True on success. The previous ack-cursor is reset because
+        the new session has its own seq_token space.
+        """
+        logger.warning(
+            "Pluto session lost; re-registering as %s ...", self.agent_id
+        )
+        try:
+            if self._client is not None:
+                try:
+                    self._client.unregister()
+                except Exception:
+                    pass
+            self._client = None
+            ok = self.connect()
+            if ok:
+                self._last_acked_seq = 0
+                self._seen_seqs.clear()
+                logger.warning(
+                    "Pluto re-registered; new token %s",
+                    (self._client.token[:12] + "...") if self._client else "?",
+                )
+            return ok
+        except Exception as exc:
+            logger.warning("Pluto re-register failed: %s", exc)
+            return False
+
     def _poll_loop(self) -> None:
         """Background: periodically *peek* (non-destructive) the inbox."""
         PEEK_INTERVAL_S = 1.0
+        SESSION_RETRY_BACKOFF_S = 5.0
         while self._running and self._client:
             try:
                 msgs = self._client.peek(since_token=self._last_acked_seq)
@@ -167,8 +217,12 @@ class PlutoConnection:
                             len(noise_seqs),
                         )
             except (PlutoError, Exception) as exc:
+                if self._is_session_lost(exc):
+                    if not self._reregister():
+                        time.sleep(SESSION_RETRY_BACKOFF_S)
+                    continue
                 logger.warning("Pluto peek error: %s", exc)
-                time.sleep(5)
+                time.sleep(SESSION_RETRY_BACKOFF_S)
                 continue
             time.sleep(PEEK_INTERVAL_S)
 

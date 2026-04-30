@@ -9,6 +9,13 @@ class MessageFormatter:
     that any LLM-based agent can understand and act on.
     """
 
+    # Compact JSON separators — save tokens by skipping whitespace around : and ,
+    _JSON_SEPS = (",", ":")
+
+    @staticmethod
+    def _j(payload) -> str:
+        return json.dumps(payload, separators=MessageFormatter._JSON_SEPS)
+
     @staticmethod
     def format(messages: list[dict]) -> str:
         """Format one or more Pluto messages into a single injection string."""
@@ -25,37 +32,34 @@ class MessageFormatter:
                 ):
                     continue
                 parts.append(
-                    f"[Pluto Message from {sender}]\n"
-                    f"{json.dumps(payload, indent=2)}"
+                    f"[Pluto msg from {sender}]\n"
+                    f"{MessageFormatter._j(payload)}"
                 )
             elif event == "broadcast":
                 parts.append(
-                    f"[Pluto Broadcast from {sender}]\n"
-                    f"{json.dumps(payload, indent=2)}"
+                    f"[Pluto bcast from {sender}]\n"
+                    f"{MessageFormatter._j(payload)}"
                 )
             elif event == "task_assigned":
                 task_id = msg.get("task_id", "?")
                 desc = msg.get("description", "")
                 parts.append(
-                    f"[Pluto Task Assignment - {task_id}]\n"
+                    f"[Pluto task {task_id}]\n"
                     f"From: {sender}\n"
-                    f"Description: {desc}\n"
-                    f"Payload: {json.dumps(payload, indent=2)}\n"
-                    f"\nWork on this task. When done, update it with "
-                    f'pluto_task_update("{task_id}", "completed", '
-                    f'{{"result": ...}}).'
+                    f"Desc: {desc}\n"
+                    f"Payload: {MessageFormatter._j(payload)}\n"
+                    f"\nWhen done, update with "
+                    f'pluto_task_update("{task_id}","completed",'
+                    f'{{"result":...}}).'
                 )
             elif event == "topic_message":
                 topic = msg.get("topic", "?")
                 parts.append(
-                    f"[Pluto Topic '{topic}' from {sender}]\n"
-                    f"{json.dumps(payload, indent=2)}"
+                    f"[Pluto topic '{topic}' from {sender}]\n"
+                    f"{MessageFormatter._j(payload)}"
                 )
             else:
                 continue
 
-        header = (
-            "You have received the following Pluto coordination messages. "
-            "Process them and take appropriate action.\n\n"
-        )
+        header = "Pluto coordination msgs, process each:\n\n"
         return header + "\n\n".join(parts)

@@ -44,7 +44,8 @@
     sweep_inbox/0,
     peek_inbox/1,
     peek_inbox/2,
-    ack_inbox/2
+    ack_inbox/2,
+    push_event_to_agent/2
 ]).
 
 %% gen_server callbacks
@@ -748,6 +749,22 @@ broadcast_event(Event, ExcludeAgentId) ->
         end
     end, AllAgents).
 
+%% @doc Push a server-generated event to an agent — works for both TCP and HTTP.
+%% For connected TCP agents the event is pushed directly to the session process.
+%% For HTTP/stateless agents (no persistent socket) the event is queued in the
+%% inbox and will be returned on the next poll call.
+-spec push_event_to_agent(binary(), map()) -> ok.
+push_event_to_agent(AgentId, Event) ->
+    case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{status = connected, session_pid = Pid}] when is_pid(Pid) ->
+            Pid ! {pluto_event, Event},
+            ok;
+        [#agent{}] ->
+            queue_inbox_message(AgentId, Event);
+        [] ->
+            ok
+    end.
+
 %% @private Queue a message in an offline agent's inbox (bounded).
 queue_inbox_message(AgentId, Event) ->
     MaxInbox = pluto_config:get(max_inbox_size, ?DEFAULT_MAX_INBOX_SIZE),
@@ -905,8 +922,9 @@ do_register_http_with_token(AgentId, Token, Attrs, Mode, TtlMs) ->
     {Token, SessionId}.
 
 %% @private Generate a cryptographically random HTTP session token.
+%% 16 bytes = 128-bit entropy (32 hex chars). Bump to 32/64 if needed.
 generate_http_token() ->
-    Hex = binary:encode_hex(crypto:strong_rand_bytes(24)),
+    Hex = binary:encode_hex(crypto:strong_rand_bytes(16)),
     <<"PLUTO-", Hex/binary>>.
 
 %% @private Generate an HTTP session ID.

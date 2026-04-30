@@ -76,6 +76,56 @@ ok()    { echo -e "${GREEN}[pluto]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[pluto]${NC} $*"; }
 err()   { echo -e "${RED}[pluto]${NC} $*" >&2; }
 
+# Run a command with a hard timeout, portable across macOS and Linux.
+# Usage: run_with_timeout <secs> <cmd> [args...]
+# Returns the command's exit code, or 124 if it timed out.
+run_with_timeout() {
+    local secs="$1"; shift
+    "$@" &
+    local cmd_pid=$!
+    ( sleep "${secs}" && kill -TERM "${cmd_pid}" 2>/dev/null ) &
+    local watcher_pid=$!
+    local rc=0
+    if wait "${cmd_pid}" 2>/dev/null; then
+        rc=$?
+    else
+        rc=$?
+    fi
+    kill "${watcher_pid}" 2>/dev/null || true
+    wait "${watcher_pid}" 2>/dev/null || true
+    return ${rc}
+}
+
+# Check whether the EPMD registration for 'pluto' is stale (registered but
+# nothing actually listening on the node's distribution port).
+# Returns 0 if stale, 1 if alive or no registration.
+epmd_pluto_is_stale() {
+    command -v epmd &>/dev/null || return 1
+    local line
+    line=$(epmd -names 2>/dev/null | grep '^name pluto ' || true)
+    [[ -z "${line}" ]] && return 1
+    local epmd_port
+    epmd_port=$(echo "${line}" | awk '{print $NF}')
+    [[ -z "${epmd_port}" ]] && return 1
+    # If lsof shows nothing listening on that port, the registration is stale.
+    if ! lsof -ti -i ":${epmd_port}" -sTCP:LISTEN &>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Forcibly clear a stale 'pluto' registration from EPMD without invoking
+# the release's graceful stop (which would hang RPC'ing a dead node).
+clear_stale_epmd() {
+    info "Clearing stale 'pluto' registration from epmd ..."
+    epmd -kill 2>/dev/null || true
+    sleep 0.3
+    if epmd -names 2>/dev/null | grep -q '^name pluto '; then
+        pkill -x epmd 2>/dev/null || true
+        sleep 0.3
+    fi
+}
+
 show_disclaimer() {
     echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${YELLOW}║  DISCLAIMER & LIABILITY NOTICE                                   ║${NC}"
@@ -138,7 +188,7 @@ check_node_conflict() {
     local epmd_conflict=false
     local port_conflict=false
 
-    if command -v epmd &>/dev/null && epmd -names 2>/dev/null | grep -q 'name pluto '; then
+    if command -v epmd &>/dev/null && epmd -names 2>/dev/null | grep -q '^name pluto '; then
         epmd_conflict=true
     fi
 
@@ -148,6 +198,19 @@ check_node_conflict() {
 
     if ! $epmd_conflict && ! $port_conflict; then
         return 0  # no conflict
+    fi
+
+    # Stale EPMD without a live process: clear it directly, do NOT call
+    # `pluto stop` (it RPCs the node and hangs forever on a dead port).
+    if $epmd_conflict && ! $port_conflict && epmd_pluto_is_stale; then
+        warn "Stale 'pluto' registration in epmd with no live process."
+        clear_stale_epmd
+        if epmd -names 2>/dev/null | grep -q '^name pluto '; then
+            err "Could not clear stale epmd entry."
+            return 1
+        fi
+        ok "Stale epmd entry cleared."
+        return 0
     fi
 
     $epmd_conflict && warn "An Erlang node named 'pluto' is already registered with epmd."
@@ -160,10 +223,11 @@ check_node_conflict() {
     if [[ -n "${pids}" ]]; then
         warn "Pluto processes found (PID: ${pids// /, }). Stopping ..."
 
-        # Try graceful stop first
+        # Try graceful stop first, but never wait more than 5 s — `pluto stop`
+        # uses Erlang distribution and will block forever if the node is unreachable.
         if [[ -x "${REL_DIR}/bin/pluto" ]]; then
-            "${REL_DIR}/bin/pluto" stop 2>/dev/null || true
-            sleep 2
+            run_with_timeout 5 "${REL_DIR}/bin/pluto" stop &>/dev/null || true
+            sleep 1
         fi
 
         # Force-kill if still around
@@ -175,14 +239,8 @@ check_node_conflict() {
     fi
 
     # Clean up stale epmd registration
-    if command -v epmd &>/dev/null && epmd -names 2>/dev/null | grep -q 'name pluto '; then
-        info "Clearing stale 'pluto' node from epmd ..."
-        epmd -kill 2>/dev/null || true
-        sleep 0.5
-        if epmd -names 2>/dev/null | grep -q 'name pluto '; then
-            pkill -x epmd 2>/dev/null || true
-            sleep 0.5
-        fi
+    if command -v epmd &>/dev/null && epmd -names 2>/dev/null | grep -q '^name pluto '; then
+        clear_stale_epmd
     fi
 
     # Verify cleanup succeeded
@@ -224,9 +282,44 @@ sync_source() {
         "${SRC_DIR}/" "${BUILD_DIR}/"
 }
 
+# Detect the version of the currently-built release (if any).
+# Echoes the highest-numbered release directory name, or empty if no build.
+get_built_version() {
+    if [[ ! -d "${REL_DIR}/releases" ]]; then
+        return
+    fi
+    ls -1 "${REL_DIR}/releases" 2>/dev/null \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sort -V | tail -1
+}
+
+# If the source version (from VERSION.md) differs from the built release,
+# wipe stale build artefacts so do_build produces a fresh release that
+# matches the source. Stale releases dirs (e.g. releases/0.2.6 when source
+# is 0.2.7) can otherwise leave the runtime confused about which version
+# to boot.
+auto_clean_if_stale() {
+    local source_ver="${PLUTO_VERSION#v}"
+    local built_ver
+    built_ver=$(get_built_version)
+
+    [[ -z "${built_ver}" ]] && return                        # nothing built yet
+    [[ "${source_ver}" == "${built_ver}" ]] && return        # already in sync
+
+    local sorted_top
+    sorted_top=$(printf '%s\n%s\n' "${source_ver}" "${built_ver}" | sort -V | tail -1)
+    if [[ "${sorted_top}" == "${source_ver}" ]]; then
+        warn "Source ${source_ver} is newer than built ${built_ver} — auto-cleaning."
+    else
+        warn "Source ${source_ver} differs from built ${built_ver} (downgrade) — auto-cleaning."
+    fi
+    cmd_clean
+}
+
 # Compile and build the release.
 do_build() {
     require_rebar3
+    auto_clean_if_stale
     sync_source
     info "Compiling ..."
     (cd "${BUILD_DIR}" && rebar3 compile)
@@ -300,9 +393,20 @@ cmd_kill() {
 
     local stopped=false
 
-    # 1. Try the release stop command (graceful shutdown)
+    # If EPMD has a stale entry (registered, no live process), skip graceful
+    # stop entirely — it would RPC a dead port and hang the script.
+    if epmd_pluto_is_stale; then
+        warn "EPMD shows a stale 'pluto' registration with no live node."
+        clear_stale_epmd
+        rm -f "${PID_FILE}"
+        ok "Stale registration cleared. No running server to stop."
+        return 0
+    fi
+
+    # 1. Try the release stop command (graceful shutdown), with a hard timeout
+    #    so we never block on Erlang distribution to an unresponsive node.
     if [[ -x "${REL_DIR}/bin/pluto" ]]; then
-        if "${REL_DIR}/bin/pluto" stop 2>/dev/null; then
+        if run_with_timeout 5 "${REL_DIR}/bin/pluto" stop &>/dev/null; then
             ok "Stopped via release command."
             stopped=true
         fi
@@ -343,14 +447,8 @@ cmd_kill() {
     fi
 
     # 4. Clean up stale epmd registration
-    if command -v epmd &>/dev/null && epmd -names 2>/dev/null | grep -q 'name pluto '; then
-        info "Clearing stale 'pluto' node from epmd ..."
-        epmd -kill 2>/dev/null || true
-        sleep 0.5
-        if epmd -names 2>/dev/null | grep -q 'name pluto '; then
-            pkill -x epmd 2>/dev/null || true
-            sleep 0.5
-        fi
+    if command -v epmd &>/dev/null && epmd -names 2>/dev/null | grep -q '^name pluto '; then
+        clear_stale_epmd
         ok "epmd cleared."
     fi
 

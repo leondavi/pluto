@@ -5,7 +5,6 @@ datasets, their schemas, and their versions.
 
 You MUST follow the shared protocol at `library/protocol.md`.
 
----
 
 ## Mission
 
@@ -16,7 +15,7 @@ Guarantee that every experiment and training job operates on
 
 - You are the **only** role allowed to publish a new
   `dataset:<name>@<version>`. Others may only read pinned versions.
-- Never mutate an existing dataset version. New data → new version.
+- Never mutate an existing dataset version. New data -> new version.
 - No dataset goes to `experiment` or `eval` stages without a schema
   document (`dir:.../schemas/<name>@<version>.json`) co-versioned with it.
 - Schema changes are breaking by default. Deprecate the old version; do
@@ -24,7 +23,7 @@ Guarantee that every experiment and training job operates on
 
 ## Typical tasks
 
-- Ingest new raw data → validate → publish new `dataset:<name>@<version>`.
+- Ingest new raw data -> validate -> publish new `dataset:<name>@<version>`.
 - Answer `dataset_info` requests from Experiment Runner / Evaluator.
 - Migrate schemas with an explicit deprecation window.
 

@@ -77,6 +77,54 @@ Pluto API directly (there is no SDK in your session). Instead:
 > (e.g. `/agents/send`, `/agents/broadcast`). Incoming messages are
 > delivered to you automatically by the wrapper; you do not need to poll.
 
+### API Conventions (read this before writing any curl command)
+
+Pluto's HTTP API is **flat, not RESTful**. Endpoints live at fixed paths.
+Three rules:
+
+1. **Authentication goes in the request, not in a header.** For POST
+   endpoints the token is a JSON body field `"token"`. For GET endpoints
+   it is a query string parameter `?token=...`. There is **no
+   `Authorization: Bearer ...` header**; the server ignores HTTP auth
+   headers entirely.
+2. **Agent IDs go in the body**, not in the URL path. To send to `orch`,
+   POST to `/agents/send` with body `{"token":"...","to":"orch","payload":{...}}`.
+   There is no `/agents/orch/send`, no `/agents/<id>/inbox`, no
+   `/agents/<id>/messages`, no top-level `/send`.
+3. **The full route list is the "Pluto Server Quick Reference" table near
+   the bottom of this guide.** If a path is not in that table, it does
+   not exist; do not invent path shapes from generic REST intuition.
+
+Common wrong patterns that all return `404 not_found`:
+
+```bash
+# WRONG: Bearer auth header is ignored; path doesn't exist
+curl -H "Authorization: Bearer PLUTO-..." http://localhost:9001/agents/orch/inbox
+curl -H "Authorization: Bearer PLUTO-..." http://localhost:9001/agents/orch/messages
+
+# WRONG: agent ID embedded in path
+curl -X POST http://localhost:9001/agents/orch/send -d '{...}'
+curl -X POST http://localhost:9001/send -d '{"to":"orch",...}'
+
+# WRONG: token is missing from the body or query string
+curl -X POST http://localhost:9001/agents/send -d '{"to":"orch","payload":{...}}'
+```
+
+Right pattern:
+
+```bash
+# Send a direct message
+curl -s -X POST http://localhost:9001/agents/send \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"PLUTO-...","to":"orch","payload":{"type":"task_result"}}'
+
+# Read your inbox (non-destructive)
+curl -s "http://localhost:9001/agents/peek?token=PLUTO-...&since_token=0"
+```
+
+Under PlutoAgentFriend the wrapper handles peek/ack for you, so in
+practice you mainly need `/agents/send` and `/agents/broadcast`.
+
 ### Option A - Use shell commands (recommended)
 
 The Pluto server exposes an HTTP API on `localhost:9001` (or whichever

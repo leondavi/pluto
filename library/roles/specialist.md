@@ -30,8 +30,18 @@ Orchestrator.
 1. Confirm the Orchestrator is registered in Pluto (`GET /agents`):
 
    ```bash
+   # /agents returns {"status":"ok","agents":["id-1","id-2",...]}
+   # so we need to extract the inner list, which is itself a list of strings:
    curl -s http://localhost:9001/agents | python3 -c \
-     "import sys,json; agents=json.load(sys.stdin); print([a['agent_id'] for a in agents])"
+     "import sys,json; print(json.load(sys.stdin)['agents'])"
+   ```
+
+   For full per-agent detail (status, attributes, last_seen):
+
+   ```bash
+   # ?detailed=true returns {"status":"ok","agents":[{...full record...},...]}
+   curl -s "http://localhost:9001/agents?detailed=true" | python3 -c \
+     "import sys,json; print([a['agent_id'] for a in json.load(sys.stdin)['agents']])"
    ```
 
    If `orchestrator` is not in the list, wait up to 30 seconds and re-check

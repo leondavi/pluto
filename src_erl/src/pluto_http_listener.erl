@@ -949,17 +949,149 @@ route('GET', <<"/tasks/progress">>, _Body, _Sock) ->
             <<"by_status">> => StatusCounts,
             <<"tasks">> => AllTasks}};
 
-%% ── 404 ─────────────────────────────────────────────────────────────
-route('GET', _Path, _Body, _Sock) ->
-    {404, #{<<"error">> => <<"not_found">>}};
-route('POST', _Path, _Body, _Sock) ->
-    {404, #{<<"error">> => <<"not_found">>}};
+%% ── /routes — full route catalogue (so agents don't have to guess) ──
+route('GET', <<"/routes">>, _Body, _Sock) ->
+    {200, #{<<"status">> => <<"ok">>, <<"routes">> => known_routes()}};
+
+%% ── 404 with self-teaching hint ─────────────────────────────────────
+%% Instead of a bare "not_found", classify the wrong path against common
+%% mistake patterns (e.g. /api/ prefix, singular /lock vs plural /locks,
+%% agent_id-in-path) and respond with a specific fix. Lets misbehaving
+%% agents self-correct on the next attempt instead of fishing endlessly.
+route('GET', Path, _Body, _Sock) ->
+    {404, not_found_body(<<"GET">>, Path)};
+route('POST', Path, _Body, _Sock) ->
+    {404, not_found_body(<<"POST">>, Path)};
 route(_Method, _Path, _Body, _Sock) ->
     {405, #{<<"error">> => <<"method_not_allowed">>}}.
 
 %%====================================================================
 %% Internal helpers
 %%====================================================================
+
+%% @private Build a 404 body that helps the caller self-correct.
+%% Strips query string before classifying so /api/lock?foo=1 still matches.
+not_found_body(MethodBin, Path) ->
+    PathOnly = case binary:split(Path, <<"?">>) of
+                   [P, _Q] -> P;
+                   [P]     -> P
+               end,
+    #{<<"status">> => <<"error">>,
+      <<"reason">> => <<"unknown_route">>,
+      <<"method">> => MethodBin,
+      <<"path">>   => Path,
+      <<"hint">>   => not_found_hint(PathOnly),
+      <<"see">>    => <<"GET /routes for the full catalogue">>}.
+
+%% @private Pattern-match common wrong paths to a specific learning hint.
+not_found_hint(Path) ->
+    case classify_wrong_path(Path) of
+        {api_prefix, Suggested} ->
+            <<"Pluto has no /api/ prefix. Try '", Suggested/binary,
+              "' (drop /api/).">>;
+        {lock_singular, Suggested} ->
+            <<"Lock routes are plural: /locks/... not /lock/.... ",
+              "Try '", Suggested/binary, "'.">>;
+        {agent_singular, Suggested} ->
+            <<"Use plural /agents/... not /agent/.... ",
+              "Try '", Suggested/binary, "'.">>;
+        {agent_id_in_path, _} ->
+            <<"Agent IDs go in the JSON body, not the URL path. ",
+              "To send: POST /agents/send with body ",
+              "{\"token\":\"...\",\"to\":\"<agent>\",\"payload\":{...}}. ",
+              "To read your own inbox: GET /agents/peek?token=<TOKEN>&since_token=<N>.">>;
+        task_top_level ->
+            <<"Task ops live under /agents: POST /agents/task_assign, ",
+              "/agents/task_update, /agents/task_list, /agents/task_progress. ",
+              "There is no top-level /task or /task/result.">>;
+        bare_send ->
+            <<"Use POST /agents/send (token in body) ",
+              "or POST /messages/send (token-less one-shot). ",
+              "There is no top-level /send.">>;
+        bare_broadcast ->
+            <<"Use POST /agents/broadcast (token in body) ",
+              "or POST /messages/broadcast (token-less one-shot).">>;
+        bare_lock ->
+            <<"Use POST /locks/acquire, /locks/release, /locks/renew, ",
+              "or /locks/try_acquire (note plural).">>;
+        unknown ->
+            <<"Pluto's HTTP API is flat. Token goes in JSON body for POST ",
+              "(\"token\":\"...\") or ?token=... for GET; never as an ",
+              "Authorization header. Call GET /routes for the full route list.">>
+    end.
+
+%% @private Classify a path-only (query string already stripped) into
+%% a known mistake category, or `unknown' if no pattern matches.
+classify_wrong_path(<<"/api/", Rest/binary>>) ->
+    {api_prefix, <<"/", Rest/binary>>};
+classify_wrong_path(<<"/lock/", Rest/binary>>) ->
+    {lock_singular, <<"/locks/", Rest/binary>>};
+classify_wrong_path(<<"/lock">>) ->
+    bare_lock;
+classify_wrong_path(<<"/agent/", Rest/binary>>) ->
+    {agent_singular, <<"/agents/", Rest/binary>>};
+classify_wrong_path(<<"/agents/", Rest/binary>>) ->
+    %% e.g. /agents/orch/inbox -> agent_id_in_path
+    %% (legitimate /agents/<verb> routes are matched by the route table
+    %% above, so anything reaching the 404 fallback under /agents/ is
+    %% either a typo or an attempt to embed an agent ID in the path)
+    case binary:split(Rest, <<"/">>) of
+        [_First, _Second | _] -> {agent_id_in_path, Rest};
+        _                     -> unknown
+    end;
+classify_wrong_path(<<"/task/", _/binary>>) -> task_top_level;
+classify_wrong_path(<<"/task">>)            -> task_top_level;
+classify_wrong_path(<<"/tasks/", _/binary>>) -> task_top_level;
+classify_wrong_path(<<"/send">>)             -> bare_send;
+classify_wrong_path(<<"/send/", _/binary>>)  -> bare_send;
+classify_wrong_path(<<"/broadcast">>)        -> bare_broadcast;
+classify_wrong_path(<<"/broadcast/", _/binary>>) -> bare_broadcast;
+classify_wrong_path(_) -> unknown.
+
+%% @private Catalogue of valid routes, returned by GET /routes.
+known_routes() ->
+    [
+        <<"GET  /health">>,
+        <<"GET  /ping">>,
+        <<"GET  /routes">>,
+        <<"GET  /agents">>,
+        <<"GET  /agents?detailed=true">>,
+        <<"GET  /agents/list/detailed">>,
+        <<"POST /agents/register">>,
+        <<"POST /agents/unregister">>,
+        <<"POST /agents/heartbeat">>,
+        <<"GET  /agents/poll?token=<TOKEN>&timeout=<N>">>,
+        <<"GET  /agents/peek?token=<TOKEN>&since_token=<N>">>,
+        <<"POST /agents/ack">>,
+        <<"POST /agents/find">>,
+        <<"POST /agents/send">>,
+        <<"POST /agents/broadcast">>,
+        <<"POST /agents/subscribe">>,
+        <<"POST /agents/publish">>,
+        <<"POST /agents/set_status">>,
+        <<"POST /agents/update_ttl">>,
+        <<"POST /agents/task_assign">>,
+        <<"POST /agents/task_update">>,
+        <<"POST /agents/task_list">>,
+        <<"POST /agents/task_progress">>,
+        <<"POST /messages/send">>,
+        <<"POST /messages/broadcast">>,
+        <<"GET  /locks">>,
+        <<"POST /locks/acquire">>,
+        <<"POST /locks/release">>,
+        <<"POST /locks/renew">>,
+        <<"POST /locks/try_acquire">>,
+        <<"GET  /locks/resource?resource=<NAME>">>,
+        <<"GET  /locks/last_holder?resource=<NAME>">>,
+        <<"GET  /locks/queue?resource=<NAME>">>,
+        <<"GET  /tasks">>,
+        <<"GET  /tasks/progress">>,
+        <<"GET  /events?since_token=<N>">>,
+        <<"GET  /admin/fencing_seq">>,
+        <<"GET  /admin/deadlock_graph">>,
+        <<"POST /admin/force_release">>,
+        <<"POST /selftest">>
+    ].
 
 %% @private Format reclaimed locks for an HTTP register response.
 http_reclaim_locks(AgentId) ->

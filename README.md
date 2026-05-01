@@ -174,12 +174,12 @@ with PlutoClient(host="localhost", port=9000, agent_id="coder-1") as client:
 
 ## Starting an Agent with Pluto
 
-There are four ways to connect an agent to Pluto. **PlutoMCPFriend** is the smoothest path for MCP-capable CLIs (Claude Code, Cursor, Aider with MCP); **PlutoAgentFriend** still works for any TUI agent without code changes.
+There are four ways to connect an agent to Pluto. **PlutoMCPFriend** is the smoothest path on Claude Code; **PlutoAgentFriend** is the universal fallback for any TUI agent without code changes.
 
 | Method | Best for | Guide |
 |--------|----------|-------|
-| **PlutoMCPFriend.sh** | Agent CLIs that speak MCP — Pluto operations as native tools, no curl, no token paste | [docs/guide/pluto-mcp-friend.md](docs/guide/pluto-mcp-friend.md) |
-| **PlutoAgentFriend.sh** | Wrapping an existing AI CLI (Claude, Copilot, Aider…) via PTY injection — zero protocol code in your agent | [docs/guide/pluto-agent-friend.md](docs/guide/pluto-agent-friend.md) |
+| **PlutoMCPFriend.sh** | **Claude Code** — Pluto operations as native MCP tools, no curl, no token paste | [docs/guide/pluto-mcp-friend.md](docs/guide/pluto-mcp-friend.md) |
+| **PlutoAgentFriend.sh** | Wrapping any other AI CLI (Cursor, Aider, Copilot, Claude…) via PTY injection — zero protocol code in your agent | [docs/guide/pluto-agent-friend.md](docs/guide/pluto-agent-friend.md) |
 | **Python client library** | Custom Python agents | [docs/guide/tcp-connection.md](docs/guide/tcp-connection.md) |
 | **Raw TCP / HTTP** | Any language, maximum control | [docs/guide/tcp-connection.md](docs/guide/tcp-connection.md) |
 

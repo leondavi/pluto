@@ -338,13 +338,38 @@ class TestPromptAssembly(unittest.TestCase):
         # Must tell the agent how to behave when inbox is empty.
         self.assertIn("inbox is empty", body)
 
-    def test_watch_prompt_covers_both_paths(self):
+    def test_watch_prompt_uses_background_task(self):
         body = build_watch_prompt_body()
-        # Claude Code path: background Task with run_in_background.
+        # Claude-only path: background Task with run_in_background.
         self.assertIn("run_in_background", body)
         self.assertIn("pluto_wait_for_messages", body)
-        # Fallback path: direct call.
-        self.assertIn("60", body)  # the foreground long-poll timeout
+        # Default timeout shows up.
+        self.assertIn("300", body)
+        # No more Cursor/Aider fallback wording.
+        self.assertNotIn("Cursor", body)
+        self.assertNotIn("Aider", body)
+
+    def test_watch_prompt_honours_custom_timeout(self):
+        body = build_watch_prompt_body(wait_timeout_s=600)
+        self.assertIn("pluto_wait_for_messages(600)", body)
+        # Should not still mention the default we replaced.
+        self.assertNotIn("pluto_wait_for_messages(300)", body)
+
+    def test_connection_block_honours_custom_timeout(self):
+        block = build_connection_block(
+            host="h", http_port=1, agent_id="a", wait_timeout_s=900,
+        )
+        self.assertIn("pluto_wait_for_messages(900)", block)
+        # No fallback wording for non-Claude clients.
+        self.assertNotIn("Cursor", block)
+        self.assertNotIn("Aider", block)
+
+    def test_role_prompt_propagates_wait_timeout(self):
+        body = build_role_prompt_body(
+            "specialist",
+            host="h", http_port=1, agent_id="a", wait_timeout_s=42,
+        )
+        self.assertIn("pluto_wait_for_messages(42)", body)
 
     def test_status_prompt_lists_four_sections(self):
         body = build_status_prompt_body()

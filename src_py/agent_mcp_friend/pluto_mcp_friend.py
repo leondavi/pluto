@@ -70,6 +70,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--wait-timeout-s", type=int, default=300, metavar="SECONDS",
+        help=(
+            "Default block duration for pluto_wait_for_messages, in seconds "
+            "(default: 300 = 5 min). Used as the tool's argument default and "
+            "as the value embedded in the role connection block / "
+            "/pluto-watch slash prompt. Higher = fewer Task respawns; lower "
+            "= faster recovery if a watcher is wedged."
+        ),
+    )
+    parser.add_argument(
         "--roles-dir", default=None,
         help="Override the directory scanned for role prompt files.",
     )
@@ -106,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         host=host,
         http_port=http_port,
         ttl_ms=args.ttl_ms,
+        wait_timeout_s=args.wait_timeout_s,
         roles_dir=args.roles_dir,
     )
     try:

@@ -1,15 +1,16 @@
-# PlutoMCPFriend.sh — MCP Adapter Guide
+# PlutoMCPFriend.sh — MCP Adapter Guide (Claude Code)
 
 PlutoMCPFriend exposes the Pluto coordination server as a native **MCP**
-(Model Context Protocol) server. Any MCP-capable agent CLI — Claude
-Code, Cursor, Aider, etc. — can call Pluto operations as ordinary
-tools: `pluto_send`, `pluto_lock_acquire`, `pluto_task_update`, and
-friends. No PTY, no `curl`, no copy-pasted session tokens, no JSON
-heredoc gymnastics.
+(Model Context Protocol) server for **Claude Code**. Pluto operations
+become ordinary tool calls inside Claude — `pluto_send`,
+`pluto_lock_acquire`, `pluto_task_update`, and friends. No PTY, no
+`curl`, no copy-pasted session tokens, no JSON heredoc gymnastics.
 
-If you have used **PlutoAgentFriend** before, MCPFriend is the same idea
-done over a structured wire protocol instead of stdin injection. Both
-ship side-by-side; pick the one that fits your agent.
+Only Claude Code is supported. The launcher relies on Claude's
+`--mcp-config` and `--append-system-prompt` flags for the role
+auto-injection path; Cursor, Aider, and Copilot don't have stable
+equivalents. **For non-Claude agents, use `PlutoAgentFriend.sh` instead** —
+the PTY-based wrapper works with any TUI agent.
 
 ---
 
@@ -32,14 +33,17 @@ ship side-by-side; pick the one that fits your agent.
 # Prerequisite: Pluto server is running
 ./PlutoServer.sh --daemon
 
-# One-shot launch (Claude Code, with the specialist role applied on turn 1)
-./PlutoMCPFriend.sh --agent-id coder-1 --framework claude --role specialist
+# Interactive setup wizard (recommended for first run)
+./PlutoMCPFriend.sh
 
-# Generate the .mcp.json without launching anything
+# Expert mode — one-shot launch with role applied on turn 1
+./PlutoMCPFriend.sh --agent-id coder-1 --role specialist
+
+# Tune the watcher block duration (default 300s)
+./PlutoMCPFriend.sh --agent-id coder-1 --role specialist --wait-timeout-s 600
+
+# Generate the .mcp.json without launching Claude
 ./PlutoMCPFriend.sh --agent-id reviewer-1 --no-launch
-
-# Cursor / Aider — adapter still works; role must be applied via slash menu
-./PlutoMCPFriend.sh --agent-id worker-1 --framework cursor
 ```
 
 The first run creates a Python virtual environment under `/tmp/pluto/.venv`
@@ -84,7 +88,7 @@ In Claude Code these surface as slash commands. Two groups:
 | Prompt | What it does |
 |--------|-------------|
 | `/pluto-check` | Calls `pluto_recv` and summarizes whatever arrived (one-shot, no blocking) |
-| `/pluto-watch` | Starts a chat-speed inbox watcher: background Task on Claude Code, foreground long-poll on Cursor/Aider |
+| `/pluto-watch` | Starts a chat-speed inbox watcher by spawning a background Task that calls `pluto_wait_for_messages` |
 | `/pluto-status` | Reports my agent_id, connected peers, inbox depth, and locks held |
 
 **Roles & reference** — inlined documents.
@@ -132,22 +136,8 @@ Blocks until a message lands in the buffer (or until the timeout
 elapses). Implemented with an `asyncio.Event` set by the peek loop, so
 fanout is sub-second — it does **not** poll.
 
-Two usage patterns:
-
-#### Direct call (Cursor / Aider / any MCP client)
-
-```
-pluto_wait_for_messages(timeout_s=30)
-```
-
-The agent blocks server-side for up to 30 s at the tail of every turn.
-When a message arrives, the call returns and the agent reasons over it
-on the next turn.
-
-#### Background sub-agent (Claude Code) — recommended
-
-The main agent stays interactive with the user; a sub-agent does the
-waiting. From inside the agent:
+Recommended usage: spawn a background Task from inside Claude so the
+main conversation stays interactive while a sub-agent waits.
 
 ```
 Task({
@@ -162,6 +152,12 @@ parent's next turn, the result appears in context). Process the
 messages, then spawn another watcher Task to keep listening. The user
 never sees the agent stuck in a tool call — the watcher runs as a
 silent side-effect.
+
+The block duration is configurable via `--wait-timeout-s` on the
+launcher (default 300 seconds = 5 minutes). The value is propagated
+into the role connection block, the `/pluto-watch` slash prompt, and
+the tool's argument default — so a single launcher flag changes the
+entire watcher cycle length.
 
 This delivers chat-speed responsiveness without sacrificing the user's
 ability to talk to the agent.
@@ -185,16 +181,11 @@ for treating subsequent writes as unsafe.
 ## Role injection on startup
 
 `PlutoMCPFriend.sh --role <name>` resolves the role file from
-`library/roles/<name>.md` and:
+`library/roles/<name>.md` and launches Claude with
+`claude --mcp-config .mcp.json --append-system-prompt "<role + protocol + connection block>"`,
+so turn 1 already has the role applied.
 
-- **Claude Code.** Launches with
-  `claude --mcp-config .mcp.json --append-system-prompt "<role + protocol + connection>"`
-  so turn 1 already has the role.
-- **Cursor / Aider / Copilot.** No reliable system-prompt flag — the
-  launcher prints `Run /pluto-role-<name>` and the user invokes the
-  prompt once.
-
-Either way, the role is also reachable mid-session via the slash menu
+The role is also reachable mid-session via the slash menu
 (`/pluto-role-specialist`, etc.). Switching roles is a single command.
 
 ---
@@ -203,17 +194,18 @@ Either way, the role is also reachable mid-session via the slash menu
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--agent-id <name>` | *required* | Pluto agent identity |
-| `--framework <name>` | auto-detect | `claude`, `cursor`, `aider`, `copilot` |
-| `--role <name|path>` | none | role to auto-apply on Claude; slash-tip on others |
-| `--host <ip>` | from config / `localhost` | Pluto server host |
+| `--agent-id <name>` | *required* (or wizard prompts) | Pluto agent identity |
+| `--role <name\|path>` | none | role to auto-apply via Claude `--append-system-prompt` |
+| `--host <ip>` | from config / `127.0.0.1` | Pluto server host |
 | `--http-port <port>` | from config / `9201` | Pluto HTTP port |
 | `--ttl-ms <ms>` | `600000` | session TTL |
+| `--wait-timeout-s <sec>` | `300` | `pluto_wait_for_messages` block duration; embedded into the role connection block, the `/pluto-watch` slash prompt, and the tool's argument default |
 | `--log-level <lvl>` | `WARNING` | adapter stderr verbosity |
-| `--no-launch` | off | write `.mcp.json`, don't start the framework |
+| `--no-launch` | off | write `.mcp.json`, don't start Claude |
+| `--no-wizard` | off | refuse the interactive wizard; require all args |
 | `--version` |  | print version |
 | `--help` |  | show this help |
-| `-- <cmd...>` |  | extra args forwarded verbatim to the agent CLI |
+| `-- <cmd...>` |  | extra args forwarded verbatim to `claude` |
 
 ---
 
@@ -253,13 +245,13 @@ claude --mcp-config /path/to/.mcp.json
 ## Architecture
 
 ```
-   Claude Code / Cursor / Aider                    Pluto Erlang server
-              │                                            │
-              │  JSON-RPC stdio                            │  HTTP :9201
-              │  (tools, prompts, resources,               │  (existing API,
-              │   notifications/resources/updated)         │   unchanged)
-              │                                            │
-              └────────── PlutoMCPFriend (Python) ─────────┘
+              Claude Code                          Pluto Erlang server
+                  │                                        │
+                  │  JSON-RPC stdio                        │  HTTP :9201
+                  │  (tools, prompts, resources,           │  (existing API,
+                  │   notifications/resources/updated)     │   unchanged)
+                  │                                        │
+                  └──── PlutoMCPFriend (Python) ───────────┘
                               │
                               ├── FastMCP server (mcp SDK)
                               ├── PlutoHttpClient (existing)
@@ -280,14 +272,14 @@ The Erlang server is unchanged.
 
 Use **PlutoAgentFriend** when:
 
-- The agent CLI does not speak MCP.
+- You're running anything other than Claude Code (Cursor, Aider, GitHub
+  Copilot CLI, custom agent loops).
 - You want to keep the agent completely unmodified, including its prompt
-  format.
-- You're using a custom or homegrown agent loop that talks to a TUI.
+  format — PTY injection works without any MCP support.
 
 Use **PlutoMCPFriend** when:
 
-- The agent supports MCP (Claude Code, Cursor, Aider with MCP plugin).
+- You're running **Claude Code**.
 - You want structured tool calls instead of curl-from-shell.
 - You want the wrapper to manage tokens, acks, and lock renewals
   automatically.

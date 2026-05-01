@@ -63,12 +63,13 @@ def build_connection_block(
     host: str,
     http_port: int,
     agent_id: str,
+    wait_timeout_s: int = 300,
 ) -> str:
-    """The live-connection block injected at the bottom of every prompt.
+    """The live-connection block appended to every prompt body.
 
-    Mirrors the block ``_role_injection_loop`` builds in
-    ``pluto_agent_friend.py`` so agents see consistent connection info
-    regardless of which integration path they're running under.
+    *wait_timeout_s* is embedded into the recommended
+    ``pluto_wait_for_messages(N)`` call so the watcher cycle matches
+    the launcher's ``--wait-timeout-s`` value.
     """
     return (
         f"---\n\n"
@@ -78,11 +79,11 @@ def build_connection_block(
         f"  HTTP port: {http_port}   (REST API base for /agents/* and /locks/*)\n"
         f"  Base URL:  http://{host}:{http_port}\n"
         f"  Agent ID:  {agent_id}\n\n"
-        f"You are wrapped by **PlutoMCPFriend**. The server has registered\n"
-        f"you and exposes Pluto operations as MCP tools (``pluto_send``,\n"
-        f"``pluto_lock_acquire``, etc.). Prefer those tools over raw curl\n"
-        f"calls — the wrapper injects your session token automatically and\n"
-        f"acks inbox messages on your behalf.\n\n"
+        f"You are wrapped by **PlutoMCPFriend** running inside Claude Code.\n"
+        f"The server has registered you and exposes Pluto operations as MCP\n"
+        f"tools (``pluto_send``, ``pluto_lock_acquire``, etc.). Prefer those\n"
+        f"tools over raw curl calls — the wrapper injects your session token\n"
+        f"automatically and acks inbox messages on your behalf.\n\n"
         f"**Inbox delivery — three ways messages reach you:**\n\n"
         f"1. **Piggyback (free).** Any Pluto tool result may include a\n"
         f"   non-empty ``_pluto_inbox`` array. Process those before\n"
@@ -91,16 +92,16 @@ def build_connection_block(
         f"   turn where you have not otherwise touched Pluto.\n"
         f"3. **Watch (event-driven).** ``pluto_wait_for_messages(timeout_s)``\n"
         f"   blocks until a message arrives.\n\n"
-        f"**To stay responsive to the user while watching the inbox**, prefer\n"
-        f"the background sub-agent pattern (Claude Code only): at the tail of\n"
-        f"every turn, spawn a background Task with ``run_in_background=true``\n"
-        f"whose prompt is *\"Call ``pluto_wait_for_messages(300)`` and return\n"
-        f"its result\"*. The main conversation stays free; when the Task\n"
-        f"completes, its result appears in your next turn — process the\n"
-        f"messages, then spawn another watcher Task to keep listening.\n\n"
-        f"If your client lacks a background Task tool (Cursor, Aider), call\n"
-        f"``pluto_wait_for_messages(30)`` directly at the tail of every turn\n"
-        f"as a foreground long-poll."
+        f"**To stay responsive to the user while watching the inbox**, spawn\n"
+        f"a background Task at the tail of every turn using the Task tool\n"
+        f"with ``run_in_background=true`` and the prompt:\n\n"
+        f"    *\"Call ``pluto_wait_for_messages({wait_timeout_s})`` and "
+        f"return its result.\"*\n\n"
+        f"The main conversation stays free; when the Task completes, its\n"
+        f"result appears in your next turn — process any messages, then\n"
+        f"spawn another watcher Task to keep listening.\n\n"
+        f"The user can also kick this off manually at any time via the\n"
+        f"``/pluto-watch`` slash command."
     )
 
 
@@ -110,6 +111,7 @@ def build_role_prompt_body(
     host: str,
     http_port: int,
     agent_id: str,
+    wait_timeout_s: int = 300,
     roles_dir: str | None = None,
     protocol_path: str | None = None,
 ) -> str:
@@ -147,7 +149,9 @@ def build_role_prompt_body(
         except OSError:
             pass
 
-    connection_block = build_connection_block(host, http_port, agent_id)
+    connection_block = build_connection_block(
+        host, http_port, agent_id, wait_timeout_s=wait_timeout_s,
+    )
 
     role_basename = os.path.basename(role_path)
     return (
@@ -165,6 +169,7 @@ def build_protocol_prompt_body(
     host: str,
     http_port: int,
     agent_id: str,
+    wait_timeout_s: int = 300,
     protocol_path: str | None = None,
 ) -> str:
     """Standalone ``pluto-protocol`` prompt: just protocol + connection."""
@@ -177,7 +182,7 @@ def build_protocol_prompt_body(
         f"=== BEGIN protocol.md ===\n\n"
         f"{text}\n\n"
         f"=== END protocol.md ===\n\n"
-        f"{build_connection_block(host, http_port, agent_id)}"
+        f"{build_connection_block(host, http_port, agent_id, wait_timeout_s)}"
     )
 
 
@@ -186,6 +191,7 @@ def build_guide_prompt_body(
     host: str,
     http_port: int,
     agent_id: str,
+    wait_timeout_s: int = 300,
     guide_path: str | None = None,
 ) -> str:
     """Standalone ``pluto-guide`` prompt: agent guide + connection."""
@@ -196,7 +202,7 @@ def build_guide_prompt_body(
         text = f"(could not read {path}: {exc})"
     return (
         f"{text}\n\n"
-        f"{build_connection_block(host, http_port, agent_id)}"
+        f"{build_connection_block(host, http_port, agent_id, wait_timeout_s)}"
     )
 
 
@@ -211,23 +217,19 @@ def build_check_prompt_body() -> str:
     )
 
 
-def build_watch_prompt_body() -> str:
+def build_watch_prompt_body(wait_timeout_s: int = 300) -> str:
     """Start a long-poll watcher — invoked via the /pluto-watch slash command."""
     return (
         "Start watching the Pluto inbox at chat speed so messages arrive "
         "without me having to ask.\n\n"
-        "**Preferred (Claude Code):** spawn a background Task using the "
-        "Task tool with ``run_in_background=true``, "
-        "``description=\"Pluto inbox watcher\"``, and "
-        "``prompt=\"Call pluto_wait_for_messages(300) and return its result "
-        "as JSON.\"``. When the Task completes, process any messages and "
-        "spawn another watcher Task to keep listening.\n\n"
-        "**Fallback (Cursor / Aider / no background Task tool):** call "
-        "``pluto_wait_for_messages(60)`` directly in this turn instead. "
-        "You'll block for up to 60 s; on return, process the messages, "
-        "then re-issue the call.\n\n"
-        "Reply briefly: ``watcher started`` (preferred path) or "
-        "``foreground long-poll engaged`` (fallback)."
+        "Spawn a background Task using the Task tool with:\n"
+        "  • ``run_in_background=true``\n"
+        "  • ``description=\"Pluto inbox watcher\"``\n"
+        f"  • ``prompt=\"Call pluto_wait_for_messages({wait_timeout_s}) "
+        "and return its result as JSON.\"``\n\n"
+        "When the Task completes, process any returned messages, then spawn "
+        "another watcher Task to keep listening. Reply briefly: "
+        "``watcher started``."
     )
 
 

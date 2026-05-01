@@ -6,8 +6,8 @@ This directory contains in-depth documentation for every way you can interact wi
 
 | Method | Best for | Guide |
 |--------|----------|-------|
-| [PlutoMCPFriend.sh](pluto-mcp-friend.md) | MCP-capable CLIs (Claude Code, Cursor, Aider with MCP) — Pluto as native tools | → [guide](pluto-mcp-friend.md) |
-| [PlutoAgentFriend.sh](pluto-agent-friend.md) | Wrapping an existing AI CLI via PTY injection (any TUI) | → [guide](pluto-agent-friend.md) |
+| [PlutoMCPFriend.sh](pluto-mcp-friend.md) | **Claude Code** — Pluto operations as native MCP tools | → [guide](pluto-mcp-friend.md) |
+| [PlutoAgentFriend.sh](pluto-agent-friend.md) | Wrapping any other AI CLI via PTY injection (Cursor, Aider, Copilot, …) | → [guide](pluto-agent-friend.md) |
 | [PlutoClient.sh](pluto-client.md) | Inspecting the server, registering agents via script, generating guides | → [guide](pluto-client.md) |
 | [PlutoServer.sh](pluto-server.md) | Building, starting, and managing the Erlang server process | → [guide](pluto-server.md) |
 | [TCP / Python library](tcp-connection.md) | Custom agents in any language; raw protocol details | → [guide](tcp-connection.md) |
@@ -26,14 +26,16 @@ All components read server address/port from `config/pluto_config.json`
 
 ## Choosing the Right Method
 
-**Use PlutoMCPFriend.sh** when your agent CLI supports MCP (Claude Code, Cursor,
-Aider with the MCP plugin). Pluto operations show up as native tools
-(`pluto_send`, `pluto_lock_acquire`, `pluto_task_update`, …) — no curl, no
-session token paste, no JSON-in-shell escaping. The adapter auto-renews locks
-and surfaces inbox messages on tool results.
+**Use PlutoMCPFriend.sh** when you're running **Claude Code**. Pluto operations
+show up as native tools (`pluto_send`, `pluto_lock_acquire`,
+`pluto_task_update`, …) — no curl, no session token paste, no JSON-in-shell
+escaping. The adapter auto-renews locks, surfaces inbox messages on tool
+results, and applies your role automatically on the first turn via Claude's
+`--append-system-prompt`. Only Claude Code is supported; for other agents see
+PlutoAgentFriend below.
 
-**Use PlutoAgentFriend.sh** when you want to wrap any TUI agent unchanged
-(Claude Code, GitHub Copilot CLI, Aider, Cursor, or a custom CLI) via a PTY
+**Use PlutoAgentFriend.sh** when you want to wrap any other TUI agent
+unchanged (Cursor, GitHub Copilot CLI, Aider, or a custom CLI) via a PTY
 proxy that injects natural-language Pluto messages when the agent is idle.
 Works without any MCP support in the agent.
 

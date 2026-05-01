@@ -30,11 +30,13 @@ def register_tools(
     client: PlutoHttpClient,
     inbox: InboxManager,
     lock_mgr: LockManager,
+    wait_timeout_s: int = 300,
 ) -> None:
     """Register every Pluto tool on *mcp*.
 
     Captures *client*, *inbox*, and *lock_mgr* in closures so each tool
-    can talk to the same long-lived components.
+    can talk to the same long-lived components. *wait_timeout_s* sets
+    the default block duration of ``pluto_wait_for_messages``.
     """
 
     async def _run(fn, *args, **kwargs) -> Any:
@@ -82,24 +84,24 @@ def register_tools(
         messages = await inbox.drain()
         return {"messages": messages, "count": len(messages)}
 
+    _wait_default = int(wait_timeout_s)
+
     @mcp.tool(
         name="pluto_wait_for_messages",
         description=(
-            "Block until at least one Pluto message arrives, or until "
-            "timeout_s seconds elapse (default 300 = 5 minutes). Returns "
-            "the drained-and-acked messages, or an empty list on timeout."
-            "\n\nUsage patterns:"
-            "\n  • Direct call (Cursor / Aider / any MCP client): call this "
-            "with a short timeout (e.g. 30) at the tail of every turn."
-            "\n  • Background sub-agent (Claude Code): spawn a background "
-            "Task with run_in_background=true whose prompt is 'Call "
-            "pluto_wait_for_messages(300) and return its result'. The main "
-            "agent stays responsive to the user; when the Task completes, "
-            "its result (the messages) appears in the next turn — process "
-            "them, then spawn another Task to keep watching."
+            f"Block until at least one Pluto message arrives, or until "
+            f"timeout_s seconds elapse (default {_wait_default}). Returns "
+            f"the drained-and-acked messages, or an empty list on timeout."
+            f"\n\nRecommended usage in Claude Code: spawn a background Task "
+            f"with run_in_background=true and the prompt "
+            f"'Call pluto_wait_for_messages({_wait_default}) and return its "
+            f"result'. The main agent stays responsive to the user; when "
+            f"the Task completes, its result (the messages) appears in the "
+            f"next turn — process them, then spawn another Task to keep "
+            f"watching."
         ),
     )
-    async def pluto_wait_for_messages(timeout_s: int = 300) -> dict:
+    async def pluto_wait_for_messages(timeout_s: int = _wait_default) -> dict:
         messages = await inbox.wait_for_messages(timeout_s=float(timeout_s))
         return {"messages": messages, "count": len(messages)}
 

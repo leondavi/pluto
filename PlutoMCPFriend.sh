@@ -161,16 +161,49 @@ show_disclaimer() {
 # ── venv bootstrap ──────────────────────────────────────────────────────────
 
 ensure_venv() {
-    if [[ ! -f "${VENV_DIR}/bin/python" ]]; then
+    local py="${VENV_DIR}/bin/python"
+    local need_create=false
+
+    if [[ ! -x "${py}" ]]; then
+        need_create=true
+    elif ! "${py}" -m pip --version >/dev/null 2>&1; then
+        # The venv exists but pip is missing or broken — typical when a
+        # previous attempt was interrupted, or when the host Python's
+        # ensurepip module is unavailable. Try to repair in place; if
+        # that fails, recreate from scratch.
+        warn "Venv at ${VENV_DIR} is missing pip. Attempting to repair ..."
+        if ! "${py}" -m ensurepip --upgrade >/dev/null 2>&1; then
+            warn "Repair failed — recreating venv from scratch."
+            rm -rf "${VENV_DIR}"
+            need_create=true
+        fi
+    fi
+
+    if $need_create; then
         info "Creating Python venv at ${VENV_DIR} ..."
         mkdir -p "$(dirname "${VENV_DIR}")"
-        python3 -m venv "${VENV_DIR}"
+        if ! python3 -m venv "${VENV_DIR}"; then
+            err "Failed to create venv at ${VENV_DIR}."
+            err "Try:  rm -rf ${VENV_DIR} && python3 -m venv ${VENV_DIR}"
+            exit 1
+        fi
     fi
+
+    # Sanity-check pip is actually usable before we install anything.
+    if ! "${py}" -m pip --version >/dev/null 2>&1; then
+        err "Venv at ${VENV_DIR} has no working pip after creation."
+        err "Run:  rm -rf ${VENV_DIR}  and re-launch."
+        exit 1
+    fi
+
     local marker="${VENV_DIR}/.requirements-installed"
     if [[ ! -f "${marker}" ]] || [[ "${REQUIREMENTS}" -nt "${marker}" ]]; then
         info "Installing Pluto Python dependencies (mcp SDK) ..."
-        "${VENV_DIR}/bin/pip" install -q --upgrade pip >/dev/null 2>&1 || true
-        if ! "${VENV_DIR}/bin/pip" install -q -r "${REQUIREMENTS}"; then
+        # ``python -m pip`` works in every venv layout, even ones where the
+        # ``bin/pip`` console script wasn't created (some Python builds skip
+        # it). Calling ``bin/pip`` directly is fragile.
+        "${py}" -m pip install -q --upgrade pip >/dev/null 2>&1 || true
+        if ! "${py}" -m pip install -q -r "${REQUIREMENTS}"; then
             err "pip install -r ${REQUIREMENTS} failed."
             exit 1
         fi

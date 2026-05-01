@@ -459,7 +459,7 @@ EOF
       ${CYAN}pluto_lock_acquire${NC} / ${CYAN}pluto_lock_release${NC} / ${CYAN}pluto_lock_renew${NC} / ${CYAN}pluto_lock_info${NC}
       ${CYAN}pluto_task_assign${NC} / ${CYAN}pluto_task_update${NC} / ${CYAN}pluto_task_list${NC}
       ${CYAN}pluto_list_agents${NC} / ${CYAN}pluto_find_agents${NC} / ${CYAN}pluto_set_status${NC}
-      ${CYAN}pluto_publish${NC} / ${CYAN}pluto_subscribe${NC} / ${CYAN}pluto_list_locks${NC}
+      ${CYAN}pluto_publish${NC} / ${CYAN}pluto_subscribe${NC} / ${CYAN}pluto_list_locks${NC} / ${CYAN}pluto_session${NC}
 
   ${DIM}Watcher block duration: ${wait_s}s (--wait-timeout-s).${NC}
   ${DIM}Tip: type /pluto-watch once after Claude is up to start the watcher.${NC}

@@ -278,3 +278,26 @@ def register_tools(
     async def pluto_set_status(custom_status: str) -> dict:
         resp = await _run(client.set_status, custom_status)
         return await inbox.piggyback(resp)
+
+    @mcp.tool(
+        name="pluto_session",
+        description=(
+            "Read-only diagnostic. Returns this MCP adapter's "
+            "registration state with the Pluto server: agent_id, "
+            "host:port, connected (bool), and the buffered inbox "
+            "depth. Cheap — no network call. Use as a 'is MCP "
+            "alive?' probe; if THIS tool returns an error, the MCP "
+            "transport itself is dead and the user must run /mcp in "
+            "Claude Code to refresh."
+        ),
+    )
+    async def pluto_session() -> dict:
+        buffered = await inbox.peek_only()
+        return {
+            "agent_id": client.agent_id,
+            "host": client.host,
+            "http_port": client.http_port,
+            "base_url": client.base_url,
+            "connected": bool(client.token),
+            "buffered_messages": len(buffered),
+        }

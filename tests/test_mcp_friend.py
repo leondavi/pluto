@@ -51,6 +51,9 @@ class FakeHttpClient:
         self.token = "FAKE-TOKEN-123"
         self.session_id = "fake-session"
         self.agent_id = "fake-agent"
+        self.host = "127.0.0.1"
+        self.http_port = 9201
+        self.base_url = f"http://{self.host}:{self.http_port}"
         self.calls: list[tuple[str, tuple, dict]] = []
         self.peek_responses: list[list[dict]] = []
         self.acks: list[int] = []
@@ -467,6 +470,7 @@ class TestServerCapabilities(unittest.IsolatedAsyncioTestCase):
             "pluto_task_assign", "pluto_task_update", "pluto_task_list",
             "pluto_list_agents", "pluto_find_agents",
             "pluto_publish", "pluto_subscribe", "pluto_set_status",
+            "pluto_session",
         ]:
             self.assertIn(required, tool_names, f"missing tool: {required}")
 
@@ -517,6 +521,32 @@ class TestToolWrappers(unittest.IsolatedAsyncioTestCase):
         text_blob = json.dumps(result, default=str)
         self.assertIn("99", text_blob)
         self.assertIn("alice", text_blob)
+
+    async def test_pluto_session_reports_state_without_network(self):
+        """pluto_session must work even when the HTTP server is down —
+        it's the agent's "is MCP alive?" probe and must never depend
+        on Pluto-side reachability."""
+        from agent_mcp_friend.tools import register_tools
+        from mcp.server.fastmcp import FastMCP
+
+        client = FakeHttpClient()
+        client.token = "TOK-ABC"
+        inbox = InboxManager(client)
+        lock_mgr = LockManager(client)
+        mcp = FastMCP(name="pluto-test")
+        register_tools(mcp, client, inbox, lock_mgr)
+
+        result = await mcp.call_tool("pluto_session", {})
+        text_blob = json.dumps(result, default=str)
+        self.assertIn("agent_id", text_blob)
+        self.assertIn("connected", text_blob)
+        self.assertIn("buffered_messages", text_blob)
+        # Crucially, pluto_session must not have made an HTTP call —
+        # otherwise it can't serve as a transport-only probe.
+        for call_name, *_ in client.calls:
+            self.assertNotIn(call_name, {"register", "peek", "ack",
+                                         "send", "broadcast", "renew",
+                                         "release", "list_agents_detailed"})
 
 
 if __name__ == "__main__":

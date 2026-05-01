@@ -54,7 +54,7 @@ launches reuse the venv.
 
 ## What ships out of the box
 
-### 17 Pluto tools
+### 18 Pluto tools
 
 Each is a thin wrapper around the existing `PlutoHttpClient` HTTP method;
 the adapter injects the session token transparently.
@@ -78,6 +78,7 @@ the adapter injects the session token transparently.
 | `pluto_task_update` | `POST /agents/task_update` | report task progress |
 | `pluto_task_list` | `POST /agents/task_list` | enumerate tasks |
 | `pluto_set_status` | `POST /agents/set_status` | custom status string |
+| `pluto_session` | (read-only, no network) | self-diagnostic: returns adapter↔Pluto registration state. The agent's "is MCP alive?" probe — if this errors, the user should run `/mcp` to refresh the Claude Code transport. |
 
 ### Prompts (slash commands)
 

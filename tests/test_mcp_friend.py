@@ -301,6 +301,23 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("PlutoMCPFriend", block)
         self.assertIn("_pluto_inbox", block)
 
+    def test_connection_block_demands_first_turn_watcher(self):
+        """The watcher spawn instruction must be unambiguously first-turn."""
+        block = build_connection_block(
+            host="h", http_port=1, agent_id="a", wait_timeout_s=300,
+        )
+        # Must mention all four required Task parameters explicitly.
+        self.assertIn("run_in_background", block)
+        self.assertIn("subagent_type", block)
+        self.assertIn("description", block)
+        self.assertIn("pluto_wait_for_messages(300)", block)
+        # Must be marked as the agent's first action, not just a
+        # generic "do this at some point".
+        self.assertIn("MANDATORY FIRST ACTION", block)
+        # Must explicitly tell the agent watchers are single-shot
+        # and require re-arming.
+        self.assertIn("re-arm", block.replace("Re-Arming", "re-arm").lower())
+
     def test_role_prompt_includes_role_and_connection(self):
         body = build_role_prompt_body(
             "specialist",
@@ -343,6 +360,8 @@ class TestPromptAssembly(unittest.TestCase):
         # Claude-only path: background Task with run_in_background.
         self.assertIn("run_in_background", body)
         self.assertIn("pluto_wait_for_messages", body)
+        # Must specify subagent_type — Claude Code's Task tool requires it.
+        self.assertIn("subagent_type", body)
         # Default timeout shows up.
         self.assertIn("300", body)
         # No more Cursor/Aider fallback wording.

@@ -51,6 +51,9 @@ class FakeHttpClient:
         self.token = "FAKE-TOKEN-123"
         self.session_id = "fake-session"
         self.agent_id = "fake-agent"
+        self.host = "127.0.0.1"
+        self.http_port = 9201
+        self.base_url = f"http://{self.host}:{self.http_port}"
         self.calls: list[tuple[str, tuple, dict]] = []
         self.peek_responses: list[list[dict]] = []
         self.acks: list[int] = []
@@ -316,18 +319,32 @@ class TestPromptAssembly(unittest.TestCase):
         propagate MCP to subagents — the prompt must say so explicitly so
         the agent doesn't get stuck in a re-arm loop."""
         block = build_connection_block(
-            host="h", http_port=1, agent_id="a", wait_timeout_s=300,
+            host="h", http_port=1, agent_id="a", wait_timeout_s=60,
         )
         # Best-effort framing.
         self.assertIn("best-effort", block.lower())
-        # Failure-detection heuristic mentioned (timeout undershoot).
-        self.assertIn("60", block)  # the 60-120s subagent idle cleanup
-        # Stop-spawning-on-failure rule.
+        # Stop-spawning-on-failure rule (when subagent lacks MCP entirely).
         self.assertIn("stop spawning", block.lower())
         # Required Task parameters still spelled out.
         self.assertIn("run_in_background", block)
         self.assertIn("subagent_type", block)
-        self.assertIn("pluto_wait_for_messages(300)", block)
+        self.assertIn("pluto_wait_for_messages(60)", block)
+
+    def test_connection_block_uses_short_poll_loop(self):
+        """A single 300+ s block in a subagent gets killed by Claude Code's
+        stream watchdog (~600s silence cutoff). The subagent prompt must
+        instruct a loop of short polls so output is produced regularly."""
+        block = build_connection_block(
+            host="h", http_port=1, agent_id="a", wait_timeout_s=60,
+        )
+        # The subagent prompt must describe a loop, not a single call.
+        self.assertIn("loop", block.lower())
+        # Bounded number of iterations so the subagent self-terminates
+        # before any platform-level cleanup.
+        self.assertIn("5 iterations", block)
+        # Must explain the watchdog reason so future maintainers don't
+        # "simplify" it back to a single block.
+        self.assertIn("watchdog", block.lower())
 
     def test_role_prompt_includes_role_and_connection(self):
         body = build_role_prompt_body(
@@ -373,7 +390,9 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("pluto_wait_for_messages", body)
         # Must specify subagent_type — Claude Code's Task tool requires it.
         self.assertIn("subagent_type", body)
-        # Default timeout shows up.
+        # Default timeout shows up. Default was lowered from 300 to 60
+        # so a single block fits comfortably under the 600s stream
+        # watchdog.
         self.assertIn("300", body)
         # Failure-detection heuristic must be present so the agent doesn't
         # re-arm a non-functional watcher in a tight loop.
@@ -382,11 +401,19 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertNotIn("Cursor", body)
         self.assertNotIn("Aider", body)
 
+    def test_watch_prompt_uses_short_poll_loop(self):
+        """The subagent prompt must instruct a short-poll loop so the
+        stream watchdog never fires."""
+        body = build_watch_prompt_body(wait_timeout_s=60)
+        self.assertIn("loop", body.lower())
+        self.assertIn("5 iterations", body)
+        self.assertIn("watchdog", body.lower())
+
     def test_watch_prompt_honours_custom_timeout(self):
-        body = build_watch_prompt_body(wait_timeout_s=600)
-        self.assertIn("pluto_wait_for_messages(600)", body)
-        # Should not still mention the default we replaced.
-        self.assertNotIn("pluto_wait_for_messages(300)", body)
+        body = build_watch_prompt_body(wait_timeout_s=120)
+        self.assertIn("pluto_wait_for_messages(120)", body)
+        # Should not still mention the previous default we replaced.
+        self.assertNotIn("pluto_wait_for_messages(60)", body)
 
     def test_connection_block_honours_custom_timeout(self):
         block = build_connection_block(
@@ -443,6 +470,7 @@ class TestServerCapabilities(unittest.IsolatedAsyncioTestCase):
             "pluto_task_assign", "pluto_task_update", "pluto_task_list",
             "pluto_list_agents", "pluto_find_agents",
             "pluto_publish", "pluto_subscribe", "pluto_set_status",
+            "pluto_session",
         ]:
             self.assertIn(required, tool_names, f"missing tool: {required}")
 
@@ -493,6 +521,32 @@ class TestToolWrappers(unittest.IsolatedAsyncioTestCase):
         text_blob = json.dumps(result, default=str)
         self.assertIn("99", text_blob)
         self.assertIn("alice", text_blob)
+
+    async def test_pluto_session_reports_state_without_network(self):
+        """pluto_session must work even when the HTTP server is down —
+        it's the agent's "is MCP alive?" probe and must never depend
+        on Pluto-side reachability."""
+        from agent_mcp_friend.tools import register_tools
+        from mcp.server.fastmcp import FastMCP
+
+        client = FakeHttpClient()
+        client.token = "TOK-ABC"
+        inbox = InboxManager(client)
+        lock_mgr = LockManager(client)
+        mcp = FastMCP(name="pluto-test")
+        register_tools(mcp, client, inbox, lock_mgr)
+
+        result = await mcp.call_tool("pluto_session", {})
+        text_blob = json.dumps(result, default=str)
+        self.assertIn("agent_id", text_blob)
+        self.assertIn("connected", text_blob)
+        self.assertIn("buffered_messages", text_blob)
+        # Crucially, pluto_session must not have made an HTTP call —
+        # otherwise it can't serve as a transport-only probe.
+        for call_name, *_ in client.calls:
+            self.assertNotIn(call_name, {"register", "peek", "ack",
+                                         "send", "broadcast", "renew",
+                                         "release", "list_agents_detailed"})
 
 
 if __name__ == "__main__":

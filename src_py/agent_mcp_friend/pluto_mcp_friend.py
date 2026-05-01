@@ -70,13 +70,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
-        "--wait-timeout-s", type=int, default=300, metavar="SECONDS",
+        "--wait-timeout-s", type=int, default=60, metavar="SECONDS",
         help=(
-            "Default block duration for pluto_wait_for_messages, in seconds "
-            "(default: 300 = 5 min). Used as the tool's argument default and "
-            "as the value embedded in the role connection block / "
-            "/pluto-watch slash prompt. Higher = fewer Task respawns; lower "
-            "= faster recovery if a watcher is wedged."
+            "Per-call block duration for pluto_wait_for_messages, in "
+            "seconds (default: 60). The watcher subagent loops short "
+            "calls of this length so it produces output regularly and "
+            "never trips Claude Code's stream watchdog. Keep <=120 to "
+            "be safe; a single 300+ s block in a subagent will be "
+            "killed at the 600 s silence cutoff."
         ),
     )
     parser.add_argument(

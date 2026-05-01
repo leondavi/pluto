@@ -200,6 +200,54 @@ def build_guide_prompt_body(
     )
 
 
+def build_check_prompt_body() -> str:
+    """One-shot inbox check — invoked via the /pluto-check slash command."""
+    return (
+        "Call ``pluto_recv`` with no arguments.\n\n"
+        "If the response's ``count`` is greater than zero, summarize each "
+        "message in one line each: ``[from -> event] one-line summary of "
+        "payload``. Then ask whether to act on them.\n\n"
+        "If ``count`` is zero, reply exactly: ``inbox is empty``."
+    )
+
+
+def build_watch_prompt_body() -> str:
+    """Start a long-poll watcher — invoked via the /pluto-watch slash command."""
+    return (
+        "Start watching the Pluto inbox at chat speed so messages arrive "
+        "without me having to ask.\n\n"
+        "**Preferred (Claude Code):** spawn a background Task using the "
+        "Task tool with ``run_in_background=true``, "
+        "``description=\"Pluto inbox watcher\"``, and "
+        "``prompt=\"Call pluto_wait_for_messages(300) and return its result "
+        "as JSON.\"``. When the Task completes, process any messages and "
+        "spawn another watcher Task to keep listening.\n\n"
+        "**Fallback (Cursor / Aider / no background Task tool):** call "
+        "``pluto_wait_for_messages(60)`` directly in this turn instead. "
+        "You'll block for up to 60 s; on return, process the messages, "
+        "then re-issue the call.\n\n"
+        "Reply briefly: ``watcher started`` (preferred path) or "
+        "``foreground long-poll engaged`` (fallback)."
+    )
+
+
+def build_status_prompt_body() -> str:
+    """Snapshot of current Pluto state — invoked via /pluto-status."""
+    return (
+        "Report the current Pluto coordination state in a tight summary:\n\n"
+        "1. **Me**: my ``agent_id`` and the Pluto server host:port (from "
+        "the connection block in your role).\n"
+        "2. **Peers**: call ``pluto_list_agents`` and list every other "
+        "connected agent_id, one per line. Note any with custom_status "
+        "values.\n"
+        "3. **Inbox**: read ``@pluto://inbox`` (do NOT call ``pluto_recv`` "
+        "— it would drain). Report just the count of pending messages.\n"
+        "4. **Locks**: read ``@pluto://locks``. Report each held lock as "
+        "``lock_ref -> resource``.\n\n"
+        "Format as four numbered lines, no preamble."
+    )
+
+
 def role_prompt_specs(roles_dir: str | None = None) -> Iterable[tuple[str, str, str]]:
     """Yield ``(prompt_name, role_name, description)`` for every available role.
 

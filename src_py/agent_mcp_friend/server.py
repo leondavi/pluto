@@ -21,9 +21,12 @@ from mcp.server.fastmcp import FastMCP
 from agent_mcp_friend.inbox import InboxManager
 from agent_mcp_friend.lock_manager import LockManager
 from agent_mcp_friend.prompts import (
+    build_check_prompt_body,
     build_guide_prompt_body,
     build_protocol_prompt_body,
     build_role_prompt_body,
+    build_status_prompt_body,
+    build_watch_prompt_body,
     role_prompt_specs,
 )
 from agent_mcp_friend.resources import register_resources
@@ -131,6 +134,41 @@ class PlutoMCPServer:
                 agent_id=agent_id,
                 guide_path=guide_path,
             )
+
+        # Action prompts — one-keystroke shortcuts the user can invoke from
+        # Claude Code's slash menu without having to phrase a request to the
+        # agent in English.
+
+        @self.mcp.prompt(
+            name="pluto-check",
+            description=(
+                "Drain my Pluto inbox right now and summarize whatever "
+                "arrived (one-shot, non-blocking)."
+            ),
+        )
+        def pluto_check() -> str:
+            return build_check_prompt_body()
+
+        @self.mcp.prompt(
+            name="pluto-watch",
+            description=(
+                "Start watching the Pluto inbox at chat speed: spawn a "
+                "background Task on Claude Code, or a foreground "
+                "long-poll on Cursor/Aider."
+            ),
+        )
+        def pluto_watch() -> str:
+            return build_watch_prompt_body()
+
+        @self.mcp.prompt(
+            name="pluto-status",
+            description=(
+                "Report current Pluto state: my agent_id, connected peers, "
+                "inbox depth, and locks I hold."
+            ),
+        )
+        def pluto_status() -> str:
+            return build_status_prompt_body()
 
         # One prompt per role file. Bind via default-arg trick to avoid
         # the late-binding closure pitfall.

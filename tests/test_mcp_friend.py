@@ -24,8 +24,11 @@ try:
     from agent_mcp_friend.inbox import InboxManager, _is_noise
     from agent_mcp_friend.lock_manager import LockManager
     from agent_mcp_friend.prompts import (
+        build_check_prompt_body,
         build_connection_block,
         build_role_prompt_body,
+        build_status_prompt_body,
+        build_watch_prompt_body,
         list_role_names,
         role_prompt_specs,
     )
@@ -329,6 +332,28 @@ class TestPromptAssembly(unittest.TestCase):
                 host="h", http_port=1, agent_id="a",
             )
 
+    def test_check_prompt_invokes_pluto_recv(self):
+        body = build_check_prompt_body()
+        self.assertIn("pluto_recv", body)
+        # Must tell the agent how to behave when inbox is empty.
+        self.assertIn("inbox is empty", body)
+
+    def test_watch_prompt_covers_both_paths(self):
+        body = build_watch_prompt_body()
+        # Claude Code path: background Task with run_in_background.
+        self.assertIn("run_in_background", body)
+        self.assertIn("pluto_wait_for_messages", body)
+        # Fallback path: direct call.
+        self.assertIn("60", body)  # the foreground long-poll timeout
+
+    def test_status_prompt_lists_four_sections(self):
+        body = build_status_prompt_body()
+        self.assertIn("pluto_list_agents", body)
+        self.assertIn("@pluto://inbox", body)
+        self.assertIn("@pluto://locks", body)
+        # And specifically warns NOT to call pluto_recv (which would drain).
+        self.assertIn("do not call", body.lower())
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # Server registration: tools / prompts / resources count
@@ -367,6 +392,10 @@ class TestServerCapabilities(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pluto-protocol", prompt_names)
         self.assertIn("pluto-guide", prompt_names)
         self.assertIn("pluto-role-specialist", prompt_names)
+        # Action prompts.
+        self.assertIn("pluto-check", prompt_names)
+        self.assertIn("pluto-watch", prompt_names)
+        self.assertIn("pluto-status", prompt_names)
 
         resource_uris = {str(r.uri) for r in resources}
         self.assertIn("pluto://inbox", resource_uris)

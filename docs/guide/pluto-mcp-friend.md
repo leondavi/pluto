@@ -75,16 +75,25 @@ the adapter injects the session token transparently.
 | `pluto_task_list` | `POST /agents/task_list` | enumerate tasks |
 | `pluto_set_status` | `POST /agents/set_status` | custom status string |
 
-### 11 prompts
+### Prompts (slash commands)
+
+In Claude Code these surface as slash commands. Two groups:
+
+**Quick actions** — one-keystroke shortcuts; no need to type a request to the agent.
+
+| Prompt | What it does |
+|--------|-------------|
+| `/pluto-check` | Calls `pluto_recv` and summarizes whatever arrived (one-shot, no blocking) |
+| `/pluto-watch` | Starts a chat-speed inbox watcher: background Task on Claude Code, foreground long-poll on Cursor/Aider |
+| `/pluto-status` | Reports my agent_id, connected peers, inbox depth, and locks held |
+
+**Roles & reference** — inlined documents.
 
 | Prompt | What it returns |
 |--------|-----------------|
-| `pluto-protocol` | inlined `library/protocol.md` + live connection block |
-| `pluto-guide` | inlined agent guide + live connection block |
-| `pluto-role-<name>` | one prompt per role file in `library/roles/` (specialist, orchestrator, reviewer, qa, deployer, evaluator, experiment-runner, data-steward, ssh-bridge) |
-
-In Claude Code these surface as slash commands: `/pluto-role-specialist`,
-`/pluto-protocol`, etc. Pick one to apply mid-session.
+| `/pluto-protocol` | inlined `library/protocol.md` + live connection block |
+| `/pluto-guide` | inlined agent guide + live connection block |
+| `/pluto-role-<name>` | one prompt per role file in `library/roles/` (specialist, orchestrator, reviewer, qa, deployer, evaluator, experiment-runner, data-steward, ssh-bridge) |
 
 ### 4 resources
 

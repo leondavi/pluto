@@ -343,6 +343,11 @@ EOF
 
     cat <<EOF
 
+    ${CYAN}Quick actions${NC} ${DIM}— one-keystroke shortcuts; no need to type a request${NC}
+      ${DIM}/pluto-check${NC}        drain inbox now and summarize what arrived
+      ${DIM}/pluto-watch${NC}        start a chat-speed inbox watcher (background Task on Claude)
+      ${DIM}/pluto-status${NC}       my id, connected peers, inbox depth, locks I hold
+
     ${CYAN}Reference${NC} ${DIM}— inline a doc on the next turn${NC}
       ${DIM}/pluto-protocol${NC}     shared coordination protocol (library/protocol.md)
       ${DIM}/pluto-guide${NC}        agent skill guide (agent_friend_guide.md)

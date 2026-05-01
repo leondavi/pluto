@@ -354,11 +354,16 @@ EOF
       ${DIM}@pluto://server${NC}     server health / version
 
   ${BOLD}Tools${NC} ${DIM}(the agent calls these on its own; you don't run them manually)${NC}
-      ${CYAN}pluto_send${NC} / ${CYAN}pluto_broadcast${NC} / ${CYAN}pluto_recv${NC}
+      ${CYAN}pluto_send${NC} / ${CYAN}pluto_broadcast${NC} / ${CYAN}pluto_recv${NC} / ${CYAN}pluto_wait_for_messages${NC}
       ${CYAN}pluto_lock_acquire${NC} / ${CYAN}pluto_lock_release${NC} / ${CYAN}pluto_lock_renew${NC} / ${CYAN}pluto_lock_info${NC}
       ${CYAN}pluto_task_assign${NC} / ${CYAN}pluto_task_update${NC} / ${CYAN}pluto_task_list${NC}
       ${CYAN}pluto_list_agents${NC} / ${CYAN}pluto_find_agents${NC} / ${CYAN}pluto_set_status${NC}
       ${CYAN}pluto_publish${NC} / ${CYAN}pluto_subscribe${NC} / ${CYAN}pluto_list_locks${NC}
+
+  ${DIM}Tip — chat-speed inbox: in Claude Code, ask the agent to spawn a${NC}
+  ${DIM}background Task that calls ``pluto_wait_for_messages(300)`` and pass${NC}
+  ${DIM}``run_in_background=true``. Each watcher Task notifies on completion${NC}
+  ${DIM}so the main conversation stays free for you.${NC}
 
   ${BOLD}═══ Quick smoke test (run from another terminal) ═══${NC}
     curl -X POST http://${host}:${port}/messages/send \\

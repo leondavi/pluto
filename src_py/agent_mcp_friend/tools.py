@@ -73,11 +73,34 @@ def register_tools(
             "Call this at the start of any turn where you have not "
             "already invoked another Pluto tool. Returns "
             "{'messages': [...]} where each message has at least 'event', "
-            "'from', 'payload', and 'seq_token' fields."
+            "'from', 'payload', and 'seq_token' fields. "
+            "Returns immediately even if no messages are pending — use "
+            "pluto_wait_for_messages if you want to block until one arrives."
         ),
     )
     async def pluto_recv() -> dict:
         messages = await inbox.drain()
+        return {"messages": messages, "count": len(messages)}
+
+    @mcp.tool(
+        name="pluto_wait_for_messages",
+        description=(
+            "Block until at least one Pluto message arrives, or until "
+            "timeout_s seconds elapse (default 300 = 5 minutes). Returns "
+            "the drained-and-acked messages, or an empty list on timeout."
+            "\n\nUsage patterns:"
+            "\n  • Direct call (Cursor / Aider / any MCP client): call this "
+            "with a short timeout (e.g. 30) at the tail of every turn."
+            "\n  • Background sub-agent (Claude Code): spawn a background "
+            "Task with run_in_background=true whose prompt is 'Call "
+            "pluto_wait_for_messages(300) and return its result'. The main "
+            "agent stays responsive to the user; when the Task completes, "
+            "its result (the messages) appears in the next turn — process "
+            "them, then spawn another Task to keep watching."
+        ),
+    )
+    async def pluto_wait_for_messages(timeout_s: int = 300) -> dict:
+        messages = await inbox.wait_for_messages(timeout_s=float(timeout_s))
         return {"messages": messages, "count": len(messages)}
 
     @mcp.tool(

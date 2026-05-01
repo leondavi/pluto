@@ -172,6 +172,48 @@ class TestInboxPiggyback(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(len(await self.inbox.peek_only()), 1)
 
+    async def test_wait_for_messages_returns_immediately_when_buffer_full(self):
+        await self.inbox._absorb([
+            {"event": "message", "from": "a", "seq_token": 1,
+             "payload": {"x": 1}},
+        ])
+        # No timeout needed — buffer already has content.
+        msgs = await asyncio.wait_for(
+            self.inbox.wait_for_messages(timeout_s=10), timeout=2,
+        )
+        self.assertEqual(len(msgs), 1)
+        # Buffer drained and acked.
+        self.assertEqual(await self.inbox.peek_only(), [])
+        self.assertIn(1, self.client.acks)
+
+    async def test_wait_for_messages_blocks_until_arrival(self):
+        # Schedule an arrival 0.2 s in the future and assert wait returns
+        # before its 5 s deadline.
+        async def deliver_late():
+            await asyncio.sleep(0.2)
+            await self.inbox._absorb([
+                {"event": "message", "from": "z", "seq_token": 42,
+                 "payload": {"text": "late"}},
+            ])
+
+        delivery = asyncio.create_task(deliver_late())
+        start = asyncio.get_event_loop().time()
+        msgs = await self.inbox.wait_for_messages(timeout_s=5.0)
+        elapsed = asyncio.get_event_loop().time() - start
+        await delivery
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["seq_token"], 42)
+        self.assertLess(elapsed, 1.0,
+            "wait_for_messages should fire on event, not poll")
+
+    async def test_wait_for_messages_returns_empty_on_timeout(self):
+        start = asyncio.get_event_loop().time()
+        msgs = await self.inbox.wait_for_messages(timeout_s=0.3)
+        elapsed = asyncio.get_event_loop().time() - start
+        self.assertEqual(msgs, [])
+        self.assertGreaterEqual(elapsed, 0.25)
+        self.assertLess(elapsed, 1.0)
+
     async def test_noise_silently_acked_not_buffered(self):
         await self.inbox._absorb([
             {"event": "delivery_ack", "seq_token": 3, "msg_id": "M1"},
@@ -312,6 +354,7 @@ class TestServerCapabilities(unittest.IsolatedAsyncioTestCase):
         # Pluto operation tools
         for required in [
             "pluto_send", "pluto_broadcast", "pluto_recv",
+            "pluto_wait_for_messages",
             "pluto_lock_acquire", "pluto_lock_release", "pluto_lock_renew",
             "pluto_lock_info", "pluto_list_locks",
             "pluto_task_assign", "pluto_task_update", "pluto_task_list",

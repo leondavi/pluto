@@ -50,7 +50,7 @@ launches reuse the venv.
 
 ## What ships out of the box
 
-### 16 Pluto tools
+### 17 Pluto tools
 
 Each is a thin wrapper around the existing `PlutoHttpClient` HTTP method;
 the adapter injects the session token transparently.
@@ -60,6 +60,7 @@ the adapter injects the session token transparently.
 | `pluto_send` | `POST /agents/send` | direct message to one agent |
 | `pluto_broadcast` | `POST /agents/broadcast` | message to every agent |
 | `pluto_recv` | drain in-memory inbox | explicit drain (call at start of turn) |
+| `pluto_wait_for_messages` | event-driven block on inbox | long-poll until a message arrives (or timeout) — pair with a background sub-agent for chat-speed responsiveness |
 | `pluto_publish` | `POST /agents/publish` | publish to a topic |
 | `pluto_subscribe` | `POST /agents/subscribe` | subscribe to a topic |
 | `pluto_list_agents` | `GET /agents?detailed=true` | discover peers |
@@ -100,22 +101,61 @@ In Claude Code these surface as slash commands: `/pluto-role-specialist`,
 
 The MCP adapter runs a 1 s background loop calling `/agents/peek` against
 the Pluto server. New actionable messages are buffered in memory and
-acked the moment they're handed to the agent. There are two delivery
-mechanisms working in parallel:
+acked the moment they're handed to the agent. There are **three** delivery
+mechanisms; the role prompt teaches the agent which to use.
 
-1. **Tool-result piggyback (primary).** Every Pluto tool result includes
-   a `_pluto_inbox` field if there are pending messages. So just by
-   doing any Pluto-related work the agent automatically picks up its
-   inbox — no separate poll required.
-2. **Explicit drain.** `pluto_recv` returns and acks all pending
-   messages. The role prompt instructs the agent to call this at the
-   start of any turn where it hasn't already invoked another Pluto tool.
+### 1. Tool-result piggyback (free)
 
-The role prompt teaches the agent the discipline:
+Every Pluto tool result includes a `_pluto_inbox` field if there are
+pending messages. So just by doing any Pluto-related work the agent
+automatically picks up its inbox — no separate poll required.
 
-> If any Pluto tool result contains a non-empty `_pluto_inbox`, process
-> those messages before continuing. At the start of any turn where you
-> have not called a Pluto tool, call `pluto_recv` first.
+### 2. Explicit drain — `pluto_recv`
+
+Returns and acks every pending message. The role prompt instructs the
+agent to call this at the start of any turn where it hasn't already
+invoked another Pluto tool. Returns immediately even if the buffer is
+empty.
+
+### 3. Event-driven long-poll — `pluto_wait_for_messages`
+
+Blocks until a message lands in the buffer (or until the timeout
+elapses). Implemented with an `asyncio.Event` set by the peek loop, so
+fanout is sub-second — it does **not** poll.
+
+Two usage patterns:
+
+#### Direct call (Cursor / Aider / any MCP client)
+
+```
+pluto_wait_for_messages(timeout_s=30)
+```
+
+The agent blocks server-side for up to 30 s at the tail of every turn.
+When a message arrives, the call returns and the agent reasons over it
+on the next turn.
+
+#### Background sub-agent (Claude Code) — recommended
+
+The main agent stays interactive with the user; a sub-agent does the
+waiting. From inside the agent:
+
+```
+Task({
+  description: "Watch Pluto inbox",
+  prompt: "Call pluto_wait_for_messages(300) and return its result.",
+  run_in_background: true
+})
+```
+
+Claude Code notifies the parent agent when the Task completes (on the
+parent's next turn, the result appears in context). Process the
+messages, then spawn another watcher Task to keep listening. The user
+never sees the agent stuck in a tool call — the watcher runs as a
+silent side-effect.
+
+This delivers chat-speed responsiveness without sacrificing the user's
+ability to talk to the agent.
 
 ---
 

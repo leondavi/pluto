@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from pluto_client import PlutoError, PlutoHttpClient
@@ -51,6 +52,9 @@ class InboxManager:
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._on_new_message: list = []  # callbacks
+        # Set whenever a fresh actionable message lands in the buffer.
+        # ``wait_for_messages`` waits on this; ``_absorb`` sets it.
+        self._new_message_event = asyncio.Event()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -115,6 +119,45 @@ class InboxManager:
             await self._ack_messages(messages)
         return messages
 
+    async def wait_for_messages(self, timeout_s: float = 300.0) -> list[dict]:
+        """Block until at least one actionable message arrives, or until
+        *timeout_s* seconds elapse.  Returns the drained-and-acked messages
+        (or an empty list on timeout).
+
+        Event-driven: the peek loop sets ``_new_message_event`` whenever
+        fresh messages land in the buffer.  ``wait_for_messages`` waits
+        on that event with a deadline, then drains.
+
+        Used as a long-poll for agents that want chat-speed responsiveness:
+        invoke directly at the tail of a turn, or wrap in a background
+        sub-agent / Task so the main agent stays interactive while watching.
+        """
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while True:
+            messages: list[dict] = []
+            async with self._lock:
+                if self._buffered:
+                    messages = list(self._buffered)
+                    self._buffered.clear()
+                else:
+                    # Buffer empty — clear the event under the lock so
+                    # _absorb can't fire it between our check and our wait
+                    # (both code paths acquire _lock).
+                    self._new_message_event.clear()
+            if messages:
+                await self._ack_messages(messages)
+                return messages
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return []
+            try:
+                await asyncio.wait_for(
+                    self._new_message_event.wait(), timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                return []
+
     async def peek_only(self) -> list[dict]:
         """Return buffered messages without acking.  Used by ``pluto://inbox``
         resource reads.
@@ -174,6 +217,8 @@ class InboxManager:
             async with self._lock:
                 self._buffered.extend(actionable)
                 fresh = list(actionable)
+                # Wake any waiter blocked in wait_for_messages().
+                self._new_message_event.set()
 
         if noise_seqs:
             try:

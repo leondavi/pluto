@@ -544,11 +544,17 @@ launch_framework() {
                 sys_prompt=$(build_role_system_prompt "${agent_id}" "${host}" "${port}" "${role}")
                 cmd+=("--append-system-prompt" "${sys_prompt}")
             fi
-            cmd+=("${extra[@]}")
+            # bash 3.2-safe empty-array expansion (macOS default bash).
+            if (( ${#extra[@]} > 0 )); then
+                cmd+=("${extra[@]}")
+            fi
             exec "${cmd[@]}"
             ;;
         cursor|aider|copilot|*)
-            local cmd=("${framework}" "${extra[@]}")
+            local cmd=("${framework}")
+            if (( ${#extra[@]} > 0 )); then
+                cmd+=("${extra[@]}")
+            fi
             info "Launching: ${cmd[*]}"
             exec "${cmd[@]}"
             ;;
@@ -678,7 +684,14 @@ EOF
         info "Auto-detected framework: ${framework}"
     fi
 
-    launch_framework "${framework}" "${role}" "${agent_id}" "${host}" "${http_port}" "${extra_cmd[@]}"
+    # bash 3.2-safe empty-array expansion (macOS default bash).
+    if (( ${#extra_cmd[@]} > 0 )); then
+        launch_framework "${framework}" "${role}" "${agent_id}" "${host}" \
+            "${http_port}" "${extra_cmd[@]}"
+    else
+        launch_framework "${framework}" "${role}" "${agent_id}" "${host}" \
+            "${http_port}"
+    fi
 }
 
 main "$@"

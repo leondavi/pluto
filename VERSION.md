@@ -1,4 +1,4 @@
-v0.2.7
+v0.2.8
 
 ## Locations to update when bumping the version
 

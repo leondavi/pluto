@@ -366,6 +366,163 @@ class TestMessageFormatting(unittest.TestCase):
         self.assertIn("Hello david!", result)
 
 
+class TestDeterministicFormatter(unittest.TestCase):
+    """Marker-bracketed frame format: <S<PLUTO seq=N>>...<E<PLUTO seq=N>>."""
+
+    # Reference parser from library/protocol.md §7. Parsers MUST tolerate
+    # frames flattened onto a single line (PlutoAgentFriend's PTY injector
+    # collapses whitespace), so this regex uses non-greedy matching and
+    # back-references to enforce open/close seq match.
+    FRAME_RE = re.compile(
+        r"<S<PLUTO seq=(\d+)>>\s*(\{.*?\})\s*<E<PLUTO seq=\1>>",
+        re.DOTALL,
+    )
+
+    def test_single_frame_structure(self):
+        messages = [{
+            "event": "task_assigned", "from": "orchestrator",
+            "seq_token": 42, "task_id": "t-007",
+            "payload": {"priority": "high"},
+        }]
+        result = MessageFormatter.format(messages, mode="deterministic")
+        matches = self.FRAME_RE.findall(result)
+        self.assertEqual(len(matches), 1)
+        seq, body = matches[0]
+        self.assertEqual(seq, "42")
+        parsed = json.loads(body)
+        self.assertEqual(parsed["event"], "task_assigned")
+        self.assertEqual(parsed["task_id"], "t-007")
+        self.assertEqual(parsed["seq_token"], 42)
+
+    def test_multiple_frames_back_to_back(self):
+        messages = [
+            {"event": "message", "from": "a", "seq_token": 7,
+             "payload": {"x": 1}},
+            {"event": "message", "from": "b", "seq_token": 8,
+             "payload": {"x": 2}},
+        ]
+        result = MessageFormatter.format(messages, mode="deterministic")
+        matches = self.FRAME_RE.findall(result)
+        self.assertEqual(len(matches), 2)
+        self.assertEqual(matches[0][0], "7")
+        self.assertEqual(matches[1][0], "8")
+
+    def test_frame_survives_flattened_injection(self):
+        """The PTY injector flattens \\n into spaces.  Frames must still parse
+        when newlines between/within markers are replaced by single spaces."""
+        messages = [
+            {"event": "message", "from": "a", "seq_token": 1,
+             "payload": {"v": 1}},
+            {"event": "message", "from": "b", "seq_token": 2,
+             "payload": {"v": 2}},
+        ]
+        result = MessageFormatter.format(messages, mode="deterministic")
+        # Mimic terminal_proxy.inject_and_submit_when_echoed flattening.
+        flat = result.replace("\r\n", " ").replace("\n", " ")
+        flat = re.sub(r" {2,}", " ", flat).strip()
+        matches = self.FRAME_RE.findall(flat)
+        self.assertEqual(len(matches), 2)
+        for seq, body in matches:
+            parsed = json.loads(body)
+            self.assertEqual(parsed["seq_token"], int(seq))
+
+    def test_open_close_seq_match(self):
+        """Each frame's start and end markers carry the same seq."""
+        messages = [{
+            "event": "broadcast", "from": "lead", "seq_token": 99,
+            "payload": {"msg": "build_complete"},
+        }]
+        result = MessageFormatter.format(messages, mode="deterministic")
+        self.assertIn("<S<PLUTO seq=99>>", result)
+        self.assertIn("<E<PLUTO seq=99>>", result)
+        # Mismatched seq must not appear
+        self.assertNotIn("<E<PLUTO seq=100>>", result)
+        self.assertNotIn("<S<PLUTO seq=98>>", result)
+
+    def test_message_without_seq_token_skipped(self):
+        """Messages without a seq_token cannot form a frame; they are dropped."""
+        messages = [
+            {"event": "message", "from": "a", "payload": {"x": 1}},  # no seq
+            {"event": "message", "from": "b", "seq_token": 5,
+             "payload": {"x": 2}},
+        ]
+        result = MessageFormatter.format(messages, mode="deterministic")
+        matches = self.FRAME_RE.findall(result)
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0][0], "5")
+
+    def test_noise_payload_filtered(self):
+        """delivery_ack / status_update / heartbeat payloads must not be framed."""
+        messages = [
+            {"event": "message", "from": "x", "seq_token": 10,
+             "payload": {"event": "delivery_ack", "msg_id": "M1"}},
+            {"event": "message", "from": "y", "seq_token": 11,
+             "payload": {"text": "hello"}},
+        ]
+        result = MessageFormatter.format(messages, mode="deterministic")
+        matches = self.FRAME_RE.findall(result)
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0][0], "11")
+        self.assertNotIn("delivery_ack", result)
+
+    def test_empty_when_all_filtered(self):
+        """If every message is noise or seqless, output is the empty string."""
+        messages = [
+            {"event": "message", "from": "x",
+             "payload": {"event": "delivery_ack"}},  # noise
+            {"event": "message", "from": "y",
+             "payload": {"text": "no seq"}},  # seqless
+        ]
+        result = MessageFormatter.format(messages, mode="deterministic")
+        self.assertEqual(result, "")
+
+    def test_format_dispatches_on_mode(self):
+        """format(messages, mode=...) routes to the right backend."""
+        messages = [{
+            "event": "message", "from": "a", "seq_token": 1,
+            "payload": {"x": 1},
+        }]
+        natural = MessageFormatter.format(messages, mode="natural")
+        deterministic = MessageFormatter.format(messages, mode="deterministic")
+        self.assertIn("Pluto coordination msgs", natural)
+        self.assertNotIn("<S<PLUTO", natural)
+        self.assertIn("<S<PLUTO seq=1>>", deterministic)
+        self.assertNotIn("Pluto coordination msgs", deterministic)
+
+    def test_default_mode_is_natural(self):
+        """Backwards compat: default format must remain natural-language."""
+        messages = [{
+            "event": "message", "from": "a", "seq_token": 1,
+            "payload": {"x": 1},
+        }]
+        default = MessageFormatter.format(messages)
+        natural = MessageFormatter.format(messages, mode="natural")
+        self.assertEqual(default, natural)
+
+
+class TestInjectFormatPlumbing(unittest.TestCase):
+    """The CLI flag and PlutoAgentFriend constructor accept inject_format."""
+
+    def test_constructor_rejects_unknown_format(self):
+        with self.assertRaises(ValueError):
+            PlutoAgentFriend(
+                cmd=["echo", "test"],
+                agent_id="x",
+                inject_format="bogus",
+            )
+
+    def test_constructor_default_is_natural(self):
+        friend = PlutoAgentFriend(cmd=["echo", "test"], agent_id="x")
+        self.assertEqual(friend.inject_format, "natural")
+
+    def test_constructor_accepts_deterministic(self):
+        friend = PlutoAgentFriend(
+            cmd=["echo", "test"], agent_id="x",
+            inject_format="deterministic",
+        )
+        self.assertEqual(friend.inject_format, "deterministic")
+
+
 class TestPlutoConfig(unittest.TestCase):
     """Test config loading."""
 

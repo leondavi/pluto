@@ -318,27 +318,54 @@ PYEOF
 
 print_post_launch_tips() {
     local agent_id="$1" host="$2" port="$3" framework="$4"
+
     cat <<EOF
 
   ${BOLD}${GREEN}Setup complete.${NC}  Launching ${BOLD}${framework}${NC} ...
 
-  ${BOLD}Inside your agent:${NC}
-    • Pluto operations are tool calls — type a request and the agent
-      will call e.g. ${CYAN}pluto_lock_acquire${NC} on its own.
-    • Switch role mid-session via slash menu:
-        ${DIM}/pluto-role-specialist${NC}
-        ${DIM}/pluto-role-orchestrator${NC}
-        ${DIM}/pluto-role-reviewer${NC}
-    • Pending inbox without acking:
-        ${DIM}@pluto://inbox${NC}
+  ${BOLD}═══ Pluto Skills API — what's available inside the agent ═══${NC}
 
-  ${BOLD}Send a test message from another terminal:${NC}
+  ${BOLD}Slash commands${NC} ${DIM}(invoke from inside the agent — works in Claude/Cursor/Aider)${NC}
+
+    ${CYAN}Roles${NC} ${DIM}— adopt a behavioural role; switch any time${NC}
+EOF
+
+    # Dynamically list every role file as a slash command.
+    local roles=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && roles+=("$line")
+    done < <(list_available_roles)
+
+    local r
+    for r in "${roles[@]}"; do
+        printf "      ${DIM}/pluto-role-%s${NC}\n" "$r"
+    done
+
+    cat <<EOF
+
+    ${CYAN}Reference${NC} ${DIM}— inline a doc on the next turn${NC}
+      ${DIM}/pluto-protocol${NC}     shared coordination protocol (library/protocol.md)
+      ${DIM}/pluto-guide${NC}        agent skill guide (agent_friend_guide.md)
+
+  ${BOLD}Resources${NC} ${DIM}(@-mention from inside the agent for an on-demand snapshot)${NC}
+      ${DIM}@pluto://inbox${NC}      pending messages addressed to you (read-only; pluto_recv to drain)
+      ${DIM}@pluto://locks${NC}      locks currently held by you (auto-renewed in the background)
+      ${DIM}@pluto://agents${NC}     every agent connected to the server
+      ${DIM}@pluto://server${NC}     server health / version
+
+  ${BOLD}Tools${NC} ${DIM}(the agent calls these on its own; you don't run them manually)${NC}
+      ${CYAN}pluto_send${NC} / ${CYAN}pluto_broadcast${NC} / ${CYAN}pluto_recv${NC}
+      ${CYAN}pluto_lock_acquire${NC} / ${CYAN}pluto_lock_release${NC} / ${CYAN}pluto_lock_renew${NC} / ${CYAN}pluto_lock_info${NC}
+      ${CYAN}pluto_task_assign${NC} / ${CYAN}pluto_task_update${NC} / ${CYAN}pluto_task_list${NC}
+      ${CYAN}pluto_list_agents${NC} / ${CYAN}pluto_find_agents${NC} / ${CYAN}pluto_set_status${NC}
+      ${CYAN}pluto_publish${NC} / ${CYAN}pluto_subscribe${NC} / ${CYAN}pluto_list_locks${NC}
+
+  ${BOLD}═══ Quick smoke test (run from another terminal) ═══${NC}
     curl -X POST http://${host}:${port}/messages/send \\
       -H 'Content-Type: application/json' \\
       -d '{"to":"${agent_id}","payload":{"type":"hello","text":"Welcome!"}}'
 
-  ${BOLD}Stop the Pluto server later with:${NC}
-    ./PlutoServer.sh --kill
+  ${DIM}Stop the Pluto server later:  ./PlutoServer.sh --kill${NC}
 
 EOF
 }
@@ -357,16 +384,18 @@ wizard_intro() {
   ${BOLD}This wizard will:${NC}
     1. Verify the Pluto server is running (and offer to start it if not)
     2. Ask for an agent ID for this session
-    3. Optionally pick a role for the agent
-    4. Detect / pick the agent CLI to launch
-    5. Generate .mcp.json and launch the agent CLI
+    3. Detect / pick the agent CLI to launch
+    4. Generate .mcp.json and launch the agent CLI
+
+  ${DIM}Roles, protocol, and guide are exposed as slash commands inside the
+  agent (e.g. /pluto-role-specialist). Pick one at any time after launch.${NC}
 
 EOF
     read -rp "  Press Enter to begin (Ctrl-C to abort) ... " _ < /dev/tty
 }
 
 wizard_step_server() {
-    section "Step 1/5 — Pluto server"
+    section "Step 1/4 — Pluto server"
     local host="$1" port="$2"
     if check_pluto_reachable "$host" "$port"; then
         return 0
@@ -380,7 +409,7 @@ wizard_step_server() {
 
 wizard_step_agent_id() {
     {
-        section "Step 2/5 — Agent ID"
+        section "Step 2/4 — Agent ID"
         cat <<EOF
 
   Pick a unique identifier for this agent. Other agents will use this
@@ -400,52 +429,8 @@ EOF
     echo "$id"
 }
 
-wizard_step_role() {
-    section "Step 3/5 — Role" >&2
-    local roles=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && roles+=("$line")
-    done < <(list_available_roles)
-
-    if (( ${#roles[@]} == 0 )); then
-        warn "No role files found in ${ROLES_DIR}. Skipping role selection." >&2
-        return 0
-    fi
-
-    {
-        cat <<EOF
-
-  ${DIM}A role is an instruction set (e.g. "you are a code reviewer ...") that
-  is applied on the agent's first turn. You can also switch roles later
-  inside the agent via the slash menu. Pick one, or skip.${NC}
-
-    ${BOLD}0${NC}) ${DIM}none — no role applied; pick later via /pluto-role-<name>${NC}
-EOF
-        local i=1
-        for r in "${roles[@]}"; do
-            printf "    ${BOLD}%d${NC}) %s\n" "$i" "$r"
-            i=$((i + 1))
-        done
-        echo ""
-    } >&2
-
-    local choice
-    while true; do
-        read -rp "  Choice [0-${#roles[@]}, default 0]: " choice < /dev/tty
-        choice="${choice:-0}"
-        if [[ "$choice" == "0" ]]; then
-            return 0
-        fi
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#roles[@]} )); then
-            echo "${roles[$((choice - 1))]}"
-            return 0
-        fi
-        warn "Invalid choice. Enter a number between 0 and ${#roles[@]}." >&2
-    done
-}
-
 wizard_step_framework() {
-    section "Step 4/5 — Agent CLI" >&2
+    section "Step 3/4 — Agent CLI" >&2
     local available=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && available+=("$line")
@@ -504,16 +489,23 @@ EOF
 }
 
 wizard_step_confirm() {
-    section "Step 5/5 — Ready to launch"
+    section "Step 4/4 — Ready to launch"
     local agent_id="$1" host="$2" port="$3" role="$4" framework="$5"
+
+    local role_display
+    if [[ -n "${role}" ]]; then
+        role_display="${CYAN}${role}${NC}  (auto-applied on first turn)"
+    else
+        role_display="${DIM}(none — pick after launch via /pluto-role-<name>)${NC}"
+    fi
 
     cat <<EOF
 
   ${BOLD}Summary:${NC}
     Agent ID    : ${CYAN}${agent_id}${NC}
     Pluto       : ${host}:${port}
-    Role        : ${role:-${DIM}(none)${NC}}
     Framework   : ${framework}
+    Role        : ${role_display}
     .mcp.json   : ${SCRIPT_DIR}/.mcp.json
 
 EOF
@@ -628,9 +620,6 @@ main() {
         fi
 
         agent_id=$(wizard_step_agent_id)
-        if [[ -z "${role}" ]]; then
-            role=$(wizard_step_role)
-        fi
         if [[ -z "${framework}" ]]; then
             framework=$(wizard_step_framework)
             if [[ "${framework}" == "__skip__" ]]; then

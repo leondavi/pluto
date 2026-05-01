@@ -160,55 +160,102 @@ show_disclaimer() {
 
 # ── venv bootstrap ──────────────────────────────────────────────────────────
 
+# Verify ${VENV_DIR} is a real isolated venv with working pip.
+# Returns 0 if valid, 1 otherwise.
+#
+# Several signals must all agree because partial / corrupt venvs are
+# surprisingly common on macOS:
+#
+#   • bin/python exists and is executable
+#   • pyvenv.cfg is present (created by `python3 -m venv`)
+#   • sys.prefix != sys.base_prefix (Python is *actually* isolated, not
+#     a stray symlink to the host Homebrew Python — that latter case
+#     causes pip install to hit the PEP 668 "externally-managed-
+#     environment" wall as if the venv weren't there)
+#   • pip is importable as a module (``python -m pip --version``)
+is_valid_venv() {
+    local py="${VENV_DIR}/bin/python"
+    [[ -x "${py}" ]] || return 1
+    [[ -f "${VENV_DIR}/pyvenv.cfg" ]] || return 1
+    "${py}" -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)' \
+        >/dev/null 2>&1 || return 1
+    "${py}" -m pip --version >/dev/null 2>&1 || return 1
+    return 0
+}
+
 ensure_venv() {
     local py="${VENV_DIR}/bin/python"
-    local need_create=false
 
-    if [[ ! -x "${py}" ]]; then
-        need_create=true
-    elif ! "${py}" -m pip --version >/dev/null 2>&1; then
-        # The venv exists but pip is missing or broken — typical when a
-        # previous attempt was interrupted, or when the host Python's
-        # ensurepip module is unavailable. Try to repair in place; if
-        # that fails, recreate from scratch.
-        warn "Venv at ${VENV_DIR} is missing pip. Attempting to repair ..."
-        if ! "${py}" -m ensurepip --upgrade >/dev/null 2>&1; then
-            warn "Repair failed — recreating venv from scratch."
-            rm -rf "${VENV_DIR}"
-            need_create=true
-        fi
+    # If the venv directory exists but is not a valid isolated venv,
+    # nuke it. Any partial / corrupt state — bin/python missing, pip
+    # module missing, sys.prefix == base_prefix (i.e. not isolated),
+    # missing pyvenv.cfg — is treated the same way: rebuild from
+    # scratch. Cheaper and far more reliable than trying to repair.
+    if [[ -e "${VENV_DIR}" ]] && ! is_valid_venv; then
+        warn "Existing venv at ${VENV_DIR} is invalid or partial. Recreating ..."
+        rm -rf "${VENV_DIR}"
     fi
 
-    if $need_create; then
+    if [[ ! -e "${VENV_DIR}" ]]; then
         info "Creating Python venv at ${VENV_DIR} ..."
         mkdir -p "$(dirname "${VENV_DIR}")"
         if ! python3 -m venv "${VENV_DIR}"; then
             err "Failed to create venv at ${VENV_DIR}."
-            err "Try:  rm -rf ${VENV_DIR} && python3 -m venv ${VENV_DIR}"
+            err "Diagnose with:  python3 -m venv /tmp/pluto-venv-test"
+            err "On macOS Homebrew, try: brew reinstall python@3"
             exit 1
         fi
-    fi
-
-    # Sanity-check pip is actually usable before we install anything.
-    if ! "${py}" -m pip --version >/dev/null 2>&1; then
-        err "Venv at ${VENV_DIR} has no working pip after creation."
-        err "Run:  rm -rf ${VENV_DIR}  and re-launch."
-        exit 1
+        if ! is_valid_venv; then
+            err "Created venv at ${VENV_DIR} is not properly isolated."
+            err "  pyvenv.cfg present? $([ -f "${VENV_DIR}/pyvenv.cfg" ] && echo yes || echo NO)"
+            err "  python isolated?    $("${py}" -c 'import sys; print(sys.prefix != sys.base_prefix)' 2>/dev/null || echo unknown)"
+            err "  pip module present? $("${py}" -m pip --version 2>&1 | head -1)"
+            err ""
+            err "Your host python3 may be misconfigured. Try:"
+            err "  brew reinstall python@3   # macOS Homebrew"
+            err "  apt install python3-venv  # Debian / Ubuntu"
+            exit 1
+        fi
     fi
 
     local marker="${VENV_DIR}/.requirements-installed"
-    if [[ ! -f "${marker}" ]] || [[ "${REQUIREMENTS}" -nt "${marker}" ]]; then
-        info "Installing Pluto Python dependencies (mcp SDK) ..."
-        # ``python -m pip`` works in every venv layout, even ones where the
-        # ``bin/pip`` console script wasn't created (some Python builds skip
-        # it). Calling ``bin/pip`` directly is fragile.
-        "${py}" -m pip install -q --upgrade pip >/dev/null 2>&1 || true
-        if ! "${py}" -m pip install -q -r "${REQUIREMENTS}"; then
-            err "pip install -r ${REQUIREMENTS} failed."
-            exit 1
-        fi
-        date > "${marker}"
+    if [[ -f "${marker}" ]] && [[ ! "${REQUIREMENTS}" -nt "${marker}" ]]; then
+        return 0  # already installed, nothing to do
     fi
+
+    info "Installing Pluto Python dependencies (mcp SDK) ..."
+    # Always use ``python -m pip``; never ``bin/pip``. Some Python builds
+    # skip creating the pip console script even in valid venvs.
+    "${py}" -m pip install -q --upgrade pip >/dev/null 2>&1 || true
+
+    local pip_log
+    pip_log=$(mktemp -t pluto-pip.XXXXXX)
+    if ! "${py}" -m pip install -r "${REQUIREMENTS}" >"${pip_log}" 2>&1; then
+        # PEP 668 inside a freshly-created venv means our isolation check
+        # passed but pip is still seeing the host's EXTERNALLY_MANAGED
+        # marker — symptom of a deeply broken Python install. Surface
+        # the actual pip output so the user can see what went wrong.
+        if grep -q "externally-managed-environment" "${pip_log}"; then
+            err "pip install hit PEP 668 even inside the venv at ${VENV_DIR}."
+            err "This means your host python3 isn't producing real isolated"
+            err "venvs. The venv has been left in place for inspection:"
+            err "  ${VENV_DIR}/pyvenv.cfg"
+            err "  ${py} -c 'import sys; print(sys.prefix, sys.base_prefix)'"
+            err ""
+            err "Likely fixes:"
+            err "  • macOS Homebrew:  brew reinstall python@3"
+            err "  • Debian/Ubuntu:   apt install python3-venv"
+            err "  • Multiple Pythons in PATH: hash -r and re-run, or"
+            err "    point to a known-good python3 explicitly."
+        else
+            err "pip install -r ${REQUIREMENTS} failed:"
+            tail -20 "${pip_log}" | sed 's/^/    /' >&2
+        fi
+        rm -f "${pip_log}"
+        exit 1
+    fi
+    rm -f "${pip_log}"
+    date > "${marker}"
 }
 
 # ── Pluto server health ─────────────────────────────────────────────────────

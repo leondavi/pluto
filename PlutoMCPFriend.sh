@@ -33,7 +33,7 @@ VENV_DIR="/tmp/pluto/.venv"
 DEFAULT_HOST="127.0.0.1"
 DEFAULT_HTTP_PORT="9201"
 DEFAULT_TCP_PORT="9200"
-DEFAULT_WAIT_TIMEOUT_S="300"
+DEFAULT_WAIT_TIMEOUT_S="60"
 PLUTO_VERSION="$(head -1 "${SCRIPT_DIR}/VERSION.md" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')"
 
 # ── Colours ──────────────────────────────────────────────────────────────────
@@ -87,11 +87,11 @@ Options:
   --host <ip>             Pluto server host (default: from config / ${DEFAULT_HOST}).
   --http-port <port>      Pluto HTTP port (default: from config / ${DEFAULT_HTTP_PORT}).
   --ttl-ms <ms>           Session TTL in ms (default: 600000).
-  --wait-timeout-s <sec>  pluto_wait_for_messages block duration in seconds
-                          (default: ${DEFAULT_WAIT_TIMEOUT_S}). Used by the role connection block,
-                          /pluto-watch slash prompt, and the tool's own
-                          default. Increase for fewer Task respawns; lower
-                          for faster fallback recovery on lossy networks.
+  --wait-timeout-s <sec>  pluto_wait_for_messages per-call block duration
+                          (default: ${DEFAULT_WAIT_TIMEOUT_S}). The watcher subagent loops short
+                          calls of this length so it produces output
+                          regularly and never trips Claude Code's stream
+                          watchdog. Keep <=120 to be safe.
   --no-launch             Generate .mcp.json but do not start Claude.
   --no-wizard             Refuse the interactive wizard; require all args.
   --log-level <lvl>       DEBUG | INFO | WARNING | ERROR (default: WARNING).
@@ -102,7 +102,7 @@ Options:
 Examples:
   $(basename "$0")                                                  # wizard
   $(basename "$0") --agent-id coder-1 --role specialist
-  $(basename "$0") --agent-id reviewer-1 --wait-timeout-s 600        # longer waits
+  $(basename "$0") --agent-id reviewer-1 --wait-timeout-s 90         # tune watcher cycle
   $(basename "$0") --agent-id worker-1 --no-launch                   # config only
 EOF
 }

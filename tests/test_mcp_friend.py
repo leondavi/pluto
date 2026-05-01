@@ -316,18 +316,32 @@ class TestPromptAssembly(unittest.TestCase):
         propagate MCP to subagents — the prompt must say so explicitly so
         the agent doesn't get stuck in a re-arm loop."""
         block = build_connection_block(
-            host="h", http_port=1, agent_id="a", wait_timeout_s=300,
+            host="h", http_port=1, agent_id="a", wait_timeout_s=60,
         )
         # Best-effort framing.
         self.assertIn("best-effort", block.lower())
-        # Failure-detection heuristic mentioned (timeout undershoot).
-        self.assertIn("60", block)  # the 60-120s subagent idle cleanup
-        # Stop-spawning-on-failure rule.
+        # Stop-spawning-on-failure rule (when subagent lacks MCP entirely).
         self.assertIn("stop spawning", block.lower())
         # Required Task parameters still spelled out.
         self.assertIn("run_in_background", block)
         self.assertIn("subagent_type", block)
-        self.assertIn("pluto_wait_for_messages(300)", block)
+        self.assertIn("pluto_wait_for_messages(60)", block)
+
+    def test_connection_block_uses_short_poll_loop(self):
+        """A single 300+ s block in a subagent gets killed by Claude Code's
+        stream watchdog (~600s silence cutoff). The subagent prompt must
+        instruct a loop of short polls so output is produced regularly."""
+        block = build_connection_block(
+            host="h", http_port=1, agent_id="a", wait_timeout_s=60,
+        )
+        # The subagent prompt must describe a loop, not a single call.
+        self.assertIn("loop", block.lower())
+        # Bounded number of iterations so the subagent self-terminates
+        # before any platform-level cleanup.
+        self.assertIn("5 iterations", block)
+        # Must explain the watchdog reason so future maintainers don't
+        # "simplify" it back to a single block.
+        self.assertIn("watchdog", block.lower())
 
     def test_role_prompt_includes_role_and_connection(self):
         body = build_role_prompt_body(
@@ -373,7 +387,9 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("pluto_wait_for_messages", body)
         # Must specify subagent_type — Claude Code's Task tool requires it.
         self.assertIn("subagent_type", body)
-        # Default timeout shows up.
+        # Default timeout shows up. Default was lowered from 300 to 60
+        # so a single block fits comfortably under the 600s stream
+        # watchdog.
         self.assertIn("300", body)
         # Failure-detection heuristic must be present so the agent doesn't
         # re-arm a non-functional watcher in a tight loop.
@@ -382,11 +398,19 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertNotIn("Cursor", body)
         self.assertNotIn("Aider", body)
 
+    def test_watch_prompt_uses_short_poll_loop(self):
+        """The subagent prompt must instruct a short-poll loop so the
+        stream watchdog never fires."""
+        body = build_watch_prompt_body(wait_timeout_s=60)
+        self.assertIn("loop", body.lower())
+        self.assertIn("5 iterations", body)
+        self.assertIn("watchdog", body.lower())
+
     def test_watch_prompt_honours_custom_timeout(self):
-        body = build_watch_prompt_body(wait_timeout_s=600)
-        self.assertIn("pluto_wait_for_messages(600)", body)
-        # Should not still mention the default we replaced.
-        self.assertNotIn("pluto_wait_for_messages(300)", body)
+        body = build_watch_prompt_body(wait_timeout_s=120)
+        self.assertIn("pluto_wait_for_messages(120)", body)
+        # Should not still mention the previous default we replaced.
+        self.assertNotIn("pluto_wait_for_messages(60)", body)
 
     def test_connection_block_honours_custom_timeout(self):
         block = build_connection_block(

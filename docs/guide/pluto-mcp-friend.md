@@ -39,8 +39,8 @@ the PTY-based wrapper works with any TUI agent.
 # Expert mode — one-shot launch with role applied on turn 1
 ./PlutoMCPFriend.sh --agent-id coder-1 --role specialist
 
-# Tune the watcher block duration (default 300s)
-./PlutoMCPFriend.sh --agent-id coder-1 --role specialist --wait-timeout-s 600
+# Tune the watcher per-call duration (default 60s, keep ≤120s)
+./PlutoMCPFriend.sh --agent-id coder-1 --role specialist --wait-timeout-s 90
 
 # Generate the .mcp.json without launching Claude
 ./PlutoMCPFriend.sh --agent-id reviewer-1 --no-launch
@@ -136,31 +136,38 @@ Blocks until a message lands in the buffer (or until the timeout
 elapses). Implemented with an `asyncio.Event` set by the peek loop, so
 fanout is sub-second — it does **not** poll.
 
-Recommended usage: spawn a background Task from inside Claude so the
-main conversation stays interactive while a sub-agent waits.
+Recommended usage: spawn a background Task from inside Claude where the
+**subagent itself loops** short polls. A single 300+ s blocking call in
+a subagent gets killed at the 600 s silence cutoff by Claude Code's
+stream watchdog; looping short polls produces regular tool-call output
+that keeps the subagent visible.
 
 ```
 Task({
-  description: "Watch Pluto inbox",
-  prompt: "Call pluto_wait_for_messages(300) and return its result.",
-  run_in_background: true
+  description: "Pluto inbox watcher",
+  subagent_type: "general-purpose",
+  run_in_background: true,
+  prompt: """
+    You are a Pluto inbox watcher. Repeat this loop:
+      1. Call pluto_wait_for_messages(60).
+      2. If response.count > 0, return the response JSON and stop.
+      3. If count == 0, go back to step 1.
+    Stop after 5 iterations regardless. Each tool-call output keeps
+    you visible to the stream watchdog.
+  """
 })
 ```
 
 Claude Code notifies the parent agent when the Task completes (on the
-parent's next turn, the result appears in context). Process the
+parent's next turn, the result appears in context). Process any
 messages, then spawn another watcher Task to keep listening. The user
-never sees the agent stuck in a tool call — the watcher runs as a
-silent side-effect.
+never sees the agent stuck in a tool call.
 
-The block duration is configurable via `--wait-timeout-s` on the
-launcher (default 300 seconds = 5 minutes). The value is propagated
-into the role connection block, the `/pluto-watch` slash prompt, and
-the tool's argument default — so a single launcher flag changes the
-entire watcher cycle length.
-
-This delivers chat-speed responsiveness without sacrificing the user's
-ability to talk to the agent.
+The per-call duration is configurable via `--wait-timeout-s` on the
+launcher (default 60 seconds — safe under the watchdog cutoff). Total
+subagent lifetime is bounded by `5 × --wait-timeout-s`. The value
+propagates into the role connection block, the `/pluto-watch` slash
+prompt, and the tool's argument default.
 
 ---
 
@@ -199,7 +206,7 @@ The role is also reachable mid-session via the slash menu
 | `--host <ip>` | from config / `127.0.0.1` | Pluto server host |
 | `--http-port <port>` | from config / `9201` | Pluto HTTP port |
 | `--ttl-ms <ms>` | `600000` | session TTL |
-| `--wait-timeout-s <sec>` | `300` | `pluto_wait_for_messages` block duration; embedded into the role connection block, the `/pluto-watch` slash prompt, and the tool's argument default |
+| `--wait-timeout-s <sec>` | `60` | `pluto_wait_for_messages` per-call block duration (the watcher subagent loops short calls of this length to dodge Claude Code's 600 s stream watchdog). Keep ≤ 120. Embedded into the role connection block, the `/pluto-watch` slash prompt, and the tool's argument default. |
 | `--log-level <lvl>` | `WARNING` | adapter stderr verbosity |
 | `--no-launch` | off | write `.mcp.json`, don't start Claude |
 | `--no-wizard` | off | refuse the interactive wizard; require all args |

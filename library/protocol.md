@@ -1,4 +1,4 @@
-# Pluto Collaboration Protocol (v0.2.7)
+# Pluto Collaboration Protocol (v0.2.8)
 
 Defines the **shared ontology** and **typed message schemas** every role
 in a Pluto-coordinated team must speak. No ad-hoc message shapes: if a
@@ -160,3 +160,53 @@ A task is ambiguous if **any** of the following holds:
 - Inputs or outputs are not concretely listed.
 - Scope requires touching resources outside the `files` / `resources` lists.
 - Two valid interpretations exist with different observable outputs.
+
+## 7. Deterministic Injection Frames (PlutoAgentFriend)
+
+When PlutoAgentFriend is launched with `--inject-format=deterministic`,
+each Pluto message is written into the agent's stdin wrapped in
+unambiguous markers:
+
+```
+<S<PLUTO seq=42>>
+{"event":"task_assigned","from":"orchestrator","seq_token":42,"task_id":"t-007","payload":{...}}
+<E<PLUTO seq=42>>
+```
+
+Frame rules:
+
+- `seq` inside `<S<...>>` and `<E<...>>` is the same integer as
+  `seq_token` from `/agents/peek`. Open and close markers carry the same
+  value; mismatched markers are a protocol error.
+- Body between the markers is **a single line** of compact JSON: the
+  full server message dict (top-level `event`, `from`, `seq_token`,
+  `payload`, plus any event-specific fields like `task_id`, `topic`).
+- One frame per message. Multiple messages = multiple back-to-back frames.
+- Messages without a `seq_token` (e.g. infrastructure noise like
+  `delivery_ack`) are not framed and the agent will not see them.
+- Injection flattens whitespace, so frames may arrive on a single line:
+  `<S<PLUTO seq=42>> {...} <E<PLUTO seq=42>><S<PLUTO seq=43>> {...} <E<PLUTO seq=43>>`.
+  Parsers MUST tolerate inline framing.
+
+Reference parsing regex (Python / PCRE flavour):
+
+```
+<S<PLUTO seq=(\d+)>>\s*(\{.*?\})\s*<E<PLUTO seq=\1>>
+```
+
+(`.*?` is non-greedy; the back-reference `\1` enforces matching open/close
+seq.)
+
+Acking:
+
+- The wrapper still owns ack — when it confirms the injected text echoed
+  back, it calls `POST /agents/ack` with the highest seq it injected.
+  At-least-once delivery is preserved even if the agent forgets to ack.
+- Agents MAY ack early or idempotently themselves via
+  `POST /agents/ack {"token":"...","up_to_seq":N}`. Re-acking a seq the
+  server already drained returns `{"drained":0}` and is harmless.
+
+Use this format when you control the agent's parser and want to
+eliminate prompt-injection ambiguity (the natural-language `[Pluto ...]`
+headers can collide with code blocks or test fixtures). For unmodified
+LLM CLIs, use `--inject-format=natural` (the default).

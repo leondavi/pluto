@@ -65,6 +65,30 @@ When done, update with pluto_task_update("TASK-7","completed",{"result":...}).
 {`[Pluto task <id>]`, A task assigned to you; work on it and report back.}
 {`[Pluto Event: <type>]`, Any other server event.}
 
+### Deterministic Frame Format (alternative)
+
+If the wrapper was launched with `--inject-format=deterministic`,
+messages arrive as marker-bracketed frames instead of natural-language
+blocks:
+
+```
+<S<PLUTO seq=42>>
+{"event":"task_assigned","from":"orchestrator","seq_token":42,"task_id":"t-007","payload":{...}}
+<E<PLUTO seq=42>>
+```
+
+The JSON body between the markers is the full server message dict on a
+single line. Open and close markers carry the same `seq` (which equals
+`seq_token` from `/agents/peek`). Whitespace between frames may be
+flattened, so use this regex to extract the body of each frame:
+
+```
+<S<PLUTO seq=(\d+)>>\s*(\{.*?\})\s*<E<PLUTO seq=\1>>
+```
+
+The wrapper still acks for you on echo confirmation; you do not need to
+ack manually. See `library/protocol.md` §7 for the full spec.
+
 ## How to Respond to Pluto Messages
 
 You are an AI agent running inside a terminal. You **cannot** call the

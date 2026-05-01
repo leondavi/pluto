@@ -1,0 +1,12 @@
+# Pluto Python runtime dependencies
+#
+# Installed into a project-local venv at .pluto-venv/ by:
+#   - PlutoInstall.sh           (interactive setup)
+#   - PlutoMCPFriend.sh         (auto-bootstraps on first launch)
+#
+# Keep this file minimal — Pluto's HTTP client uses only stdlib (urllib).
+# The MCP SDK is the only third-party runtime dep, used by
+# src_py/agent_mcp_friend/ (the MCP server adapter for Claude Code,
+# Cursor, Aider, etc.).
+
+mcp>=1.27,<2

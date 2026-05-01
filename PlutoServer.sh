@@ -361,31 +361,57 @@ cmd_start_foreground() {
 
 cmd_start_daemon() {
     show_disclaimer
+
+    # Fast path: if a Pluto daemon is already up and responding, just say so
+    # and exit cleanly. Avoids redundant build + kill cycles when the user
+    # runs --daemon defensively.
+    if pluto_ping 1; then
+        local existing_pid
+        existing_pid=$(lsof -ti :${PLUTO_PORT} 2>/dev/null | head -1)
+        existing_pid="${existing_pid:-?}"
+        ok "Pluto daemon is already running (pid ${existing_pid}). No action taken."
+        return 0
+    fi
+
     do_build
     if ! check_node_conflict; then
         err "Cannot start — another Pluto node is already running."
         exit 1
     fi
     info "Starting Pluto server (daemon) ..."
-    PLUTO_CONFIG="${CONFIG_FILE}" "${REL_DIR}/bin/pluto" daemon
 
-    # Wait for the server to come up
+    # Detach the daemon launcher from the controlling terminal so this
+    # script never blocks on inherited file descriptors. Some Erlang
+    # release start scripts keep stdout/stderr held open even after the
+    # BEAM has forked, which makes a plain foreground call hang for
+    # minutes (see commit history for the reproduction).
+    #
+    # nohup + I/O redirection + & + disown is the portable "fire and
+    # forget" idiom on macOS and Linux. The Erlang release writes its
+    # own logs under ${REL_DIR}/log/, so silencing stdout/stderr here
+    # loses nothing.
+    PLUTO_CONFIG="${CONFIG_FILE}" nohup "${REL_DIR}/bin/pluto" daemon \
+        </dev/null >/dev/null 2>&1 &
+    disown $! 2>/dev/null || true
+
+    # Wait for the server to come up.
     local attempts=0
     while (( attempts < 10 )); do
         sleep 1
         if pluto_ping 1; then
-            # Store the OS PID for --kill convenience
             local os_pid
-            os_pid=$(lsof -ti :${PLUTO_PORT} 2>/dev/null || echo "unknown")
+            os_pid=$(lsof -ti :${PLUTO_PORT} 2>/dev/null | head -1)
+            os_pid="${os_pid:-unknown}"
             echo "${os_pid}" > "${PID_FILE}"
-            ok "Pluto daemon is running (pid ${os_pid})."
+            ok "Pluto daemon started successfully (pid ${os_pid})."
             return 0
         fi
         (( attempts++ ))
     done
 
-    err "Daemon may have failed to start. Check logs in ${REL_DIR}/log/"
-    exit 1
+    err "Daemon failed to start (no response after 10s)."
+    err "Check logs in ${REL_DIR}/log/ for details."
+    return 1
 }
 
 cmd_kill() {

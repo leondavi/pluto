@@ -117,7 +117,12 @@ from agent_friend.frameworks import (  # noqa: E402,F401
     load_pluto_config,
     load_role,
 )
-from agent_friend.message_formatter import MessageFormatter  # noqa: E402
+from agent_friend.message_formatter import (  # noqa: E402,F401
+    INJECT_FORMAT_DETERMINISTIC,
+    INJECT_FORMAT_NATURAL,
+    INJECT_FORMATS,
+    MessageFormatter,
+)
 from agent_friend.pluto_connection import PlutoConnection  # noqa: E402
 from agent_friend.state_detector import AgentStateDetector  # noqa: E402
 from agent_friend.terminal_proxy import TerminalProxy  # noqa: E402
@@ -157,12 +162,20 @@ class PlutoAgentFriend(TerminalProxy):
         guide_retry_delay: float = GUIDE_RETRY_DELAY_S,
         inject_submit_delay: float = INJECT_SUBMIT_DELAY_S,
         role_file: str | None = None,
+        inject_format: str = INJECT_FORMAT_NATURAL,
         verbose: bool = False,
     ):
         super().__init__(cmd)
 
+        if inject_format not in INJECT_FORMATS:
+            raise ValueError(
+                f"inject_format must be one of {INJECT_FORMATS!r}, "
+                f"got {inject_format!r}"
+            )
+
         self.agent_id = agent_id
         self.mode = mode
+        self.inject_format = inject_format
         self.verbose = verbose
         self.guide_file = guide_file
         self.role_file = role_file
@@ -611,8 +624,16 @@ class PlutoAgentFriend(TerminalProxy):
 
     def _do_inject(self, messages: list[dict]) -> None:
         """Format and inject messages; ack on success, abort on failure."""
-        prompt = self.formatter.format(messages)
-        self._info(f"Injecting {len(messages)} message(s) from Pluto")
+        prompt = self.formatter.format(messages, mode=self.inject_format)
+        if not prompt:
+            # All messages were filtered (noise, or no seq_token in
+            # deterministic mode).  Ack and move on without writing to the PTY.
+            self.pluto.confirm_delivered(messages)
+            return
+        self._info(
+            f"Injecting {len(messages)} message(s) from Pluto "
+            f"({self.inject_format})"
+        )
         ok = self.inject_and_submit_when_echoed(
             prompt, submit_on_timeout=False,
         )
@@ -821,6 +842,19 @@ def main() -> None:
         help=f"Seconds to wait for agent reaction before retrying "
              f"(default: {GUIDE_RETRY_DELAY_S}, "
              f"env: PLUTO_GUIDE_RETRY_DELAY).",
+    )
+    parser.add_argument(
+        "--inject-format", choices=list(INJECT_FORMATS),
+        default=INJECT_FORMAT_NATURAL,
+        help=(
+            f"Wire format used when injecting Pluto messages into the "
+            f"agent's stdin (default: {INJECT_FORMAT_NATURAL}). "
+            f"'{INJECT_FORMAT_NATURAL}' wraps messages in [Pluto ...] "
+            f"headers for any unmodified LLM CLI. "
+            f"'{INJECT_FORMAT_DETERMINISTIC}' emits marker-bracketed frames "
+            f"<S<PLUTO seq=N>>{{json}}<E<PLUTO seq=N>> for agents that parse "
+            f"the protocol (see library/protocol.md §7)."
+        ),
     )
     parser.add_argument(
         "--inject-submit-delay", type=float, default=INJECT_SUBMIT_DELAY_S,
@@ -1063,6 +1097,7 @@ def main() -> None:
         guide_retry_delay=args.guide_retry_delay,
         inject_submit_delay=args.inject_submit_delay,
         role_file=role_file,
+        inject_format=args.inject_format,
         verbose=args.verbose,
     )
     sys.exit(friend.run())

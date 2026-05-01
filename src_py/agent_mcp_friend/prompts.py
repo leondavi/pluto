@@ -1,0 +1,203 @@
+"""Prompt assembly for PlutoMCPFriend.
+
+Each role file in ``library/roles/*.md`` becomes an MCP prompt
+``pluto-role-<name>``. The prompt body is the same role + protocol +
+live-connection block that ``PlutoAgentFriend._role_injection_loop``
+builds today, lifted into a reusable :func:`build_role_prompt_body`.
+
+A standalone ``pluto-protocol`` prompt exposes the shared protocol on
+its own; ``pluto-guide`` exposes the agent guide. Users invoke any of
+these via Claude Code's slash menu (``/pluto-role-specialist`` etc.).
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Iterable
+
+# Resolve the project root relative to this file. Layout:
+#   <project>/src_py/agent_mcp_friend/prompts.py
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", ".."))
+
+
+def project_path(*parts: str) -> str:
+    return os.path.normpath(os.path.join(_PROJECT_ROOT, *parts))
+
+
+def default_roles_dir() -> str:
+    return project_path("library", "roles")
+
+
+def default_protocol_path() -> str:
+    return project_path("library", "protocol.md")
+
+
+def default_guide_path() -> str:
+    return project_path("agent_friend_guide.md")
+
+
+def list_role_names(roles_dir: str | None = None) -> list[str]:
+    """Return the bare names (no extension) of every ``*.md`` in *roles_dir*.
+
+    Returns an empty list if the directory doesn't exist.
+    """
+    target = roles_dir or default_roles_dir()
+    try:
+        entries = sorted(os.listdir(target))
+    except OSError:
+        return []
+    return [
+        os.path.splitext(name)[0]
+        for name in entries
+        if name.endswith(".md") and not name.startswith("_") and name != "README.md"
+    ]
+
+
+def _read_file(path: str) -> str:
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def build_connection_block(
+    host: str,
+    http_port: int,
+    agent_id: str,
+) -> str:
+    """The live-connection block injected at the bottom of every prompt.
+
+    Mirrors the block ``_role_injection_loop`` builds in
+    ``pluto_agent_friend.py`` so agents see consistent connection info
+    regardless of which integration path they're running under.
+    """
+    return (
+        f"---\n\n"
+        f"**Live Pluto server connection** (injected by PlutoMCPFriend — "
+        f"use these values; do not hardcode addresses from the role file):\n"
+        f"  Host:      {host}\n"
+        f"  HTTP port: {http_port}   (REST API base for /agents/* and /locks/*)\n"
+        f"  Base URL:  http://{host}:{http_port}\n"
+        f"  Agent ID:  {agent_id}\n\n"
+        f"You are wrapped by **PlutoMCPFriend**. The server has registered\n"
+        f"you and exposes Pluto operations as MCP tools (``pluto_send``,\n"
+        f"``pluto_lock_acquire``, etc.). Prefer those tools over raw curl\n"
+        f"calls — the wrapper injects your session token automatically and\n"
+        f"acks inbox messages on your behalf.\n\n"
+        f"**Inbox delivery:** any Pluto tool result may include a non-empty\n"
+        f"``_pluto_inbox`` array containing messages addressed to you.\n"
+        f"Process those messages before continuing. At the start of any\n"
+        f"turn where you have not called a Pluto tool, call ``pluto_recv``\n"
+        f"first to drain pending messages."
+    )
+
+
+def build_role_prompt_body(
+    role_name: str,
+    *,
+    host: str,
+    http_port: int,
+    agent_id: str,
+    roles_dir: str | None = None,
+    protocol_path: str | None = None,
+) -> str:
+    """Assemble the full text of the ``pluto-role-<role_name>`` prompt.
+
+    Parts (in order):
+      1. The role file content (inlined verbatim).
+      2. The ``library/protocol.md`` content, if the role mentions it
+         (matching ``_role_injection_loop``'s heuristic).
+      3. The live-connection block from :func:`build_connection_block`.
+    """
+    roles = roles_dir or default_roles_dir()
+    role_path = os.path.join(roles, f"{role_name}.md")
+    if not os.path.isfile(role_path):
+        raise FileNotFoundError(f"Role file not found: {role_path}")
+
+    role_content = _read_file(role_path).strip()
+
+    protocol_block = ""
+    proto = protocol_path or default_protocol_path()
+    if "protocol.md" in role_content and os.path.isfile(proto):
+        try:
+            protocol_text = _read_file(proto)
+            protocol_block = (
+                "\n\n---\n\n"
+                "Your role above references `protocol.md`. The full shared "
+                "coordination protocol is inlined below for convenience "
+                f"(source: {proto}). Treat this as authoritative — do NOT "
+                "attempt to re-read the file from disk; your CWD may not "
+                "contain it.\n\n"
+                "=== BEGIN protocol.md ===\n\n"
+                f"{protocol_text}\n\n"
+                "=== END protocol.md ==="
+            )
+        except OSError:
+            pass
+
+    connection_block = build_connection_block(host, http_port, agent_id)
+
+    role_basename = os.path.basename(role_path)
+    return (
+        f"You have been assigned a specific role for this session.\n"
+        f"Read and internalize the following role description from "
+        f"{role_basename}, then confirm briefly that you understand your "
+        f"role and are ready to begin:\n\n"
+        f"{role_content}{protocol_block}\n\n"
+        f"{connection_block}"
+    )
+
+
+def build_protocol_prompt_body(
+    *,
+    host: str,
+    http_port: int,
+    agent_id: str,
+    protocol_path: str | None = None,
+) -> str:
+    """Standalone ``pluto-protocol`` prompt: just protocol + connection."""
+    proto = protocol_path or default_protocol_path()
+    try:
+        text = _read_file(proto)
+    except OSError as exc:
+        text = f"(could not read {proto}: {exc})"
+    return (
+        f"=== BEGIN protocol.md ===\n\n"
+        f"{text}\n\n"
+        f"=== END protocol.md ===\n\n"
+        f"{build_connection_block(host, http_port, agent_id)}"
+    )
+
+
+def build_guide_prompt_body(
+    *,
+    host: str,
+    http_port: int,
+    agent_id: str,
+    guide_path: str | None = None,
+) -> str:
+    """Standalone ``pluto-guide`` prompt: agent guide + connection."""
+    path = guide_path or default_guide_path()
+    try:
+        text = _read_file(path)
+    except OSError as exc:
+        text = f"(could not read {path}: {exc})"
+    return (
+        f"{text}\n\n"
+        f"{build_connection_block(host, http_port, agent_id)}"
+    )
+
+
+def role_prompt_specs(roles_dir: str | None = None) -> Iterable[tuple[str, str, str]]:
+    """Yield ``(prompt_name, role_name, description)`` for every available role.
+
+    ``prompt_name`` is what shows up in slash menus
+    (e.g. ``pluto-role-specialist``); ``role_name`` is the bare file name
+    (``specialist``); ``description`` is suitable for an MCP prompt.
+    """
+    for name in list_role_names(roles_dir):
+        yield (
+            f"pluto-role-{name}",
+            name,
+            f"Apply the '{name}' role from library/roles/{name}.md "
+            f"plus the shared protocol and live Pluto connection info.",
+        )

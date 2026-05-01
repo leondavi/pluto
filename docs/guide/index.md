@@ -6,7 +6,8 @@ This directory contains in-depth documentation for every way you can interact wi
 
 | Method | Best for | Guide |
 |--------|----------|-------|
-| [PlutoAgentFriend.sh](pluto-agent-friend.md) | Wrapping an existing AI CLI (Claude, Copilot, Aider…) — **recommended** | → [guide](pluto-agent-friend.md) |
+| [PlutoMCPFriend.sh](pluto-mcp-friend.md) | MCP-capable CLIs (Claude Code, Cursor, Aider with MCP) — Pluto as native tools | → [guide](pluto-mcp-friend.md) |
+| [PlutoAgentFriend.sh](pluto-agent-friend.md) | Wrapping an existing AI CLI via PTY injection (any TUI) | → [guide](pluto-agent-friend.md) |
 | [PlutoClient.sh](pluto-client.md) | Inspecting the server, registering agents via script, generating guides | → [guide](pluto-client.md) |
 | [PlutoServer.sh](pluto-server.md) | Building, starting, and managing the Erlang server process | → [guide](pluto-server.md) |
 | [TCP / Python library](tcp-connection.md) | Custom agents in any language; raw protocol details | → [guide](tcp-connection.md) |
@@ -25,10 +26,16 @@ All components read server address/port from `config/pluto_config.json`
 
 ## Choosing the Right Method
 
-**Use PlutoAgentFriend.sh** when you want to run Claude Code, GitHub Copilot CLI,
-Aider, Cursor, or any other AI CLI tool alongside other agents. PlutoAgentFriend
-wraps the CLI in a PTY proxy, registers it with Pluto, and delivers incoming
-messages as natural-language prompts — no changes to the agent itself.
+**Use PlutoMCPFriend.sh** when your agent CLI supports MCP (Claude Code, Cursor,
+Aider with the MCP plugin). Pluto operations show up as native tools
+(`pluto_send`, `pluto_lock_acquire`, `pluto_task_update`, …) — no curl, no
+session token paste, no JSON-in-shell escaping. The adapter auto-renews locks
+and surfaces inbox messages on tool results.
+
+**Use PlutoAgentFriend.sh** when you want to wrap any TUI agent unchanged
+(Claude Code, GitHub Copilot CLI, Aider, Cursor, or a custom CLI) via a PTY
+proxy that injects natural-language Pluto messages when the agent is idle.
+Works without any MCP support in the agent.
 
 **Use PlutoClient.sh** for operations and inspection: checking connectivity,
 listing active agents, viewing server stats, or generating the agent protocol guide.

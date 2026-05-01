@@ -289,6 +289,31 @@ different wrappers against the same Pluto server.
 
 ---
 
+## Known limitations
+
+### Background watcher subagents may not have MCP access
+
+The recommended chat-speed pattern — spawning a Claude Code background
+Task that calls `pluto_wait_for_messages` — relies on the subagent
+inheriting the parent session's MCP server config. **Some Claude Code
+versions don't propagate MCP to subagents**: the subagent runs in an
+isolated tool-set that includes built-ins (Read/Edit/Bash/...) but
+not third-party MCP tools. The watcher Task then completes well
+before the timeout (typically 60–120 s, the subagent's idle cleanup
+interval) with an empty result.
+
+**The role connection block detects this and tells the agent to
+fall back to turn-driven pulling**: `pluto_recv` at the start of
+every reply, plus `/pluto-check` whenever the user wants an explicit
+flush. Multi-agent fan-out still works, but messages surface on the
+recipient's next turn rather than at sub-second chat speed.
+
+If chat-speed delivery is critical for your workflow, consider
+running the agents under `PlutoAgentFriend.sh` instead — the PTY
+wrapper actively types injected messages into the agent's terminal,
+so messages reach the agent's reasoning context the moment they
+arrive (no subagent gymnastics required).
+
 ## Troubleshooting
 
 **`pip install` fails with externally-managed-environment.**

@@ -301,22 +301,33 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("PlutoMCPFriend", block)
         self.assertIn("_pluto_inbox", block)
 
-    def test_connection_block_demands_first_turn_watcher(self):
-        """The watcher spawn instruction must be unambiguously first-turn."""
+    def test_connection_block_mandates_pluto_recv_per_reply(self):
+        """The reliable fallback path — pluto_recv at start of every reply —
+        must be marked as mandatory, not aspirational."""
         block = build_connection_block(
             host="h", http_port=1, agent_id="a", wait_timeout_s=300,
         )
-        # Must mention all four required Task parameters explicitly.
+        self.assertIn("pluto_recv", block)
+        self.assertIn("MANDATORY", block)
+        self.assertIn("every reply", block)
+
+    def test_connection_block_describes_watcher_as_best_effort(self):
+        """The subagent watcher pattern can fail when Claude Code doesn't
+        propagate MCP to subagents — the prompt must say so explicitly so
+        the agent doesn't get stuck in a re-arm loop."""
+        block = build_connection_block(
+            host="h", http_port=1, agent_id="a", wait_timeout_s=300,
+        )
+        # Best-effort framing.
+        self.assertIn("best-effort", block.lower())
+        # Failure-detection heuristic mentioned (timeout undershoot).
+        self.assertIn("60", block)  # the 60-120s subagent idle cleanup
+        # Stop-spawning-on-failure rule.
+        self.assertIn("stop spawning", block.lower())
+        # Required Task parameters still spelled out.
         self.assertIn("run_in_background", block)
         self.assertIn("subagent_type", block)
-        self.assertIn("description", block)
         self.assertIn("pluto_wait_for_messages(300)", block)
-        # Must be marked as the agent's first action, not just a
-        # generic "do this at some point".
-        self.assertIn("MANDATORY FIRST ACTION", block)
-        # Must explicitly tell the agent watchers are single-shot
-        # and require re-arming.
-        self.assertIn("re-arm", block.replace("Re-Arming", "re-arm").lower())
 
     def test_role_prompt_includes_role_and_connection(self):
         body = build_role_prompt_body(
@@ -364,6 +375,9 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("subagent_type", body)
         # Default timeout shows up.
         self.assertIn("300", body)
+        # Failure-detection heuristic must be present so the agent doesn't
+        # re-arm a non-functional watcher in a tight loop.
+        self.assertIn("stop re-arming", body.lower())
         # No more Cursor/Aider fallback wording.
         self.assertNotIn("Cursor", body)
         self.assertNotIn("Aider", body)

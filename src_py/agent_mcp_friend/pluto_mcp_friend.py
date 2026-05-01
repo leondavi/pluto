@@ -16,7 +16,7 @@ Usage (typical, via .mcp.json)::
             "/path/to/src_py/agent_mcp_friend/pluto_mcp_friend.py",
             "--agent-id", "coder-1",
             "--host", "localhost",
-            "--http-port", "9001"
+            "--http-port", "9201"
           ]
         }
       }
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--http-port", type=int, default=None,
-        help="Pluto HTTP port (default: from config / 9001).",
+        help="Pluto HTTP port (default: from config / 9201).",
     )
     parser.add_argument(
         "--ttl-ms", type=int, default=600_000,
@@ -98,8 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     # Resolve host / port from config when not given explicitly.
     config = load_pluto_config()
     server_cfg = config.get("pluto_server", {})
-    host = args.host or server_cfg.get("host_ip", "localhost")
-    http_port = args.http_port or server_cfg.get("host_http_port", 9001)
+    host = args.host or server_cfg.get("host_ip", "127.0.0.1")
+    http_port = args.http_port or server_cfg.get("host_http_port", 9201)
 
     server = PlutoMCPServer(
         agent_id=args.agent_id,

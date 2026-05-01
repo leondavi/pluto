@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # ===========================================================================
-# PlutoMCPFriend.sh — Launch an MCP-capable agent with Pluto coordination.
+# PlutoMCPFriend.sh — Guided launcher for the Pluto MCP adapter.
 #
-# Wraps an agent CLI (Claude Code, Cursor, Aider, ...) by registering an MCP
-# server adapter that exposes Pluto operations (send / lock / task / ...) as
-# native tools. No PTY injection, no curl, no copy-pasted tokens — the agent
-# calls pluto_send / pluto_lock_acquire / etc. directly.
+# Wraps an MCP-capable agent CLI (Claude Code, Cursor, Aider with the MCP
+# plugin) by registering an MCP server adapter that exposes Pluto operations
+# (send / lock / task / ...) as native tool calls. No PTY, no curl, no
+# copy-pasted tokens.
 #
-# Usage:
-#   ./PlutoMCPFriend.sh --agent-id <name> [--framework <name>] [options] [-- cmd...]
-#   ./PlutoMCPFriend.sh --help
+# Run with no arguments for the interactive setup wizard:
 #
-# Examples:
-#   ./PlutoMCPFriend.sh --agent-id coder-1                         # auto-detect framework
+#   ./PlutoMCPFriend.sh
+#
+# Or pass everything explicitly (expert mode):
+#
 #   ./PlutoMCPFriend.sh --agent-id coder-1 --framework claude --role specialist
-#   ./PlutoMCPFriend.sh --agent-id coder-1 -- claude --some-flag   # pass-through args
+#
+# See ./PlutoMCPFriend.sh --help for the full option list.
 # ===========================================================================
 
 set -euo pipefail
@@ -23,58 +24,122 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY_ENTRY="${SCRIPT_DIR}/src_py/agent_mcp_friend/pluto_mcp_friend.py"
 CONFIG_FILE="${SCRIPT_DIR}/config/pluto_config.json"
 REQUIREMENTS="${SCRIPT_DIR}/requirements.txt"
+ROLES_DIR="${SCRIPT_DIR}/library/roles"
 VENV_DIR="/tmp/pluto/.venv"
+DEFAULT_HOST="127.0.0.1"
+DEFAULT_HTTP_PORT="9201"
+DEFAULT_TCP_PORT="9200"
 PLUTO_VERSION="$(head -1 "${SCRIPT_DIR}/VERSION.md" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')"
 
 # ── Colours ──────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-DIM='\033[2m'
-NC='\033[0m'
+# Defined as real ANSI escape bytes (not the \033 literal) so heredocs that
+# substitute these vars produce sequences the terminal actually interprets,
+# even when rendered via plain `cat`.
+RED=$(printf '\033[0;31m')
+GREEN=$(printf '\033[0;32m')
+YELLOW=$(printf '\033[0;33m')
+CYAN=$(printf '\033[0;36m')
+BOLD=$(printf '\033[1m')
+DIM=$(printf '\033[2m')
+NC=$(printf '\033[0m')
 
-info()  { echo -e "${CYAN}[pluto-mcp]${NC} $*"; }
-ok()    { echo -e "${GREEN}[pluto-mcp]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[pluto-mcp]${NC} $*"; }
-err()   { echo -e "${RED}[pluto-mcp]${NC} $*" >&2; }
+info()    { echo -e "${CYAN}[pluto-mcp]${NC} $*"; }
+ok()      { echo -e "${GREEN}[pluto-mcp]${NC} $*"; }
+warn()    { echo -e "${YELLOW}[pluto-mcp]${NC} $*"; }
+err()     { echo -e "${RED}[pluto-mcp]${NC} $*" >&2; }
+section() { echo ""; echo -e "${BOLD}${CYAN}▶  $*${NC}"; }
 
-KNOWN_FRAMEWORKS=("claude" "copilot" "aider" "cursor")
+KNOWN_FRAMEWORKS=("claude" "cursor" "aider" "copilot")
+
+# ── Help text ────────────────────────────────────────────────────────────────
 
 show_help() {
     cat <<EOF
 PlutoMCPFriend ${PLUTO_VERSION} — Pluto coordination over MCP.
 
 Usage:
-  $(basename "$0") --agent-id <name> [options] [-- agent-command...]
+  $(basename "$0")                                        # guided wizard
+  $(basename "$0") --agent-id <name> [options]           # expert mode
+  $(basename "$0") --help
+
+What it does:
+  Registers a Pluto MCP server with your agent CLI so that Pluto operations
+  (sending messages, acquiring locks, assigning tasks) become native tool
+  calls instead of curl commands. The adapter holds your session token,
+  auto-renews lock TTLs, and surfaces inbox messages on every tool result.
 
 Options:
-  --agent-id <name>       Agent identity in the Pluto network (required).
-  --framework <name>      claude | copilot | aider | cursor.
-                          Auto-detected if omitted.
-  --role <name|path>      Apply a role from library/roles/<name>.md on first
-                          turn (Claude only via --append-system-prompt; for
-                          other frameworks use the slash command after launch).
-  --host <ip>             Pluto server host (default: from config or localhost).
-  --http-port <port>      Pluto HTTP port (default: from config or 9001).
+  --agent-id <name>       Agent identity in the Pluto network. Skipping this
+                          flag in an interactive terminal launches the wizard.
+  --framework <name>      claude | cursor | aider | copilot. Auto-detected.
+  --role <name|path>      Apply a role from library/roles/<name>.md on the
+                          first turn (Claude only via --append-system-prompt).
+  --host <ip>             Pluto server host (default: from config / ${DEFAULT_HOST}).
+  --http-port <port>      Pluto HTTP port (default: from config / ${DEFAULT_HTTP_PORT}).
   --ttl-ms <ms>           Session TTL in ms (default: 600000).
-  --no-launch             Just generate .mcp.json and print the launch hint;
-                          do not start the framework CLI.
+  --no-launch             Generate .mcp.json but do not start the framework.
+  --no-wizard             Refuse the interactive wizard; require all args.
   --log-level <lvl>       DEBUG | INFO | WARNING | ERROR (default: WARNING).
-  --version               Show version and exit.
+  --version               Print version and exit.
   --help                  Show this help.
   -- <cmd...>             Pass everything after -- to the agent CLI verbatim.
 
-Environment:
-  The script writes a project-local .mcp.json next to itself; existing
-  entries are preserved when possible.
-
 Examples:
+  $(basename "$0")                                                       # wizard
   $(basename "$0") --agent-id coder-1 --framework claude --role specialist
-  $(basename "$0") --agent-id worker-1 --framework cursor
-  $(basename "$0") --agent-id reviewer-1 --no-launch        # just generate .mcp.json
+  $(basename "$0") --agent-id reviewer-1 --no-launch                    # config only
 EOF
+}
+
+# ── Banner ───────────────────────────────────────────────────────────────────
+
+show_banner() {
+    cat <<BANNER
+
+    ╔═══════════════════════════════════════════════════╗
+    ║                                                   ║
+    ║   ★  PlutoMCPFriend  ${PLUTO_VERSION}                       ║
+    ║      Pluto Coordination via MCP Tools             ║
+    ║                                                   ║
+    ╚═══════════════════════════════════════════════════╝
+BANNER
+}
+
+show_what_it_is() {
+    cat <<EOF
+
+  ${BOLD}What is PlutoMCPFriend?${NC}
+  ${DIM}─────────────────────────${NC}
+  An MCP (Model Context Protocol) adapter for the Pluto coordination
+  server. It exposes Pluto operations as native tool calls inside
+  Claude Code, Cursor, Aider, and other MCP-capable agent CLIs:
+
+    ${CYAN}pluto_send${NC}            send a message to another agent
+    ${CYAN}pluto_broadcast${NC}       broadcast to every connected agent
+    ${CYAN}pluto_recv${NC}            drain pending inbox messages
+    ${CYAN}pluto_lock_acquire${NC}    grab a write/read lock (auto-renewed)
+    ${CYAN}pluto_lock_release${NC}    release the lock + cancel renewal
+    ${CYAN}pluto_task_assign${NC}     assign a task to another agent
+    ${CYAN}pluto_task_update${NC}     update task status (in_progress, completed, ...)
+    ${CYAN}pluto_list_agents${NC}     discover connected peers
+    ${DIM}... and 8 more.  See: docs/guide/pluto-mcp-friend.md${NC}
+
+  Inbound messages are auto-attached to any tool result under
+  ${CYAN}_pluto_inbox${NC}, so the agent picks them up as a free side-effect of
+  doing Pluto-related work.
+
+EOF
+}
+
+show_disclaimer() {
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  DISCLAIMER                                                      ║${NC}"
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "  Pluto is provided ${BOLD}as-is${NC} for research and development purposes only,"
+    echo -e "  with no warranty of any kind. You — the user — are responsible for"
+    echo -e "  any harm, data loss, or unintended actions taken by AI agents you"
+    echo -e "  coordinate via Pluto. Use only in environments you control."
+    echo ""
 }
 
 # ── venv bootstrap ──────────────────────────────────────────────────────────
@@ -85,10 +150,9 @@ ensure_venv() {
         mkdir -p "$(dirname "${VENV_DIR}")"
         python3 -m venv "${VENV_DIR}"
     fi
-    # Install / refresh deps if requirements.txt is newer than the venv marker.
     local marker="${VENV_DIR}/.requirements-installed"
     if [[ ! -f "${marker}" ]] || [[ "${REQUIREMENTS}" -nt "${marker}" ]]; then
-        info "Installing Pluto Python dependencies ..."
+        info "Installing Pluto Python dependencies (mcp SDK) ..."
         "${VENV_DIR}/bin/pip" install -q --upgrade pip >/dev/null 2>&1 || true
         if ! "${VENV_DIR}/bin/pip" install -q -r "${REQUIREMENTS}"; then
             err "pip install -r ${REQUIREMENTS} failed."
@@ -98,7 +162,7 @@ ensure_venv() {
     fi
 }
 
-# ── Pluto server reachability ───────────────────────────────────────────────
+# ── Pluto server health ─────────────────────────────────────────────────────
 
 read_config_value() {
     local key="$1"
@@ -117,24 +181,70 @@ except Exception:
 PYEOF
 }
 
-check_pluto_running() {
+server_health() {
     local host="$1" port="$2"
-    if curl -fsS --max-time 2 "http://${host}:${port}/health" >/dev/null 2>&1; then
-        local version
-        version=$(curl -fsS --max-time 2 "http://${host}:${port}/health" \
-            | "${VENV_DIR}/bin/python" -c 'import json,sys;print(json.load(sys.stdin).get("version","?"))' 2>/dev/null || echo "?")
-        ok "Pluto server reachable at ${host}:${port} (v${version})"
+    if curl -fsS --max-time 2 "http://${host}:${port}/health" 2>/dev/null; then
         return 0
     fi
-    warn "Pluto server unreachable at ${host}:${port}"
-    warn "Start the server first:  ./PlutoServer.sh --daemon"
     return 1
+}
+
+server_version() {
+    local host="$1" port="$2"
+    server_health "$host" "$port" | "${VENV_DIR}/bin/python" -c \
+        'import json,sys
+try:
+  print(json.load(sys.stdin).get("version","?"))
+except Exception:
+  print("?")' 2>/dev/null || echo "?"
+}
+
+# Print server status; return 0 if reachable, 1 otherwise.
+check_pluto_reachable() {
+    local host="$1" port="$2"
+    info "Checking Pluto server at ${BOLD}${host}:${port}${NC} ..."
+    if server_health "$host" "$port" >/dev/null 2>&1; then
+        local v
+        v=$(server_version "$host" "$port")
+        ok "Pluto v${v} is ${GREEN}ONLINE${NC}"
+        return 0
+    fi
+    warn "Pluto server is ${YELLOW}OFFLINE${NC} at ${host}:${port}"
+    return 1
+}
+
+offer_to_start_server() {
+    if ! [[ -t 0 ]]; then
+        return 1
+    fi
+    echo ""
+    echo -e "  Pluto is not running. The MCP adapter cannot register without it."
+    echo ""
+    read -rp "  Start Pluto server in the background now? [Y/n] " ans
+    ans="${ans:-y}"
+    case "${ans,,}" in
+        y|yes)
+            if [[ ! -x "${SCRIPT_DIR}/PlutoServer.sh" ]]; then
+                err "PlutoServer.sh not found or not executable."
+                return 1
+            fi
+            info "Running ./PlutoServer.sh --daemon ..."
+            if ! "${SCRIPT_DIR}/PlutoServer.sh" --daemon; then
+                err "Failed to start Pluto server."
+                return 1
+            fi
+            sleep 1
+            return 0
+            ;;
+        *)
+            warn "Continuing without Pluto. The agent will start, but pluto_* tools will return errors until the server is up."
+            return 0
+            ;;
+    esac
 }
 
 # ── .mcp.json generation ────────────────────────────────────────────────────
 
-# Writes ${SCRIPT_DIR}/.mcp.json with a "pluto" entry pointing at our adapter.
-# Preserves any existing top-level mcpServers entries (other servers).
 write_mcp_json() {
     local agent_id="$1" host="$2" port="$3" ttl="$4" log_level="$5"
     local target="${SCRIPT_DIR}/.mcp.json"
@@ -168,31 +278,31 @@ print(target)
 PYEOF
 }
 
-# ── Framework detection / launch ────────────────────────────────────────────
+# ── Role discovery ──────────────────────────────────────────────────────────
 
-auto_detect_framework() {
-    for fw in "${KNOWN_FRAMEWORKS[@]}"; do
-        if command -v "$fw" >/dev/null 2>&1; then
-            echo "$fw"
-            return 0
-        fi
+list_available_roles() {
+    [[ -d "${ROLES_DIR}" ]] || return 0
+    for f in "${ROLES_DIR}"/*.md; do
+        [[ -f "$f" ]] || continue
+        local name
+        name="$(basename "$f" .md)"
+        case "$name" in
+            README|_*) continue ;;
+        esac
+        echo "$name"
     done
-    return 1
 }
 
-resolve_role_content() {
-    local role="$1"
-    local roles_dir="${SCRIPT_DIR}/library/roles"
-    local path
-    if [[ -f "$role" ]]; then
-        path="$role"
-    elif [[ -f "${roles_dir}/${role}.md" ]]; then
-        path="${roles_dir}/${role}.md"
-    else
-        err "Role not found: ${role}"
-        return 1
-    fi
-    cat "$path"
+# ── Framework detection ─────────────────────────────────────────────────────
+
+detect_frameworks() {
+    local found=()
+    for fw in "${KNOWN_FRAMEWORKS[@]}"; do
+        if command -v "$fw" >/dev/null 2>&1; then
+            found+=("$fw")
+        fi
+    done
+    printf '%s\n' "${found[@]}"
 }
 
 build_role_system_prompt() {
@@ -206,10 +316,225 @@ print(build_role_prompt_body(role, host=host, http_port=int(port), agent_id=agen
 PYEOF
 }
 
+print_post_launch_tips() {
+    local agent_id="$1" host="$2" port="$3" framework="$4"
+    cat <<EOF
+
+  ${BOLD}${GREEN}Setup complete.${NC}  Launching ${BOLD}${framework}${NC} ...
+
+  ${BOLD}Inside your agent:${NC}
+    • Pluto operations are tool calls — type a request and the agent
+      will call e.g. ${CYAN}pluto_lock_acquire${NC} on its own.
+    • Switch role mid-session via slash menu:
+        ${DIM}/pluto-role-specialist${NC}
+        ${DIM}/pluto-role-orchestrator${NC}
+        ${DIM}/pluto-role-reviewer${NC}
+    • Pending inbox without acking:
+        ${DIM}@pluto://inbox${NC}
+
+  ${BOLD}Send a test message from another terminal:${NC}
+    curl -X POST http://${host}:${port}/messages/send \\
+      -H 'Content-Type: application/json' \\
+      -d '{"to":"${agent_id}","payload":{"type":"hello","text":"Welcome!"}}'
+
+  ${BOLD}Stop the Pluto server later with:${NC}
+    ./PlutoServer.sh --kill
+
+EOF
+}
+
+# ── Wizard steps ────────────────────────────────────────────────────────────
+
+wizard_intro() {
+    show_banner
+    show_what_it_is
+    show_disclaimer
+    if [[ "${SCRIPT_DIR}" != "${PWD}" ]]; then
+        info "Pluto install dir: ${BOLD}${SCRIPT_DIR}${NC}"
+        echo ""
+    fi
+    cat <<EOF
+  ${BOLD}This wizard will:${NC}
+    1. Verify the Pluto server is running (and offer to start it if not)
+    2. Ask for an agent ID for this session
+    3. Optionally pick a role for the agent
+    4. Detect / pick the agent CLI to launch
+    5. Generate .mcp.json and launch the agent CLI
+
+EOF
+    read -rp "  Press Enter to begin (Ctrl-C to abort) ... " _ < /dev/tty
+}
+
+wizard_step_server() {
+    section "Step 1/5 — Pluto server"
+    local host="$1" port="$2"
+    if check_pluto_reachable "$host" "$port"; then
+        return 0
+    fi
+    offer_to_start_server || true
+    if check_pluto_reachable "$host" "$port"; then
+        return 0
+    fi
+    return 1
+}
+
+wizard_step_agent_id() {
+    {
+        section "Step 2/5 — Agent ID"
+        cat <<EOF
+
+  Pick a unique identifier for this agent. Other agents will use this
+  name when sending you messages. Examples: ${CYAN}coder-1${NC}, ${CYAN}reviewer-2${NC},
+  ${CYAN}orchestrator${NC}.
+
+EOF
+    } >&2
+    local id=""
+    while [[ -z "$id" ]]; do
+        # `read -rp` writes the prompt to stderr already.
+        read -rp "  Agent ID: " id < /dev/tty
+        if [[ -z "$id" ]]; then
+            warn "Agent ID cannot be empty." >&2
+        fi
+    done
+    echo "$id"
+}
+
+wizard_step_role() {
+    section "Step 3/5 — Role" >&2
+    local roles=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && roles+=("$line")
+    done < <(list_available_roles)
+
+    if (( ${#roles[@]} == 0 )); then
+        warn "No role files found in ${ROLES_DIR}. Skipping role selection." >&2
+        return 0
+    fi
+
+    {
+        cat <<EOF
+
+  ${DIM}A role is an instruction set (e.g. "you are a code reviewer ...") that
+  is applied on the agent's first turn. You can also switch roles later
+  inside the agent via the slash menu. Pick one, or skip.${NC}
+
+    ${BOLD}0${NC}) ${DIM}none — no role applied; pick later via /pluto-role-<name>${NC}
+EOF
+        local i=1
+        for r in "${roles[@]}"; do
+            printf "    ${BOLD}%d${NC}) %s\n" "$i" "$r"
+            i=$((i + 1))
+        done
+        echo ""
+    } >&2
+
+    local choice
+    while true; do
+        read -rp "  Choice [0-${#roles[@]}, default 0]: " choice < /dev/tty
+        choice="${choice:-0}"
+        if [[ "$choice" == "0" ]]; then
+            return 0
+        fi
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#roles[@]} )); then
+            echo "${roles[$((choice - 1))]}"
+            return 0
+        fi
+        warn "Invalid choice. Enter a number between 0 and ${#roles[@]}." >&2
+    done
+}
+
+wizard_step_framework() {
+    section "Step 4/5 — Agent CLI" >&2
+    local available=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && available+=("$line")
+    done < <(detect_frameworks)
+
+    if (( ${#available[@]} == 0 )); then
+        {
+            warn "No supported agent CLI found in PATH (${KNOWN_FRAMEWORKS[*]})."
+            echo ""
+            cat <<EOF
+  ${DIM}You can install one and re-run, or pass --no-launch to generate
+  .mcp.json without launching anything.${NC}
+
+EOF
+        } >&2
+        local cli=""
+        read -rp "  Type a CLI name to attempt anyway, or 'skip' to --no-launch: " cli < /dev/tty
+        if [[ -z "$cli" || "$cli" == "skip" ]]; then
+            echo "__skip__"
+        else
+            echo "$cli"
+        fi
+        return 0
+    fi
+
+    if (( ${#available[@]} == 1 )); then
+        local fw="${available[0]}"
+        info "Auto-detected: ${BOLD}${fw}${NC} ($(command -v "$fw"))" >&2
+        echo "$fw"
+        return 0
+    fi
+
+    {
+        cat <<EOF
+
+  Multiple agent CLIs found. Pick one:
+
+EOF
+        local i=1
+        for fw in "${available[@]}"; do
+            printf "    ${BOLD}%d${NC}) %s   ${DIM}(%s)${NC}\n" "$i" "$fw" "$(command -v "$fw")"
+            i=$((i + 1))
+        done
+        echo ""
+    } >&2
+
+    local choice
+    while true; do
+        read -rp "  Choice [1-${#available[@]}]: " choice < /dev/tty
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#available[@]} )); then
+            echo "${available[$((choice - 1))]}"
+            return 0
+        fi
+        warn "Invalid choice." >&2
+    done
+}
+
+wizard_step_confirm() {
+    section "Step 5/5 — Ready to launch"
+    local agent_id="$1" host="$2" port="$3" role="$4" framework="$5"
+
+    cat <<EOF
+
+  ${BOLD}Summary:${NC}
+    Agent ID    : ${CYAN}${agent_id}${NC}
+    Pluto       : ${host}:${port}
+    Role        : ${role:-${DIM}(none)${NC}}
+    Framework   : ${framework}
+    .mcp.json   : ${SCRIPT_DIR}/.mcp.json
+
+EOF
+    if [[ "${framework}" != "claude" && -n "${role}" ]]; then
+        warn "${framework} does not support startup system-prompt injection."
+        warn "After launch, run the slash command: ${CYAN}/pluto-role-${role}${NC}"
+        echo ""
+    fi
+
+    read -rp "  Press Enter to launch (Ctrl-C to abort) ... " _ < /dev/tty
+    echo ""
+}
+
+# ── Launch ──────────────────────────────────────────────────────────────────
+
 launch_framework() {
     local framework="$1" role="$2" agent_id="$3" host="$4" port="$5"
     shift 5
     local extra=("$@")
+
+    print_post_launch_tips "${agent_id}" "${host}" "${port}" "${framework}"
 
     case "${framework}" in
         claude)
@@ -220,21 +545,12 @@ launch_framework() {
                 cmd+=("--append-system-prompt" "${sys_prompt}")
             fi
             cmd+=("${extra[@]}")
-            info "Launching: claude --mcp-config .mcp.json ${role:+(role=${role})}"
             exec "${cmd[@]}"
             ;;
-        cursor|aider|copilot)
-            warn "${framework} does not support startup system-prompt injection."
-            if [[ -n "${role}" ]]; then
-                warn "Once ${framework} is open, run the slash command:  /pluto-role-${role}"
-            fi
+        cursor|aider|copilot|*)
             local cmd=("${framework}" "${extra[@]}")
             info "Launching: ${cmd[*]}"
             exec "${cmd[@]}"
-            ;;
-        *)
-            err "Unknown framework: ${framework}"
-            exit 1
             ;;
     esac
 }
@@ -250,6 +566,7 @@ main() {
     local ttl_ms="600000"
     local log_level="WARNING"
     local no_launch=false
+    local no_wizard=false
     local extra_cmd=()
     local past_separator=false
 
@@ -270,51 +587,95 @@ main() {
             --ttl-ms) ttl_ms="$2"; shift 2 ;;
             --log-level) log_level="$2"; shift 2 ;;
             --no-launch) no_launch=true; shift ;;
+            --no-wizard) no_wizard=true; shift ;;
             --) past_separator=true; shift ;;
             *)  err "Unknown option: $1"; show_help; exit 1 ;;
         esac
     done
 
-    if [[ -z "${agent_id}" ]]; then
-        err "--agent-id is required."
-        show_help
-        exit 1
-    fi
-
     ensure_venv
 
     # Resolve host/port from config when not given.
-    if [[ -z "${host}" ]]; then
-        host=$(read_config_value "host_ip" "localhost")
+    [[ -n "${host}" ]] || host=$(read_config_value "host_ip" "${DEFAULT_HOST}")
+    [[ -n "${http_port}" ]] || http_port=$(read_config_value "host_http_port" "${DEFAULT_HTTP_PORT}")
+
+    # ── Wizard mode trigger ─────────────────────────────────────────────────
+    # Wizard runs when --agent-id is missing AND stdin is a tty AND
+    # --no-wizard wasn't passed. Otherwise fail-fast in non-interactive
+    # environments.
+    if [[ -z "${agent_id}" ]]; then
+        if $no_wizard; then
+            err "--agent-id is required (--no-wizard prevents the interactive prompt)."
+            show_help
+            exit 1
+        fi
+        if [[ ! -t 0 ]]; then
+            err "--agent-id is required when stdin is not a terminal."
+            show_help
+            exit 1
+        fi
+
+        wizard_intro
+
+        if ! wizard_step_server "${host}" "${http_port}"; then
+            warn "Continuing without a reachable Pluto server."
+        fi
+
+        agent_id=$(wizard_step_agent_id)
+        if [[ -z "${role}" ]]; then
+            role=$(wizard_step_role)
+        fi
+        if [[ -z "${framework}" ]]; then
+            framework=$(wizard_step_framework)
+            if [[ "${framework}" == "__skip__" ]]; then
+                no_launch=true
+                framework=""
+            fi
+        fi
+
+        # Full summary + confirm before launch.
+        if ! $no_launch; then
+            wizard_step_confirm "${agent_id}" "${host}" "${http_port}" "${role}" "${framework}"
+        fi
+    else
+        # Expert mode: brief banner + reachability check, no prompts.
+        show_banner
+        info "Agent ID:   ${BOLD}${agent_id}${NC}"
+        info "Pluto:      ${host}:${http_port}"
+        [[ -n "${role}" ]] && info "Role:       ${role}"
+        check_pluto_reachable "${host}" "${http_port}" || \
+            warn "Continuing — pluto_* tools will return errors until the server is up."
     fi
-    if [[ -z "${http_port}" ]]; then
-        http_port=$(read_config_value "host_http_port" "9001")
-    fi
 
-    info "Agent ID:   ${BOLD}${agent_id}${NC}"
-    info "Pluto:      ${host}:${http_port}"
-    [[ -n "${role}" ]] && info "Role:       ${role}"
-
-    check_pluto_running "${host}" "${http_port}" || true
-
+    # ── Generate .mcp.json ──────────────────────────────────────────────────
     local mcp_json
     mcp_json=$(write_mcp_json "${agent_id}" "${host}" "${http_port}" "${ttl_ms}" "${log_level}")
     ok "Wrote MCP config:  ${mcp_json}"
 
     if $no_launch; then
-        info "Skipping framework launch (--no-launch)."
-        info "To use this config:  claude --mcp-config ${mcp_json}"
+        cat <<EOF
+
+  ${BOLD}Use this config from any MCP-capable agent:${NC}
+    ${CYAN}claude --mcp-config ${mcp_json}${NC}
+    ${CYAN}cursor  ${DIM}# add ${mcp_json} via your Cursor MCP settings${NC}
+
+EOF
         exit 0
     fi
 
+    # Auto-detect framework if not chosen yet (covers expert mode without --framework)
     if [[ -z "${framework}" ]]; then
-        if framework=$(auto_detect_framework); then
-            info "Auto-detected framework: ${framework}"
-        else
-            err "No supported framework found in PATH."
-            err "Install one of: ${KNOWN_FRAMEWORKS[*]}, or pass --framework."
+        local detected=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && detected+=("$line")
+        done < <(detect_frameworks)
+        if (( ${#detected[@]} == 0 )); then
+            err "No supported agent CLI found in PATH (${KNOWN_FRAMEWORKS[*]})."
+            err "Install one of them, or re-run with --no-launch."
             exit 1
         fi
+        framework="${detected[0]}"
+        info "Auto-detected framework: ${framework}"
     fi
 
     launch_framework "${framework}" "${role}" "${agent_id}" "${host}" "${http_port}" "${extra_cmd[@]}"

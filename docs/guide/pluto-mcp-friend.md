@@ -158,7 +158,7 @@ Either way, the role is also reachable mid-session via the slash menu
 | `--framework <name>` | auto-detect | `claude`, `cursor`, `aider`, `copilot` |
 | `--role <name|path>` | none | role to auto-apply on Claude; slash-tip on others |
 | `--host <ip>` | from config / `localhost` | Pluto server host |
-| `--http-port <port>` | from config / `9001` | Pluto HTTP port |
+| `--http-port <port>` | from config / `9201` | Pluto HTTP port |
 | `--ttl-ms <ms>` | `600000` | session TTL |
 | `--log-level <lvl>` | `WARNING` | adapter stderr verbosity |
 | `--no-launch` | off | write `.mcp.json`, don't start the framework |
@@ -181,7 +181,7 @@ Either way, the role is also reachable mid-session via the slash menu
         "/path/to/src_py/agent_mcp_friend/pluto_mcp_friend.py",
         "--agent-id", "coder-1",
         "--host", "127.0.0.1",
-        "--http-port", "9001",
+        "--http-port", "9201",
         "--ttl-ms", "600000",
         "--log-level", "WARNING"
       ]
@@ -206,7 +206,7 @@ claude --mcp-config /path/to/.mcp.json
 ```
    Claude Code / Cursor / Aider                    Pluto Erlang server
               │                                            │
-              │  JSON-RPC stdio                            │  HTTP :9001
+              │  JSON-RPC stdio                            │  HTTP :9201
               │  (tools, prompts, resources,               │  (existing API,
               │   notifications/resources/updated)         │   unchanged)
               │                                            │

@@ -126,6 +126,26 @@ clear_stale_epmd() {
     fi
 }
 
+warn_if_exposed() {
+    case "${PLUTO_HOST}" in
+        127.*|::1|localhost) return 0 ;;
+    esac
+    echo ""
+    echo -e "${RED}╔══════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║  ⚠  PLUTO IS EXPOSED TO THE NETWORK                              ║${NC}"
+    echo -e "${RED}╚══════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "  host_ip = ${BOLD}${PLUTO_HOST}${NC}  (TCP ${PLUTO_PORT}, HTTP ${PLUTO_HTTP_PORT})"
+    echo ""
+    echo -e "  Pluto will accept connections from ${BOLD}any host that can reach this${NC}"
+    echo -e "  ${BOLD}machine${NC} on those ports — your LAN, Wi-Fi, or the public internet"
+    echo -e "  (depending on your firewall). Pluto's auth is session-token-based"
+    echo -e "  and is not designed to be hardened against untrusted networks."
+    echo ""
+    echo -e "  To restrict to this host only, set:"
+    echo -e "    ${CYAN}\"host_ip\": \"127.0.0.1\"${NC}  in ${CYAN}config/pluto_config.json${NC}"
+    echo ""
+}
+
 show_disclaimer() {
     echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${YELLOW}║  DISCLAIMER & LIABILITY NOTICE                                   ║${NC}"
@@ -350,6 +370,7 @@ cmd_clean() {
 
 cmd_start_foreground() {
     show_disclaimer
+    warn_if_exposed
     do_build
     if ! check_node_conflict; then
         err "Cannot start — another Pluto node is already running."
@@ -361,6 +382,7 @@ cmd_start_foreground() {
 
 cmd_start_daemon() {
     show_disclaimer
+    warn_if_exposed
 
     # Fast path: if a Pluto daemon is already up and responding, just say so
     # and exit cleanly. Avoids redundant build + kill cycles when the user

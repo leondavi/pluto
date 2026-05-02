@@ -17,7 +17,7 @@
 -include("pluto.hrl").
 
 %% API
--export([get/2, load_json_config/0]).
+-export([get/2, load_json_config/0, get_bind_ip/0]).
 
 %%====================================================================
 %% API
@@ -28,6 +28,29 @@
 -spec get(atom(), term()) -> term().
 get(Key, Default) ->
     application:get_env(?APP, Key, Default).
+
+%% @doc Resolve the IP the listeners should bind to.
+%%
+%% Reads the `host' application env (populated from `host_ip' in
+%% pluto_config.json) and parses it via `inet:parse_address/1'. Falls
+%% back to loopback (`{127,0,0,1}') on missing or unparseable values
+%% — exposing Pluto to the world should always be an explicit choice.
+-spec get_bind_ip() -> inet:ip_address().
+get_bind_ip() ->
+    Host = get(host, "127.0.0.1"),
+    HostStr = case Host of
+        H when is_list(H)   -> H;
+        H when is_binary(H) -> binary_to_list(H);
+        H when is_atom(H)   -> atom_to_list(H);
+        _                   -> "127.0.0.1"
+    end,
+    case inet:parse_address(HostStr) of
+        {ok, Ip} -> Ip;
+        {error, _} ->
+            ?LOG_WARN("pluto_config: cannot parse host_ip ~p, falling back to 127.0.0.1",
+                      [HostStr]),
+            {127,0,0,1}
+    end.
 
 %% @doc Load configuration from the JSON config file and merge recognised
 %% keys into the pluto application environment.  Values in the JSON file

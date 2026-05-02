@@ -149,9 +149,12 @@ def list_roles(roles_dir: str | None = None) -> list[dict]:
         return []
     roles = []
     for entry in sorted(os.listdir(directory)):
-        if entry.endswith(".md"):
-            name = entry[:-3]  # strip .md
-            roles.append({"name": name, "path": os.path.join(directory, entry)})
+        if not entry.endswith(".md"):
+            continue
+        if entry.startswith("_") or entry == "README.md":
+            continue
+        name = entry[:-3]  # strip .md
+        roles.append({"name": name, "path": os.path.join(directory, entry)})
     return roles
 
 

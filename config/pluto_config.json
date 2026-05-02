@@ -2,6 +2,6 @@
   "pluto_server": {
     "host_ip": "127.0.0.1",
     "host_tcp_port": 9200,
-    "host_http_port": 9201
+    "host_http_port": 9202
   }
 }

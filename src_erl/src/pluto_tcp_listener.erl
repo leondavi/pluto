@@ -44,6 +44,7 @@ init([]) ->
     Port    = pluto_config:get(tcp_port,    ?DEFAULT_TCP_PORT),
     Backlog = pluto_config:get(tcp_backlog, ?DEFAULT_TCP_BACKLOG),
 
+    Ip = pluto_config:get_bind_ip(),
     Opts = [
         binary,
         {packet, line},          %% line-delimited framing
@@ -51,12 +52,15 @@ init([]) ->
         {reuseaddr, true},
         {backlog, Backlog},
         {buffer, 65536},
-        {recbuf, 65536}
+        {recbuf, 65536},
+        {ip, Ip}
     ],
 
     case gen_tcp:listen(Port, Opts) of
         {ok, ListenSock} ->
-            ?LOG_INFO("pluto_tcp_listener listening on port ~w", [Port]),
+            ?LOG_INFO("pluto_tcp_listener listening on ~s:~w",
+                      [inet:ntoa(Ip), Port]),
+            warn_if_exposed(Ip, tcp, Port),
             %% Kick off the accept loop
             self() ! accept,
             {ok, #state{listen_sock = ListenSock, port = Port}};
@@ -107,3 +111,13 @@ handle_info(_Info, State) ->
 terminate(_Reason, #state{listen_sock = LSock}) ->
     gen_tcp:close(LSock),
     ok.
+
+%% @private If the listener is bound to anything other than loopback, the
+%% server is reachable from the LAN / world. Make that visible in the log.
+warn_if_exposed({127, _, _, _}, _Proto, _Port) -> ok;
+warn_if_exposed({0, 0, 0, 0, 0, 0, 0, 1}, _Proto, _Port) -> ok;
+warn_if_exposed(Ip, Proto, Port) ->
+    ?LOG_WARN("⚠ Pluto ~p listener bound to ~s:~w — Pluto is EXPOSED to the network. "
+              "Set pluto_server.host_ip to 127.0.0.1 in config/pluto_config.json to "
+              "restrict access to this host.",
+              [Proto, inet:ntoa(Ip), Port]).

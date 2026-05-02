@@ -1,8 +1,19 @@
-## Name of the node — use long name with explicit IP to avoid hostname resolution issues
+## Name of the node — use long name with explicit IP to avoid hostname
+## resolution issues. PlutoServer.sh regenerates this file on every start
+## with a fresh cookie and the host_ip-derived dist binding; the values
+## below are the safe-by-default fallback for direct bin/pluto launches.
 -name pluto@127.0.0.1
 
-## Cookie for distributed erlang (not used in v1, but set for safety)
--setcookie pluto_secret
+## Erlang distribution cookie. PlutoServer.sh replaces this with a random
+## value on every start. Replace this placeholder yourself if you bypass
+## the script — leaving it as-is allows any peer that knows the literal
+## "REPLACE_AT_RUNTIME" string to RPC into the node.
+-setcookie REPLACE_AT_RUNTIME
+
+## Bind the Erlang distribution listener to loopback so remote hosts
+## cannot reach it. PlutoServer.sh rewrites the tuple from host_ip on
+## every start.
+-kernel inet_dist_use_interface {127,0,0,1}
 
 ## Enable heart for crash recovery
 ## -heart

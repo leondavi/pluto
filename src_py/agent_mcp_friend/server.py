@@ -55,6 +55,7 @@ class PlutoMCPServer:
         http_port: int = 9201,
         ttl_ms: int = 600_000,
         wait_timeout_s: int = 300,
+        iterations: int = 15,
         roles_dir: Optional[str] = None,
         protocol_path: Optional[str] = None,
         guide_path: Optional[str] = None,
@@ -64,6 +65,7 @@ class PlutoMCPServer:
         self.http_port = http_port
         self.ttl_ms = ttl_ms
         self.wait_timeout_s = max(1, int(wait_timeout_s))
+        self.iterations = max(1, int(iterations))
         self.roles_dir = roles_dir
         self.protocol_path = protocol_path
         self.guide_path = guide_path
@@ -105,6 +107,7 @@ class PlutoMCPServer:
         port = self.http_port
         agent_id = self.agent_id
         wait_s = self.wait_timeout_s
+        iterations = self.iterations
         roles_dir = self.roles_dir
         protocol_path = self.protocol_path
         guide_path = self.guide_path
@@ -123,6 +126,7 @@ class PlutoMCPServer:
                 http_port=port,
                 agent_id=agent_id,
                 wait_timeout_s=wait_s,
+                iterations=iterations,
                 protocol_path=protocol_path,
             )
 
@@ -140,6 +144,7 @@ class PlutoMCPServer:
                 http_port=port,
                 agent_id=agent_id,
                 wait_timeout_s=wait_s,
+                iterations=iterations,
                 guide_path=guide_path,
             )
 
@@ -165,7 +170,9 @@ class PlutoMCPServer:
             ),
         )
         def pluto_watch() -> str:
-            return build_watch_prompt_body(wait_timeout_s=wait_s)
+            return build_watch_prompt_body(
+                wait_timeout_s=wait_s, iterations=iterations,
+            )
 
         @self.mcp.prompt(
             name="pluto-status",
@@ -188,6 +195,7 @@ class PlutoMCPServer:
                         http_port=port,
                         agent_id=agent_id,
                         wait_timeout_s=wait_s,
+                        iterations=iterations,
                         roles_dir=roles_dir,
                         protocol_path=protocol_path,
                     )

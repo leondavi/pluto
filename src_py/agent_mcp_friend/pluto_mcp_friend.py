@@ -81,6 +81,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--iterations", type=int, default=15, metavar="N",
+        help=(
+            "How many short-poll iterations the watcher subagent runs "
+            "before exiting and letting the parent respawn it (default: "
+            "15). Total subagent lifetime ≈ iterations * wait-timeout-s "
+            "seconds (default 15 * 60 = 15 minutes). Larger values "
+            "reduce respawn-gap latency for orchestrators driving idle "
+            "agents; smaller values bound subagent runtime more tightly."
+        ),
+    )
+    parser.add_argument(
         "--roles-dir", default=None,
         help="Override the directory scanned for role prompt files.",
     )
@@ -118,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         http_port=http_port,
         ttl_ms=args.ttl_ms,
         wait_timeout_s=args.wait_timeout_s,
+        iterations=args.iterations,
         roles_dir=args.roles_dir,
     )
     try:

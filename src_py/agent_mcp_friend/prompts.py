@@ -64,12 +64,17 @@ def build_connection_block(
     http_port: int,
     agent_id: str,
     wait_timeout_s: int = 300,
+    iterations: int = 15,
 ) -> str:
     """The live-connection block appended to every prompt body.
 
     *wait_timeout_s* is embedded into the recommended
     ``pluto_wait_for_messages(N)`` call so the watcher cycle matches
     the launcher's ``--wait-timeout-s`` value.
+
+    *iterations* sets how many short-poll cycles the watcher subagent
+    runs before exiting and letting the parent respawn it. Total
+    subagent lifetime ≈ ``iterations * wait_timeout_s`` seconds.
     """
     return (
         f"---\n\n"
@@ -111,7 +116,7 @@ def build_connection_block(
         f"  1. Call pluto_wait_for_messages({wait_timeout_s}).\n"
         f"  2. If the response's count > 0, return the response JSON and stop.\n"
         f"  3. If count == 0, immediately go back to step 1 (do NOT sleep or delay).\n"
-        f"Stop after 5 iterations regardless and return whatever you\n"
+        f"Stop after {iterations} iterations regardless and return whatever you\n"
         f"have. Each iteration produces a tool-call output, which keeps\n"
         f"this subagent visible to Claude Code's stream watchdog —\n"
         f"a single long block would get killed at the 600 s silence\n"
@@ -126,7 +131,7 @@ def build_connection_block(
         f"need for any sleep between iterations — the call does all the\n"
         f"waiting. The subagent emits a tool-call result every <= {wait_timeout_s} s,\n"
         f"nowhere near the 600 s watchdog cutoff. Total subagent\n"
-        f"lifetime is bounded by 5 iterations (~{5 * wait_timeout_s} s) before\n"
+        f"lifetime is bounded by {iterations} iterations (~{iterations * wait_timeout_s} s) before\n"
         f"the parent respawns. This pattern survives both watchdog\n"
         f"timeouts and idle cleanup.\n\n"
         f"### When the watcher fails entirely\n\n"
@@ -143,9 +148,9 @@ def build_connection_block(
         f"user invoking ``/pluto-check`` when they want to flush.\n\n"
         f"### When the Task completes normally\n\n"
         f"Whenever a watcher Task ends — whether it returned messages,\n"
-        f"completed all 5 iterations empty, or timed out — **immediately\n"
+        f"completed all {iterations} iterations empty, or timed out — **immediately\n"
         f"spawn another watcher Task** with the same parameters. The\n"
-        f"subagent self-bounds at ~{5 * wait_timeout_s} s; the parent\n"
+        f"subagent self-bounds at ~{iterations * wait_timeout_s} s; the parent\n"
         f"chain keeps a watcher in flight indefinitely.\n\n"
         f"## Other ways messages can reach you\n\n"
         f"1. **Piggyback (free).** Any Pluto tool result includes any\n"
@@ -182,6 +187,7 @@ def build_role_prompt_body(
     http_port: int,
     agent_id: str,
     wait_timeout_s: int = 300,
+    iterations: int = 15,
     roles_dir: str | None = None,
     protocol_path: str | None = None,
 ) -> str:
@@ -220,7 +226,8 @@ def build_role_prompt_body(
             pass
 
     connection_block = build_connection_block(
-        host, http_port, agent_id, wait_timeout_s=wait_timeout_s,
+        host, http_port, agent_id,
+        wait_timeout_s=wait_timeout_s, iterations=iterations,
     )
 
     role_basename = os.path.basename(role_path)
@@ -240,6 +247,7 @@ def build_protocol_prompt_body(
     http_port: int,
     agent_id: str,
     wait_timeout_s: int = 300,
+    iterations: int = 15,
     protocol_path: str | None = None,
 ) -> str:
     """Standalone ``pluto-protocol`` prompt: just protocol + connection."""
@@ -252,7 +260,7 @@ def build_protocol_prompt_body(
         f"=== BEGIN protocol.md ===\n\n"
         f"{text}\n\n"
         f"=== END protocol.md ===\n\n"
-        f"{build_connection_block(host, http_port, agent_id, wait_timeout_s)}"
+        f"{build_connection_block(host, http_port, agent_id, wait_timeout_s, iterations)}"
     )
 
 
@@ -262,6 +270,7 @@ def build_guide_prompt_body(
     http_port: int,
     agent_id: str,
     wait_timeout_s: int = 300,
+    iterations: int = 15,
     guide_path: str | None = None,
 ) -> str:
     """Standalone ``pluto-guide`` prompt: agent guide + connection."""
@@ -272,7 +281,7 @@ def build_guide_prompt_body(
         text = f"(could not read {path}: {exc})"
     return (
         f"{text}\n\n"
-        f"{build_connection_block(host, http_port, agent_id, wait_timeout_s)}"
+        f"{build_connection_block(host, http_port, agent_id, wait_timeout_s, iterations)}"
     )
 
 
@@ -287,7 +296,9 @@ def build_check_prompt_body() -> str:
     )
 
 
-def build_watch_prompt_body(wait_timeout_s: int = 300) -> str:
+def build_watch_prompt_body(
+    wait_timeout_s: int = 300, iterations: int = 15,
+) -> str:
     """Start a long-poll watcher — invoked via the /pluto-watch slash command."""
     return (
         "Start watching the Pluto inbox so messages arrive without me "
@@ -303,7 +314,7 @@ def build_watch_prompt_body(wait_timeout_s: int = 300) -> str:
         f"  1. Call pluto_wait_for_messages({wait_timeout_s}).\n"
         "  2. If response.count > 0, return the response JSON and stop.\n"
         "  3. If count == 0, immediately go back to step 1 (do NOT sleep or delay).\n"
-        "Stop after 5 iterations regardless and return whatever you\n"
+        f"Stop after {iterations} iterations regardless and return whatever you\n"
         "have. Each iteration produces a tool-call output that keeps\n"
         "this subagent visible to Claude Code's stream watchdog — a\n"
         "single long block would get killed at the 600 s silence cutoff.\n"
@@ -312,8 +323,8 @@ def build_watch_prompt_body(wait_timeout_s: int = 300) -> str:
         "```\n\n"
         f"Each call blocks for up to {wait_timeout_s} s waiting for messages,\n"
         f"so the subagent emits a tool-call result every <= {wait_timeout_s} s —\n"
-        f"well under the 600 s watchdog. Total subagent lifetime ~{5 * wait_timeout_s} s.\n\n"
-        "When the Task completes (any reason — messages, empty after 5 "
+        f"well under the 600 s watchdog. Total subagent lifetime ~{iterations * wait_timeout_s} s.\n\n"
+        f"When the Task completes (any reason — messages, empty after {iterations} "
         "iterations, or watchdog), **immediately spawn another watcher "
         "Task** with the same parameters. The chain keeps a watcher in "
         "flight indefinitely.\n\n"

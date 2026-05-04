@@ -340,11 +340,26 @@ class TestPromptAssembly(unittest.TestCase):
         # The subagent prompt must describe a loop, not a single call.
         self.assertIn("loop", block.lower())
         # Bounded number of iterations so the subagent self-terminates
-        # before any platform-level cleanup.
-        self.assertIn("5 iterations", block)
+        # before any platform-level cleanup. Default is 15 (15 min total
+        # at 60s per call) — large enough to reduce respawn-gap latency
+        # but still bounded.
+        self.assertIn("15 iterations", block)
         # Must explain the watchdog reason so future maintainers don't
         # "simplify" it back to a single block.
         self.assertIn("watchdog", block.lower())
+
+    def test_connection_block_honours_custom_iterations(self):
+        """Orchestrators tune the iteration count via --iterations to trade
+        respawn-gap latency against subagent budget."""
+        block = build_connection_block(
+            host="h", http_port=1, agent_id="a",
+            wait_timeout_s=60, iterations=30,
+        )
+        self.assertIn("30 iterations", block)
+        # Total lifetime calculation reflects the new value.
+        self.assertIn(f"{30 * 60} s", block)
+        # Default value should not appear when overridden.
+        self.assertNotIn("15 iterations", block)
 
     def test_role_prompt_includes_role_and_connection(self):
         body = build_role_prompt_body(
@@ -406,8 +421,17 @@ class TestPromptAssembly(unittest.TestCase):
         stream watchdog never fires."""
         body = build_watch_prompt_body(wait_timeout_s=60)
         self.assertIn("loop", body.lower())
-        self.assertIn("5 iterations", body)
+        # Default iteration count is 15.
+        self.assertIn("15 iterations", body)
         self.assertIn("watchdog", body.lower())
+
+    def test_watch_prompt_honours_custom_iterations(self):
+        """``/pluto-watch`` must propagate the configured iteration count
+        so orchestrators can tune subagent lifetime without code changes."""
+        body = build_watch_prompt_body(wait_timeout_s=60, iterations=30)
+        self.assertIn("30 iterations", body)
+        self.assertIn(f"{30 * 60} s", body)
+        self.assertNotIn("15 iterations", body)
 
     def test_watch_prompt_honours_custom_timeout(self):
         body = build_watch_prompt_body(wait_timeout_s=120)

@@ -588,6 +588,13 @@ handle_cast({unregister, AgentId}, State) ->
             pluto_name_registry:release_name(AgentId),
             %% Remove the session record
             ets:delete(?ETS_SESSIONS, SessId),
+            %% Evict all HTTP session tokens for this agent. Without this,
+            %% an orphaned client could keep polling /agents/poll with the
+            %% old token after unregister and drain inbox messages destined
+            %% for whoever next claims the same agent_id. Grace-period
+            %% reconnects use session_id (not the token) so they are
+            %% unaffected — the reconnecting client gets a fresh token.
+            evict_http_sessions(AgentId),
             %% Notify other agents
             broadcast_event(#{
                 <<"event">>    => ?EVT_AGENT_LEFT,
@@ -658,6 +665,9 @@ handle_info({grace_expired, AgentId}, State) ->
             ets:delete(?ETS_AGENTS, AgentId),
             %% Release from centralized name registry (belt and suspenders)
             pluto_name_registry:release_name(AgentId),
+            %% Belt-and-suspenders: any HTTP tokens left over now have no
+            %% agent record to drain into; remove them too.
+            evict_http_sessions(AgentId),
             %% Clean up inbox
             clear_inbox(AgentId);
         _ ->

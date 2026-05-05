@@ -37,6 +37,11 @@
 -define(DEFAULT_MAX_INBOX_SIZE,         1000).     %% max offline messages per agent
 -define(DEFAULT_INBOX_MSG_TTL_MS,    86400000).  %% 24 hours
 -define(DEFAULT_INBOX_SWEEP_MS,      3600000).   %% sweep inbox hourly
+-define(DEFAULT_AGENT_STALE_AFTER_MS, 604800000). %% 7 days — agents whose
+                                                  %% last_seen is older than
+                                                  %% this are dropped at
+                                                  %% snapshot save and skipped
+                                                  %% at snapshot restore.
 
 %% ── ETS table names ────────────────────────────────────────────────────────
 -define(ETS_LOCKS,      pluto_locks).       %% Active lock entries

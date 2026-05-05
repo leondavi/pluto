@@ -52,6 +52,62 @@ launches reuse the venv.
 
 ---
 
+## Agent name & role — how the launcher arguments map into Claude and Pluto
+
+Two flags on `PlutoMCPFriend.sh` control how Claude sees the role and how
+Pluto sees the agent. Get these right and the rest "just works".
+
+### `--agent-id <name>` is your identity in Pluto's distributed system
+
+The `--agent-id` you pass to the launcher is the **name the agent is
+recognized as inside the Pluto coordination server** — it's what other
+agents, the Orchestrator, and tools like `pluto_send`, `pluto_list_agents`,
+`/locks/*` all use to address this session. Choose something role-shaped
+and unique, e.g. `specialist-1`, `orchestrator`, `reviewer-frontend`.
+
+```bash
+./PlutoMCPFriend.sh --agent-id specialist-1 --role specialist
+```
+
+**Name conflicts → Pluto auto-suffixes.** If the name you requested is
+already taken by an active session, the Pluto server registers you under
+an auto-generated suffixed variant (e.g. `specialist-1` → `specialist-1-2`)
+rather than refusing the registration. The launcher logs the actual
+registered ID, and Pluto returns it in the registration response. **Always
+use the returned `agent_id`, not the one you requested**, for subsequent
+operations — `pluto_session` will show you the canonical name. This means
+two `./PlutoMCPFriend.sh --agent-id specialist-1 ...` invocations against
+the same Pluto server will both succeed; the second one ends up under a
+different ID.
+
+### Activating a role inside Claude — invoke the MCP slash command
+
+`--role <name>` at launch time pre-applies the role on turn 1 via Claude's
+`--append-system-prompt`. **But mid-session, the user activates a role by
+running its MCP slash command** in Claude Code:
+
+```
+/pluto-role-specialist
+/pluto-role-orchestrator
+/pluto-role-reviewer
+... (one per file in library/roles/)
+```
+
+Each of these is an MCP **prompt** registered by PlutoMCPFriend (see the
+"Prompts" table below). Typing the slash command in Claude inlines the
+matching `library/roles/<name>.md` plus the shared `protocol.md` plus the
+live connection block (host/port + your registered `agent_id`) into the
+conversation. That is the canonical way to switch or re-apply a role
+without restarting the wrapper.
+
+So: **the script's `--agent-id` is your name on the Pluto network; the
+`/pluto-role-<name>` slash command in Claude is what tells the agent
+which role to play.** Both can be changed independently — different
+sessions can rotate through roles without changing their `agent_id`,
+and a fresh `agent_id` can pick any role on its first turn.
+
+---
+
 ## What ships out of the box
 
 ### 18 Pluto tools

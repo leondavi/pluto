@@ -25,6 +25,14 @@ Orchestrator.
 - ML hygiene: use existing experiment-tracking conventions and shared
   resource naming; no ad-hoc output paths.
 
+## On receiving `spec_contract`
+
+Cache the message by its `spec_id` for the rest of the session. The
+Orchestrator broadcasts this once at session bootstrap (and re-broadcasts
+with a higher `version` if the universal constraints change). Treat
+every constraint inside as binding whenever a later `task_assigned`
+arrives carrying a matching `spec_ref`. See protocol §4.12 / §7.
+
 ## On receiving `task_assigned`
 
 1. Confirm the Orchestrator is registered in Pluto (`GET /agents`):
@@ -51,6 +59,9 @@ Orchestrator.
    - `files` / `resources` concretely listed?
    - `definition_of_done` checkable?
    - `verification_hint` runnable by an independent agent?
+   - If `task_assigned.spec_ref` is set, do you have that `spec_id`
+     cached? If not, emit `task_clarification_request` asking the
+     Orchestrator to (re)broadcast the contract; do not proceed.
    If any answer is no, emit `task_clarification_request` and STOP.
 
 3. Recognise injected task messages from the Orchestrator:

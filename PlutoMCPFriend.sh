@@ -295,6 +295,23 @@ except Exception:
   print("?")' 2>/dev/null || echo "?"
 }
 
+# True if *any* TCP listener responds on the given host:port within timeout.
+# Used to distinguish "no server at all" from "server bound to a different
+# HTTP port than what the config file says" (typical after editing the
+# config without restarting the daemon).
+tcp_port_reachable() {
+    local host="$1" port="$2"
+    "${VENV_DIR}/bin/python" - "$host" "$port" <<'PYEOF' 2>/dev/null
+import socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+try:
+    with socket.create_connection((host, port), timeout=2):
+        sys.exit(0)
+except OSError:
+    sys.exit(1)
+PYEOF
+}
+
 # Print server status; return 0 if reachable, 1 otherwise.
 check_pluto_reachable() {
     local host="$1" port="$2"
@@ -306,6 +323,37 @@ check_pluto_reachable() {
         return 0
     fi
     warn "Pluto server is ${YELLOW}OFFLINE${NC} at ${host}:${port}"
+
+    # Disambiguate: is the daemon up but bound to different HTTP port?
+    # Probe the TCP control port and a few common HTTP defaults; if any
+    # of them respond we tell the user the daemon is alive on the wrong
+    # port (the typical cause: config bumped from 9201 -> 9202 without
+    # restarting the daemon).
+    local tcp_port
+    tcp_port=$(read_config_value host_tcp_port "${DEFAULT_TCP_PORT}")
+    local found=""
+    if tcp_port_reachable "$host" "$tcp_port"; then
+        found="${tcp_port} (TCP control port)"
+    fi
+    local p
+    for p in 9201 9202; do
+        [[ "$p" == "$port" ]] && continue
+        if tcp_port_reachable "$host" "$p"; then
+            found="${found:+${found}, }${p}"
+        fi
+    done
+    if [[ -n "${found}" ]]; then
+        echo ""
+        echo -e "  ${YELLOW}A Pluto process appears to be running, just not on${NC}"
+        echo -e "  ${YELLOW}HTTP port ${port}.${NC} Live ports: ${BOLD}${found}${NC}"
+        echo ""
+        echo -e "  Likely cause: ${CYAN}config/pluto_config.json${NC} was changed"
+        echo -e "  after the daemon started. Restart it so it picks up the new"
+        echo -e "  HTTP port:"
+        echo ""
+        echo -e "    ${CYAN}./PlutoServer.sh --kill && ./PlutoServer.sh --daemon${NC}"
+        echo ""
+    fi
     return 1
 }
 
@@ -318,7 +366,9 @@ offer_to_start_server() {
     echo ""
     read -rp "  Start Pluto server in the background now? [Y/n] " ans
     ans="${ans:-y}"
-    case "${ans,,}" in
+    # Portable lowercase: bash 3.2 (macOS default) doesn't support ${var,,}.
+    ans=$(printf '%s' "${ans}" | tr '[:upper:]' '[:lower:]')
+    case "${ans}" in
         y|yes)
             if [[ ! -x "${SCRIPT_DIR}/PlutoServer.sh" ]]; then
                 err "PlutoServer.sh not found or not executable."

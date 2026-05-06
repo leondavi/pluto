@@ -157,7 +157,9 @@ ask_yes_no() {
         local ans
         read -r ans </dev/tty
         ans="${ans:-${default}}"
-        case "${ans,,}" in
+        # Portable lowercase: bash 3.2 (macOS default) doesn't support ${var,,}.
+        ans=$(printf '%s' "${ans}" | tr '[:upper:]' '[:lower:]')
+        case "${ans}" in
             y|yes) return 0 ;;
             n|no)  return 1 ;;
             *) echo "      Please answer y or n." ;;

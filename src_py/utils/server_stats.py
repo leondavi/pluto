@@ -69,12 +69,31 @@ def _fmt_uptime(ms):
 
 
 def _fmt_rate(n, per_seconds, uptime_s):
+    """Average rate over the uptime, projected to per_seconds.
+
+    Returns "n/a (need ≥<window>)" when uptime hasn't yet covered a full
+    window — extrapolating 2 messages in 3 minutes to 900/day is
+    misleading, not informative.
+    """
+    if uptime_s < per_seconds:
+        return f"n/a (uptime <{_fmt_window(per_seconds)})"
     rate = n / uptime_s * per_seconds
     if rate >= 100:
         return f"{rate:,.0f}"
     if rate >= 10:
         return f"{rate:,.1f}"
     return f"{rate:,.2f}"
+
+
+def _fmt_window(seconds):
+    """Compact label for a rate window."""
+    if seconds >= 86400:
+        return "1d"
+    if seconds >= 3600:
+        return "1h"
+    if seconds >= 60:
+        return "1m"
+    return "1s"
 
 
 def render_dashboard(data, host, tcp_port, http_port):
@@ -111,9 +130,10 @@ def render_dashboard(data, host, tcp_port, http_port):
     print(f"    {'Messages received':<19} {CYAN}{recv:>10,}{NC}")
     print(f"    {'Broadcasts':<19} {CYAN}{bcast:>10,}{NC}")
     print(f"    {BOLD}{'Total messages':<19}{NC} {CYAN}{total_msgs:>10,}{NC}")
-    print(f"    {'avg msg/sec':<19} {_fmt_rate(total_msgs, 1, uptime_s):>10}")
-    print(f"    {'avg msg/hour':<19} {_fmt_rate(total_msgs, 3600, uptime_s):>10}")
-    print(f"    {'avg msg/day':<19} {_fmt_rate(total_msgs, 86400, uptime_s):>10}")
+    print(f"    {'avg msg/sec':<19} {_fmt_rate(total_msgs, 1, uptime_s):>22}")
+    print(f"    {'avg msg/min':<19} {_fmt_rate(total_msgs, 60, uptime_s):>22}")
+    print(f"    {'avg msg/hour':<19} {_fmt_rate(total_msgs, 3600, uptime_s):>22}")
+    print(f"    {'avg msg/day':<19} {_fmt_rate(total_msgs, 86400, uptime_s):>22}")
     print()
 
     print(f"  {GREEN}▸ Locks{NC}")

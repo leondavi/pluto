@@ -7,6 +7,7 @@
 #   ./PlutoServer.sh --daemon     Start the server in the background
 #   ./PlutoServer.sh --kill       Stop a running daemon
 #   ./PlutoServer.sh --status     Check if the server is running
+#   ./PlutoServer.sh --stats      Print runtime statistics (messages, locks, etc.)
 #   ./PlutoServer.sh --build      Build only (compile + release)
 #   ./PlutoServer.sh --clean      Clean build artefacts
 #   ./PlutoServer.sh --console    Start an interactive Erlang shell
@@ -27,6 +28,7 @@ REL_DIR="${BUILD_DIR}/_build/default/rel/pluto"
 PID_FILE="/tmp/pluto/pluto.pid"
 PING_TOOL="${SCRIPT_DIR}/src_py/utils/ping.py"
 INFO_TOOL="${SCRIPT_DIR}/src_py/utils/server_info.py"
+STATS_TOOL="${SCRIPT_DIR}/src_py/utils/server_stats.py"
 CONFIG_FILE="${SCRIPT_DIR}/config/pluto_config.json"
 
 # ── Config loader ─────────────────────────────────────────────────────────────
@@ -732,6 +734,25 @@ cmd_console() {
     exec "${REL_DIR}/bin/pluto" console
 }
 
+cmd_stats() {
+    if ! pluto_ping; then
+        err "Pluto server is not running."
+        echo ""
+        echo -e "  Start it with: ${CYAN}$(basename "$0") --daemon${NC}"
+        return 1
+    fi
+
+    # The stats op (no registration required) returns global counters,
+    # per-agent counters, and a live snapshot. Rendering is in the Python
+    # tool so PlutoServer.sh stays simple.
+    python3 "${STATS_TOOL}" \
+        --host "${PLUTO_HOST}" \
+        --port "${PLUTO_PORT}" \
+        --http-port "${PLUTO_HTTP_PORT}" \
+        --timeout 3 \
+        --render
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 usage() {
@@ -746,6 +767,7 @@ Options:
   --daemon      Build and start the server as a background daemon.
   --kill        Stop a running Pluto daemon.
   --status      Check whether the server is running.
+  --stats       Print runtime statistics (messages, locks, deadlocks, agents).
   --build       Compile and assemble the release (no start).
   --clean       Remove build artefacts.
   --console     Start an interactive Erlang shell with Pluto loaded.
@@ -761,6 +783,7 @@ case "${1:-}" in
     --daemon)   cmd_start_daemon ;;
     --kill)     cmd_kill ;;
     --status)   cmd_status ;;
+    --stats)    cmd_stats ;;
     --build)    cmd_build ;;
     --clean)    cmd_clean ;;
     --console)  cmd_console ;;

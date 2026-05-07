@@ -14,7 +14,9 @@ Tests 5 new features:
   5. Lock reclaim on re-registration (reclaimed_locks in register response
      when agent held locks before disconnecting)
 
-Requires: Pluto server running on localhost:9000 (TCP) / :9001 (HTTP)
+Requires: Pluto server running. Ports default to config/pluto_config.json
+(host_tcp_port / host_http_port); override with PLUTO_HOST / PLUTO_PORT /
+PLUTO_HTTP_PORT env vars.
 """
 
 import json
@@ -25,9 +27,22 @@ import time
 import urllib.request
 import urllib.error
 
-HOST = "127.0.0.1"
-TCP_PORT = 9000
-HTTP_PORT = 9001
+
+def _config_port(key: str, default: int) -> int:
+    """Read host_tcp_port / host_http_port from config, with default."""
+    cfg_path = os.path.join(os.path.dirname(__file__), "..",
+                            "config", "pluto_config.json")
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            return int(json.load(f).get("pluto_server", {}).get(key, default))
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return default
+
+
+HOST = os.environ.get("PLUTO_HOST", "127.0.0.1")
+TCP_PORT = int(os.environ.get("PLUTO_PORT", _config_port("host_tcp_port", 9200)))
+HTTP_PORT = int(os.environ.get("PLUTO_HTTP_PORT",
+                               _config_port("host_http_port", 9202)))
 BASE_URL = f"http://{HOST}:{HTTP_PORT}"
 
 passed = 0

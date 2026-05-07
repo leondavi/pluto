@@ -29,6 +29,7 @@ try:
         build_role_prompt_body,
         build_status_prompt_body,
         build_watch_prompt_body,
+        build_watch_stop_prompt_body,
         list_role_names,
         role_prompt_specs,
     )
@@ -463,6 +464,67 @@ class TestPromptAssembly(unittest.TestCase):
         # And specifically warns NOT to call pluto_recv (which would drain).
         self.assertIn("do not call", body.lower())
 
+    # ── /pluto-watch-stop and the respawn-on-drain rule ─────────────────
+
+    def test_watch_stop_prompt_engages_kill_switch(self):
+        """``/pluto-watch-stop`` must engage the watcher_stop kill switch:
+        no new watcher Tasks until ``/pluto-watch`` resumes."""
+        body = build_watch_stop_prompt_body()
+        # Names the kill switch by its session-level token.
+        self.assertIn("watcher_stop", body)
+        # Tells the agent explicitly NOT to spawn new watcher Tasks.
+        self.assertIn("Do NOT spawn", body)
+        # Allows the in-flight watcher to drain naturally — agent must
+        # not kill it, just not re-arm.
+        self.assertIn("do not re-arm", body)
+        # Falls back to turn-driven pluto_recv + piggyback.
+        self.assertIn("pluto_recv", body)
+        self.assertIn("_pluto_inbox", body)
+        # Resume path is documented.
+        self.assertIn("/pluto-watch", body)
+        # Exact ack reply so an orchestrator can detect the engaged state.
+        self.assertIn("watcher_stop engaged", body)
+
+    def test_check_prompt_respawns_watcher_after_drain(self):
+        """``/pluto-check`` is a drain — the agent must re-arm the watcher
+        after it, unless the kill switch is in effect."""
+        body = build_check_prompt_body()
+        # Existing contract still holds.
+        self.assertIn("pluto_recv", body)
+        # New respawn instruction.
+        self.assertIn("Respawn the watcher", body)
+        # Honours the kill switch.
+        self.assertIn("watcher_stop", body)
+
+    def test_connection_block_drain_respawn_rule(self):
+        """The always-on role connection block must spell out: any drain
+        path triggers an immediate watcher respawn in the same turn,
+        with watcher_stop as the documented exception."""
+        block = build_connection_block(
+            host="h", http_port=1, agent_id="a",
+        )
+        # The MANDATORY heading itself.
+        self.assertIn("respawn the watcher immediately after every drain",
+                      block.lower())
+        # All three drain paths called out by name.
+        self.assertIn("pluto_recv", block)
+        self.assertIn("_pluto_inbox", block)
+        self.assertIn("watcher Task fires", block)
+        # The kill-switch exception with both invocation forms.
+        self.assertIn("watcher_stop", block)
+        self.assertIn("/pluto-watch-stop", block)
+        # Resume path is mentioned so the agent doesn't get stuck.
+        self.assertIn("/pluto-watch", block)
+
+    def test_watch_prompt_clears_kill_switch(self):
+        """``/pluto-watch`` is the documented resume path — invoking it
+        must implicitly clear any in-effect ``watcher_stop``."""
+        body = build_watch_prompt_body()
+        self.assertIn("watcher_stop", body)
+        # Wording specifically says "clears" so the agent treats this as
+        # a state reset, not just a one-shot watcher start.
+        self.assertIn("clears", body.lower())
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # Server registration: tools / prompts / resources count
@@ -505,6 +567,7 @@ class TestServerCapabilities(unittest.IsolatedAsyncioTestCase):
         # Action prompts.
         self.assertIn("pluto-check", prompt_names)
         self.assertIn("pluto-watch", prompt_names)
+        self.assertIn("pluto-watch-stop", prompt_names)
         self.assertIn("pluto-status", prompt_names)
 
         resource_uris = {str(r.uri) for r in resources}

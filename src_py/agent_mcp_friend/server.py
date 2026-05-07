@@ -27,6 +27,7 @@ from agent_mcp_friend.prompts import (
     build_role_prompt_body,
     build_status_prompt_body,
     build_watch_prompt_body,
+    build_watch_stop_prompt_body,
     role_prompt_specs,
 )
 from agent_mcp_friend.resources import register_resources
@@ -173,6 +174,16 @@ class PlutoMCPServer:
             return build_watch_prompt_body(
                 wait_timeout_s=wait_s, iterations=iterations,
             )
+
+        @self.mcp.prompt(
+            name="pluto-watch-stop",
+            description=(
+                "Engage the watcher_stop kill switch: stop auto-respawning "
+                "the inbox watcher Task on drain. Resume with /pluto-watch."
+            ),
+        )
+        def pluto_watch_stop() -> str:
+            return build_watch_stop_prompt_body()
 
         @self.mcp.prompt(
             name="pluto-status",

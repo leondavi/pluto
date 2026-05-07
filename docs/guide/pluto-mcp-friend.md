@@ -144,8 +144,9 @@ In Claude Code these surface as slash commands. Two groups:
 
 | Prompt | What it does |
 |--------|-------------|
-| `/pluto-check` | Calls `pluto_recv` and summarizes whatever arrived (one-shot, no blocking) |
-| `/pluto-watch` | Starts a chat-speed inbox watcher by spawning a background Task that calls `pluto_wait_for_messages` |
+| `/pluto-check` | Calls `pluto_recv` and summarizes whatever arrived (one-shot, no blocking). Also re-arms the watcher unless `watcher_stop` is in effect. |
+| `/pluto-watch` | Starts a chat-speed inbox watcher by spawning a background Task that calls `pluto_wait_for_messages`. Implicitly clears any `watcher_stop` kill switch. |
+| `/pluto-watch-stop` | Engages the `watcher_stop` kill switch: stops auto-respawning the inbox watcher on drain for the rest of the session. Resume with `/pluto-watch`. |
 | `/pluto-status` | Reports my agent_id, connected peers, inbox depth, and locks held |
 
 **Roles & reference** — inlined documents.

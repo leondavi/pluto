@@ -115,6 +115,11 @@ handle_connection(Sock) ->
     try
         case read_http_request(Sock) of
             {ok, Method, Path, _Headers, Body} ->
+                pluto_stats:inc(total_requests),
+                case is_coordination_route(Method, Path) of
+                    true -> pluto_stats:inc(coordination_requests);
+                    false -> ok
+                end,
                 case route(Method, Path, Body, Sock) of
                     {skip_response_, already_sent} ->
                         %% Long-poll already sent response directly
@@ -1031,6 +1036,26 @@ route(_Method, _Path, _Body, _Sock) ->
 %%====================================================================
 %% Internal helpers
 %%====================================================================
+
+%% @private Return true for routes that count as coordination operations.
+is_coordination_route('POST', <<"/locks/acquire">>)               -> true;
+is_coordination_route('POST', <<"/locks/release">>)               -> true;
+is_coordination_route('POST', <<"/locks/renew">>)                 -> true;
+is_coordination_route('POST', <<"/locks/try_acquire">>)           -> true;
+is_coordination_route('POST', <<"/messages/send">>)               -> true;
+is_coordination_route('POST', <<"/messages/broadcast">>)          -> true;
+is_coordination_route('POST', <<"/agents/register">>)             -> true;
+is_coordination_route('POST', <<"/agents/unregister">>)           -> true;
+is_coordination_route('POST', <<"/agents/send">>)                 -> true;
+is_coordination_route('POST', <<"/agents/broadcast">>)            -> true;
+is_coordination_route('POST', <<"/agents/subscribe">>)            -> true;
+is_coordination_route('POST', <<"/agents/snapshot_self">>)        -> true;
+is_coordination_route('POST', <<"/agents/restore_from_snapshot">>) -> true;
+is_coordination_route('POST', <<"/agents/task_assign">>)          -> true;
+is_coordination_route('POST', <<"/agents/task_update">>)          -> true;
+is_coordination_route('POST', <<"/agents/set_status">>)           -> true;
+is_coordination_route('POST', <<"/admin/force_release">>)         -> true;
+is_coordination_route(_, _)                                        -> false.
 
 %% @private Build a 404 body that helps the caller self-correct.
 %% Strips query string before classifying so /api/lock?foo=1 still matches.

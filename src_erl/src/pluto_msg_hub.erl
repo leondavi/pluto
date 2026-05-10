@@ -403,13 +403,17 @@ handle_call({send, From, To, Payload, RequestId}, _From,
             %% HTTP/stateless agent — queue message in inbox for polling
             queue_inbox_message(To, Event2),
             pluto_stats:inc(messages_sent),
+            pluto_stats:inc(messages_received),
             pluto_stats:inc_agent(From, messages_sent),
+            pluto_stats:inc_agent(To, messages_received),
             {reply, {ok, MsgId}, State#state{msg_seq = NewSeq}};
         [#agent{status = disconnected}] ->
             %% Agent is disconnected (grace period) — queue message in inbox
             queue_inbox_message(To, Event2),
             pluto_stats:inc(messages_sent),
+            pluto_stats:inc(messages_received),
             pluto_stats:inc_agent(From, messages_sent),
+            pluto_stats:inc_agent(To, messages_received),
             {reply, {ok, MsgId}, State#state{msg_seq = NewSeq}};
         _ ->
             {reply, {error, unknown_target}, State#state{msg_seq = NewSeq}}

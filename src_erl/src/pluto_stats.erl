@@ -187,8 +187,8 @@ handle_call(get_summary, _From, #state{started_at = StartedAt} = State) ->
 
     %% Live snapshot
     ActiveLocks = ets:info(?ETS_LOCKS, size),
-    ConnectedAgents = length(ets:match(?ETS_AGENTS,
-        #agent{status = connected, _ = '_'})),
+    ConnectedAgents = length([1 || #agent{status = S} <- ets:tab2list(?ETS_AGENTS),
+        S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file]),
     TotalAgents = ets:info(?ETS_AGENTS, size),
     PendingWaiters = ets:info(?ETS_WAITERS, size),
     WaitGraphEdges = ets:info(?ETS_WAIT_GRAPH, size),

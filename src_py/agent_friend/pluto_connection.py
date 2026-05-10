@@ -80,6 +80,16 @@ class PlutoConnection:
             self._client = None
             return False
 
+    def restore_from_snapshot(self, plut: dict) -> dict:
+        """Apply a previously saved .plut snapshot to this connection.
+
+        Must be called after :py:meth:`connect`. Returns the server response
+        (with ``reclaimed_locks`` / ``lost_locks``). Raises if no client.
+        """
+        if self._client is None:
+            raise RuntimeError("not connected to Pluto")
+        return self._client.restore_from_snapshot(plut)
+
     def disconnect(self) -> None:
         """Unregister from the Pluto server and stop polling."""
         self._running = False

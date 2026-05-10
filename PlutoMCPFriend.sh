@@ -94,6 +94,11 @@ Options:
                           watchdog. Keep <=120 to be safe.
   --no-launch             Generate .mcp.json but do not start Claude.
   --no-wizard             Refuse the interactive wizard; require all args.
+  --restore <path>        After registering, apply a previously saved .plut
+                          snapshot via restore_from_snapshot. The agent_id
+                          inside the file is authoritative — when --agent-id
+                          is omitted it is auto-derived from the snapshot;
+                          when both are given they must match.
   --log-level <lvl>       DEBUG | INFO | WARNING | ERROR (default: WARNING).
   --version               Print version and exit.
   --help                  Show this help.
@@ -104,6 +109,8 @@ Examples:
   $(basename "$0") --agent-id coder-1 --role specialist
   $(basename "$0") --agent-id reviewer-1 --wait-timeout-s 90         # tune watcher cycle
   $(basename "$0") --agent-id worker-1 --no-launch                   # config only
+  $(basename "$0") --role orchestrator \\
+                  --restore /tmp/pluto/snapshots/cells-orch.plut    # resume identity
 EOF
 }
 
@@ -393,12 +400,14 @@ offer_to_start_server() {
 
 write_mcp_json() {
     local agent_id="$1" host="$2" port="$3" ttl="$4" log_level="$5" wait_s="$6"
+    local restore_path="${7:-}"
     local target="${SCRIPT_DIR}/.mcp.json"
     "${VENV_DIR}/bin/python" - "$target" "$agent_id" "$host" "$port" "$ttl" \
-        "$log_level" "$wait_s" "${VENV_DIR}/bin/python" "${PY_ENTRY}" <<'PYEOF'
+        "$log_level" "$wait_s" "${VENV_DIR}/bin/python" "${PY_ENTRY}" \
+        "$restore_path" <<'PYEOF'
 import json, os, sys
 (target, agent_id, host, port, ttl, log_level, wait_s, py_bin,
- entry) = sys.argv[1:]
+ entry, restore_path) = sys.argv[1:]
 existing = {}
 if os.path.isfile(target):
     try:
@@ -407,18 +416,18 @@ if os.path.isfile(target):
     except Exception:
         existing = {}
 servers = existing.get("mcpServers") or {}
-servers["pluto"] = {
-    "command": py_bin,
-    "args": [
-        entry,
-        "--agent-id", agent_id,
-        "--host", host,
-        "--http-port", str(port),
-        "--ttl-ms", str(ttl),
-        "--wait-timeout-s", str(wait_s),
-        "--log-level", log_level,
-    ],
-}
+args = [
+    entry,
+    "--agent-id", agent_id,
+    "--host", host,
+    "--http-port", str(port),
+    "--ttl-ms", str(ttl),
+    "--wait-timeout-s", str(wait_s),
+    "--log-level", log_level,
+]
+if restore_path:
+    args += ["--restore", restore_path]
+servers["pluto"] = {"command": py_bin, "args": args}
 existing["mcpServers"] = servers
 with open(target, "w") as f:
     json.dump(existing, f, indent=2)
@@ -668,6 +677,7 @@ main() {
     local log_level="WARNING"
     local no_launch=false
     local no_wizard=false
+    local restore_path=""
     local extra_cmd=()
     local past_separator=false
 
@@ -689,6 +699,7 @@ main() {
             --log-level) log_level="$2"; shift 2 ;;
             --no-launch) no_launch=true; shift ;;
             --no-wizard) no_wizard=true; shift ;;
+            --restore) restore_path="$2"; shift 2 ;;
             --framework)
                 err "--framework was removed in v0.2.8 — Claude Code only."
                 err "For Cursor/Aider/Copilot use ./PlutoAgentFriend.sh instead."
@@ -703,6 +714,32 @@ main() {
     if ! [[ "${wait_timeout_s}" =~ ^[0-9]+$ ]] || (( wait_timeout_s < 1 )); then
         err "--wait-timeout-s must be a positive integer (seconds)."
         exit 1
+    fi
+
+    # ── --restore validation + agent_id auto-detect ─────────────────────────
+    # If --restore was given, the .plut file is authoritative for agent_id —
+    # using a different name silently lands all snapshot locks in lost_locks.
+    # When --agent-id wasn't passed, derive it from the file. When both were
+    # passed and disagree, abort with a clear error rather than continuing.
+    if [[ -n "${restore_path}" ]]; then
+        if [[ ! -f "${restore_path}" ]]; then
+            err "--restore: file not found: ${restore_path}"
+            exit 1
+        fi
+        local plut_id
+        plut_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('agent_id',''))" "${restore_path}" 2>/dev/null || echo "")
+        if [[ -z "${plut_id}" ]]; then
+            err "--restore: ${restore_path} has no agent_id field — not a valid .plut snapshot."
+            exit 1
+        fi
+        if [[ -z "${agent_id}" ]]; then
+            agent_id="${plut_id}"
+            info "Using agent_id from snapshot: ${agent_id}"
+        elif [[ "${agent_id}" != "${plut_id}" ]]; then
+            err "--agent-id ${agent_id} does not match snapshot agent_id ${plut_id}."
+            err "Use --agent-id ${plut_id} (or omit --agent-id to auto-detect from the .plut)."
+            exit 1
+        fi
     fi
 
     ensure_venv
@@ -759,7 +796,7 @@ main() {
     # ── Generate .mcp.json ──────────────────────────────────────────────────
     local mcp_json
     mcp_json=$(write_mcp_json "${agent_id}" "${host}" "${http_port}" \
-        "${ttl_ms}" "${log_level}" "${wait_timeout_s}")
+        "${ttl_ms}" "${log_level}" "${wait_timeout_s}" "${restore_path}")
     ok "Wrote MCP config:  ${mcp_json}"
 
     if $no_launch; then

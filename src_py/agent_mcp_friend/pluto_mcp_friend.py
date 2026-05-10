@@ -96,6 +96,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Override the directory scanned for role prompt files.",
     )
     parser.add_argument(
+        "--restore", dest="restore_path", default=None, metavar="PATH",
+        help=(
+            "Path to a .plut snapshot file. After registering with Pluto, "
+            "the launcher applies the snapshot via restore_from_snapshot — "
+            "attributes, custom_status, subscriptions, and any reclaimable "
+            "locks are reattached, and status flips to recovered_from_file. "
+            "Use the agent_id stored inside the .plut as --agent-id to "
+            "rejoin the same identity (otherwise locks land in lost_locks)."
+        ),
+    )
+    parser.add_argument(
         "--log-level", default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help=(
@@ -131,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         wait_timeout_s=args.wait_timeout_s,
         iterations=args.iterations,
         roles_dir=args.roles_dir,
+        restore_path=args.restore_path,
     )
     try:
         server.run()

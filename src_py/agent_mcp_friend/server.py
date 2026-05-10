@@ -60,6 +60,7 @@ class PlutoMCPServer:
         roles_dir: Optional[str] = None,
         protocol_path: Optional[str] = None,
         guide_path: Optional[str] = None,
+        restore_path: Optional[str] = None,
     ):
         self.agent_id = agent_id
         self.host = host
@@ -70,6 +71,8 @@ class PlutoMCPServer:
         self.roles_dir = roles_dir
         self.protocol_path = protocol_path
         self.guide_path = guide_path
+        self.restore_path = restore_path
+        self.restore_summary = None  # populated after successful restore
 
         self.client = PlutoHttpClient(
             host=host,
@@ -223,6 +226,8 @@ class PlutoMCPServer:
     async def _lifespan(self, _server):
         """FastMCP lifespan: register, start inbox, then tear down."""
         registered = await asyncio.to_thread(self._register_blocking)
+        if registered and self.restore_path:
+            await asyncio.to_thread(self._restore_from_file_blocking)
         try:
             if registered:
                 self.inbox.start()
@@ -257,6 +262,34 @@ class PlutoMCPServer:
             (self.client.token or "")[:12],
         )
         return True
+
+    def _restore_from_file_blocking(self) -> None:
+        """Load a .plut snapshot file and apply it to the just-registered session."""
+        import json
+        try:
+            with open(self.restore_path, "r", encoding="utf-8") as f:
+                plut = json.load(f)
+        except Exception as exc:
+            logger.error("Cannot read .plut at %s: %s", self.restore_path, exc)
+            return
+        snap_agent_id = plut.get("agent_id")
+        if snap_agent_id and snap_agent_id != self.agent_id:
+            logger.warning(
+                "Snapshot agent_id %s differs from registered %s — locks will land in lost_locks",
+                snap_agent_id, self.agent_id,
+            )
+        try:
+            result = self.client.restore_from_snapshot(plut)
+        except Exception as exc:
+            logger.error("restore_from_snapshot failed: %s", exc)
+            return
+        self.restore_summary = result
+        logger.info(
+            "Restored %s from %s — reclaimed=%d lost=%d",
+            self.agent_id, self.restore_path,
+            len(result.get("reclaimed_locks", [])),
+            len(result.get("lost_locks", [])),
+        )
 
     def run(self) -> None:
         """Run the MCP server over stdio. Blocks until the client disconnects."""

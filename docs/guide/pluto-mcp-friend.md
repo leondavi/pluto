@@ -302,13 +302,28 @@ pluto_restore_from_snapshot(plut_path="/tmp/pluto/snapshots/cells-orch.plut")
 file path to the launcher so re-registration happens before turn 1:
 
 ```
-./PlutoMCPFriend.sh --agent-id cells-orch --restore /tmp/pluto/snapshots/cells-orch.plut
+./PlutoMCPFriend.sh --restore /tmp/pluto/snapshots/cells-orch.plut
 ```
 
-The launcher registers, calls `restore_from_snapshot`, prepends the
-markdown recovery prompt to the system prompt, and only *then* hands
-control to the LLM. The first user message sees an agent that already
-knows it's resuming.
+`--agent-id` is read from the `.plut` automatically, so you don't need
+to type it again — pass it explicitly only if you want to claim a
+*different* identity, in which case the launcher refuses (locks would
+silently land in `lost_locks`). Sequence on launch:
+
+1. Validate the `.plut` and derive `agent_id` from its `agent_id` field.
+2. Standard MCP register against Pluto.
+3. Call `restore_from_snapshot` — overlay attributes, custom_status,
+   subscriptions; split locks into `reclaimed_locks` / `lost_locks`;
+   set status to `recovered_from_file`.
+4. Log a one-line summary (`reclaimed=N lost=M`) to stderr.
+5. Hand control to Claude.
+
+What's *not* automated yet: the launcher does not auto-inject the
+markdown recovery prompt (`<agent_id>-recovery.md`) into Claude's
+system prompt. Read it yourself first turn, or paste it into the
+agent's first user message — every step it lists is also embedded in
+the `pluto-protocol` MCP prompt, so an agent that knows the protocol
+will reconstruct most of the checklist on its own.
 
 ### What the recovery prompt contains
 

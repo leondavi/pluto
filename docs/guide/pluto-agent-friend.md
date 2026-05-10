@@ -227,25 +227,37 @@ client.save_snapshot_files("/tmp/pluto/snapshots")
 
 ### Re-launching with `--restore`
 
-Pass the `.plut` to PlutoAgentFriend on the next invocation:
+Pass the `.plut` to PlutoAgentFriend on the next invocation. The
+`agent_id` stored inside the file is authoritative, so you can omit
+`--agent-id`:
 
 ```bash
-./PlutoAgentFriend.sh \
-    --agent-id coder-1 \
-    --restore  /tmp/pluto/snapshots/coder-1.plut
+./PlutoAgentFriend.sh --restore /tmp/pluto/snapshots/coder-1.plut
 ```
 
-The launcher:
+If you also pass `--agent-id` it must match the snapshot's value — a
+mismatch is rejected up-front because every snapshot lock would
+otherwise silently land in `lost_locks` (a different identity owns
+them). The launcher tells you the right name when it refuses.
 
-1. Registers `coder-1` on Pluto as usual.
-2. Calls `restore_from_snapshot` with the file contents — Pluto
-   re-applies attributes, custom_status, subscriptions, and audits
-   each held lock against the snapshot.
-3. Prepends the recovery markdown to the agent's first turn so the
-   model knows it is resuming.
+What runs on launch:
+
+1. Validate the `.plut` and derive `agent_id` from it.
+2. Register on Pluto as usual.
+3. Call `restore_from_snapshot` — Pluto re-applies attributes,
+   custom_status, subscriptions, and audits each held lock against
+   the snapshot.
+4. Log `reclaimed=N lost=M` to stderr.
+5. Hand control to the wrapped agent CLI (Claude, Cursor, Aider, …).
 
 After restore the agent appears in `pluto_list_agents` with status
 `recovered_from_file`.
+
+The launcher does not yet auto-inject the recovery markdown
+(`<agent_id>-recovery.md`) into the agent's first prompt — load it
+yourself or paste it into the first user message. Every step it lists
+is also captured by the standard Pluto agent guide, so a protocol-aware
+agent will reconstruct most of the checklist anyway.
 
 ### What the response tells you
 

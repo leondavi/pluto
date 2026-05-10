@@ -217,6 +217,15 @@ with PlutoClient(host="localhost", port=9000, agent_id="coder-1") as client:
 `PlutoHttpClient` exposes the same three methods (`snapshot_self`,
 `restore_from_snapshot`, `save_snapshot_files`) for HTTP/stateless agents.
 
+If you are running the agent under one of the launcher scripts,
+`./PlutoAgentFriend.sh --restore <path>.plut` and
+`./PlutoMCPFriend.sh --restore <path>.plut` perform steps 1–3 of the
+restore (register → load `.plut` → `restore_from_snapshot`)
+automatically before handing control to the wrapped CLI. The
+`agent_id` stored inside the `.plut` is authoritative — omit
+`--agent-id` to let the launcher derive it; passing a different
+`--agent-id` is rejected up-front.
+
 What the snapshot captures:
 
 | Field            | Notes |

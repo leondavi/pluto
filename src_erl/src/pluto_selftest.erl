@@ -79,8 +79,13 @@ check_ping(Port) ->
 
 check_register(Port) ->
     AgentId = <<"selftest-reg-", (rand_id())/binary>>,
-    case send_recv(Port, #{<<"op">> => <<"register">>, <<"agent_id">> => AgentId}) of
-        {ok, #{<<"status">> := <<"ok">>, <<"session_id">> := SId}} when is_binary(SId) ->
+    Cmds = [
+        #{<<"op">> => <<"register">>, <<"agent_id">> => AgentId},
+        #{<<"op">> => <<"unregister">>}
+    ],
+    case send_multi_recv(Port, Cmds) of
+        {ok, [#{<<"status">> := <<"ok">>, <<"session_id">> := SId}, #{<<"status">> := <<"ok">>}]}
+          when is_binary(SId) ->
             {register, pass, ""};
         Other ->
             {register, fail, fmt("unexpected: ~p", [Other])}
@@ -96,7 +101,6 @@ check_acquire_release(Port) ->
     case send_multi_recv(Port, Cmds) of
         {ok, [#{<<"status">> := <<"ok">>},
                #{<<"status">> := <<"ok">>, <<"lock_ref">> := LockRef}]} ->
-            %% Now release
             Release = #{<<"op">> => <<"release">>, <<"lock_ref">> => LockRef},
             case send_recv_on_session(Port, AgentId, Release) of
                 {ok, #{<<"status">> := <<"ok">>}} ->
@@ -129,6 +133,7 @@ check_renew(Port) ->
             {renew, fail, fmt("unexpected: ~p", [Other])}
     end.
 
+
 check_list_agents(Port) ->
     case send_recv(Port, #{<<"op">> => <<"list_agents">>}) of
         %% list_agents requires registration, but we test the error is correct
@@ -144,10 +149,11 @@ check_broadcast(Port) ->
     AgentId = <<"selftest-bc-", (rand_id())/binary>>,
     Cmds = [
         #{<<"op">> => <<"register">>, <<"agent_id">> => AgentId},
-        #{<<"op">> => <<"broadcast">>, <<"payload">> => #{<<"msg">> => <<"selftest">>}}
+        #{<<"op">> => <<"broadcast">>, <<"payload">> => #{<<"msg">> => <<"selftest">>}},
+        #{<<"op">> => <<"unregister">>}
     ],
     case send_multi_recv(Port, Cmds) of
-        {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>}]} ->
+        {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>}]} ->
             {broadcast, pass, ""};
         Other ->
             {broadcast, fail, fmt("unexpected: ~p", [Other])}
@@ -156,19 +162,22 @@ check_broadcast(Port) ->
 check_direct_message(Port) ->
     AgentA = <<"selftest-dm-a-", (rand_id())/binary>>,
     AgentB = <<"selftest-dm-b-", (rand_id())/binary>>,
-    %% Register both agents
-    send_recv(Port, #{<<"op">> => <<"register">>, <<"agent_id">> => AgentA}),
-    send_recv(Port, #{<<"op">> => <<"register">>, <<"agent_id">> => AgentB}),
-    %% Send from A to B
+    %% Register B so A can send to it, then unregister cleanly
+    send_multi_recv(Port, [
+        #{<<"op">> => <<"register">>, <<"agent_id">> => AgentB},
+        #{<<"op">> => <<"unregister">>}
+    ]),
+    %% Send from A to B then unregister A
     Cmds = [
         #{<<"op">> => <<"register">>, <<"agent_id">> => AgentA},
         #{<<"op">> => <<"send">>, <<"to">> => AgentB,
-          <<"payload">> => #{<<"msg">> => <<"hi">>}}
+          <<"payload">> => #{<<"msg">> => <<"hi">>}},
+        #{<<"op">> => <<"unregister">>}
     ],
     case send_multi_recv(Port, Cmds) of
-        {ok, [_, #{<<"status">> := <<"ok">>}]} ->
+        {ok, [_, #{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>}]} ->
             {direct_message, pass, ""};
-        {ok, [_, #{<<"status">> := <<"error">>, <<"reason">> := <<"unknown_target">>}]} ->
+        {ok, [_, #{<<"status">> := <<"error">>, <<"reason">> := <<"unknown_target">>}, _]} ->
             %% AgentB's connection closed before send — expected in selftest
             {direct_message, pass, ""};
         Other ->
@@ -179,23 +188,25 @@ check_lock_conflict(Port) ->
     AgentA = <<"selftest-lc-a-", (rand_id())/binary>>,
     AgentB = <<"selftest-lc-b-", (rand_id())/binary>>,
     Res = <<"selftest:conflict-", (rand_id())/binary>>,
-    %% AgentA acquires
+    %% AgentA acquires then unregisters
     CmdsA = [
         #{<<"op">> => <<"register">>, <<"agent_id">> => AgentA},
         #{<<"op">> => <<"acquire">>, <<"resource">> => Res,
-          <<"mode">> => <<"write">>, <<"ttl_ms">> => 5000}
+          <<"mode">> => <<"write">>, <<"ttl_ms">> => 5000},
+        #{<<"op">> => <<"unregister">>}
     ],
     case send_multi_recv(Port, CmdsA) of
-        {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>}]} ->
-            %% AgentB tries to acquire same resource — should get "wait"
+        {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>}]} ->
+            %% AgentB tries to acquire same resource — should get "wait" then unregisters
             CmdsB = [
                 #{<<"op">> => <<"register">>, <<"agent_id">> => AgentB},
                 #{<<"op">> => <<"acquire">>, <<"resource">> => Res,
                   <<"mode">> => <<"write">>, <<"ttl_ms">> => 5000,
-                  <<"max_wait_ms">> => 100}
+                  <<"max_wait_ms">> => 100},
+                #{<<"op">> => <<"unregister">>}
             ],
             case send_multi_recv(Port, CmdsB) of
-                {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"wait">>}]} ->
+                {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"wait">>}, _]} ->
                     {lock_conflict, pass, ""};
                 Other2 ->
                     {lock_conflict, fail, fmt("expected wait: ~p", [Other2])}
@@ -208,10 +219,11 @@ check_event_history(Port) ->
     AgentId = <<"selftest-eh-", (rand_id())/binary>>,
     Cmds = [
         #{<<"op">> => <<"register">>, <<"agent_id">> => AgentId},
-        #{<<"op">> => <<"event_history">>, <<"since_token">> => 0, <<"limit">> => 5}
+        #{<<"op">> => <<"event_history">>, <<"since_token">> => 0, <<"limit">> => 5},
+        #{<<"op">> => <<"unregister">>}
     ],
     case send_multi_recv(Port, Cmds) of
-        {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>, <<"events">> := _}]} ->
+        {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>, <<"events">> := _}, #{<<"status">> := <<"ok">>}]} ->
             {event_history, pass, ""};
         Other ->
             {event_history, fail, fmt("unexpected: ~p", [Other])}
@@ -226,12 +238,14 @@ check_fencing_token_monotonic(Port) ->
         #{<<"op">> => <<"acquire">>, <<"resource">> => Res1,
           <<"mode">> => <<"write">>, <<"ttl_ms">> => 5000},
         #{<<"op">> => <<"acquire">>, <<"resource">> => Res2,
-          <<"mode">> => <<"write">>, <<"ttl_ms">> => 5000}
+          <<"mode">> => <<"write">>, <<"ttl_ms">> => 5000},
+        #{<<"op">> => <<"unregister">>}
     ],
     case send_multi_recv(Port, Cmds) of
         {ok, [#{<<"status">> := <<"ok">>},
                #{<<"status">> := <<"ok">>, <<"fencing_token">> := T1},
-               #{<<"status">> := <<"ok">>, <<"fencing_token">> := T2}]} ->
+               #{<<"status">> := <<"ok">>, <<"fencing_token">> := T2},
+               #{<<"status">> := <<"ok">>}]} ->
             case T2 > T1 of
                 true  -> {fencing_token_monotonic, pass, ""};
                 false -> {fencing_token_monotonic, fail,
@@ -245,10 +259,11 @@ check_admin_list_locks(Port) ->
     AgentId = <<"selftest-al-", (rand_id())/binary>>,
     Cmds = [
         #{<<"op">> => <<"register">>, <<"agent_id">> => AgentId},
-        #{<<"op">> => <<"admin_list_locks">>}
+        #{<<"op">> => <<"admin_list_locks">>},
+        #{<<"op">> => <<"unregister">>}
     ],
     case send_multi_recv(Port, Cmds) of
-        {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>, <<"locks">> := _}]} ->
+        {ok, [#{<<"status">> := <<"ok">>}, #{<<"status">> := <<"ok">>, <<"locks">> := _}, #{<<"status">> := <<"ok">>}]} ->
             {admin_list_locks, pass, ""};
         Other ->
             {admin_list_locks, fail, fmt("unexpected: ~p", [Other])}
@@ -258,11 +273,13 @@ check_admin_fencing_seq(Port) ->
     AgentId = <<"selftest-af-", (rand_id())/binary>>,
     Cmds = [
         #{<<"op">> => <<"register">>, <<"agent_id">> => AgentId},
-        #{<<"op">> => <<"admin_fencing_seq">>}
+        #{<<"op">> => <<"admin_fencing_seq">>},
+        #{<<"op">> => <<"unregister">>}
     ],
     case send_multi_recv(Port, Cmds) of
         {ok, [#{<<"status">> := <<"ok">>},
-               #{<<"status">> := <<"ok">>, <<"fencing_seq">> := _}]} ->
+               #{<<"status">> := <<"ok">>, <<"fencing_seq">> := _},
+               #{<<"status">> := <<"ok">>}]} ->
             {admin_fencing_seq, pass, ""};
         Other ->
             {admin_fencing_seq, fail, fmt("unexpected: ~p", [Other])}
@@ -318,12 +335,14 @@ send_multi_recv(Port, Reqs) ->
             {error, {connect, Reason}}
     end.
 
-%% @private Register an agent, then send a command on the same session.
+%% @private Register an agent, send a command, then unregister cleanly.
 send_recv_on_session(Port, AgentId, Cmd) ->
-    Cmds = [#{<<"op">> => <<"register">>, <<"agent_id">> => AgentId}, Cmd],
+    Cmds = [#{<<"op">> => <<"register">>, <<"agent_id">> => AgentId},
+            Cmd,
+            #{<<"op">> => <<"unregister">>}],
     case send_multi_recv(Port, Cmds) of
-        {ok, [#{<<"status">> := <<"ok">>}, Response]} -> {ok, Response};
-        {ok, [#{<<"status">> := <<"error">>} = Err, _]} -> {error, Err};
+        {ok, [#{<<"status">> := <<"ok">>}, Response, _]} -> {ok, Response};
+        {ok, [#{<<"status">> := <<"error">>} = Err, _, _]} -> {error, Err};
         Other -> Other
     end.
 

@@ -10,6 +10,7 @@
 
 %% ── Operation names (the "op" field in client requests) ─────────────────────
 -define(OP_REGISTER,            <<"register">>).
+-define(OP_UNREGISTER,          <<"unregister">>).
 -define(OP_ACQUIRE,             <<"acquire">>).
 -define(OP_RELEASE,             <<"release">>).
 -define(OP_RENEW,               <<"renew">>).

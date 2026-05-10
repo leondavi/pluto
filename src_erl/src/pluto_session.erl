@@ -231,6 +231,7 @@ handle_line(Line, #sess{socket = Sock, session_id = SessId} = S) ->
 %%     event_history— Query past events by sequence number.
 handle_request(#{<<"op">> := ?OP_REGISTER} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_register(Msg, S);
 handle_request(#{<<"op">> := ?OP_PING}, S) ->
     pluto_stats:inc(total_requests),
@@ -263,20 +264,29 @@ handle_request(#{<<"op">> := _Op}, #sess{agent_id = undefined} = S) ->
     %% All operations except register, ping, selftest, stats, and admin require registration
     send_error(S#sess.socket, ?ERR_NOT_REGISTERED),
     S;
+handle_request(#{<<"op">> := ?OP_UNREGISTER}, S) ->
+    pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
+    handle_unregister(S);
 handle_request(#{<<"op">> := ?OP_ACQUIRE} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_acquire(Msg, S);
 handle_request(#{<<"op">> := ?OP_RELEASE} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_release(Msg, S);
 handle_request(#{<<"op">> := ?OP_RENEW} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_renew(Msg, S);
 handle_request(#{<<"op">> := ?OP_SEND} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_send(Msg, S);
 handle_request(#{<<"op">> := ?OP_BROADCAST} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_broadcast(Msg, S);
 handle_request(#{<<"op">> := ?OP_LIST_AGENTS} = Msg, S) ->
     pluto_stats:inc(total_requests),
@@ -295,9 +305,11 @@ handle_request(#{<<"op">> := ?OP_ACK_EVENTS} = Msg, S) ->
 %% ── Task management (assign / update / list) ────────────────────────
 handle_request(#{<<"op">> := ?OP_TASK_ASSIGN} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_task_assign(Msg, S);
 handle_request(#{<<"op">> := ?OP_TASK_UPDATE} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_task_update(Msg, S);
 handle_request(#{<<"op">> := ?OP_TASK_LIST} = Msg, S) ->
     pluto_stats:inc(total_requests),
@@ -309,16 +321,20 @@ handle_request(#{<<"op">> := ?OP_FIND_AGENTS} = Msg, S) ->
 %% ── Topic-based publish / subscribe ─────────────────────────────────
 handle_request(#{<<"op">> := ?OP_SUBSCRIBE} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_subscribe(Msg, S);
 handle_request(#{<<"op">> := ?OP_UNSUBSCRIBE} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_unsubscribe(Msg, S);
 handle_request(#{<<"op">> := ?OP_PUBLISH} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_publish(Msg, S);
 %% ── Non-blocking lock probe (try-acquire) ───────────────────────────
 handle_request(#{<<"op">> := ?OP_TRY_ACQUIRE} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_try_acquire(Msg, S);
 %% ── Resource introspection (v0.2.42) ────────────────────────────────
 handle_request(#{<<"op">> := ?OP_RESOURCE_INFO} = Msg, S) ->
@@ -331,6 +347,7 @@ handle_request(#{<<"op">> := ?OP_AGENT_STATUS} = Msg, S) ->
 %% ── Batch work distribution ─────────────────────────────────────────
 handle_request(#{<<"op">> := ?OP_TASK_BATCH} = Msg, S) ->
     pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
     handle_task_batch(Msg, S);
 handle_request(#{<<"op">> := ?OP_TASK_PROGRESS}, S) ->
     pluto_stats:inc(total_requests),
@@ -429,6 +446,16 @@ handle_register(#{<<"agent_id">> := AgentId} = Msg, #sess{socket = Sock,
 handle_register(_, #sess{socket = Sock} = S) ->
     send_error(Sock, ?ERR_BAD_REQUEST),
     S.
+
+%% ── Unregister ──────────────────────────────────────────────────────
+%% Explicit graceful unregister: marks the agent disconnected immediately
+%% (same path as TCP-close) so it appears in Disconnected rather than Live.
+handle_unregister(#sess{socket = Sock, agent_id = AgentId, session_id = SessId} = S) ->
+    ?LOG_INFO("Session ~s (agent ~s) unregistered cleanly", [SessId, AgentId]),
+    pluto_msg_hub:unregister_agent(AgentId),
+    pluto_stats:inc(agents_unregistered_clean),
+    send_json(Sock, #{<<"status">> => ?STATUS_OK}),
+    S#sess{agent_id = undefined}.
 
 %% ── Ping ────────────────────────────────────────────────────────────
 handle_ping(#sess{socket = Sock} = S) ->

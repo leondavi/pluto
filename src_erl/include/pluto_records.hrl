@@ -61,7 +61,11 @@
 %%   agent_id     — Stable logical identity (binary)
 %%   session_id   — Current session ID (binary) or 'undefined' if disconnected
 %%   session_pid  — PID of the current session process, or 'undefined'
-%%   status       — 'connected' | 'disconnected'
+%%   status       — 'connected' | 'disconnected' | 'disconnected_timeout' | 'recovered'
+%%                  connected           = active live session
+%%                  disconnected        = dropped, grace period active (may reconnect)
+%%                  disconnected_timeout= grace period expired without reconnect (tombstone)
+%%                  recovered           = was disconnected, reconnected within grace period
 %%   connected_at — Monotonic time (ms) when last connected
 %%   attributes   — Agent metadata key-value map (binary keys/values)
 %%   last_seen    — System time (ms) of last heartbeat/message
@@ -73,7 +77,7 @@
     agent_id      :: binary(),
     session_id    :: binary() | undefined,
     session_pid   :: pid() | undefined,
-    status        :: connected | disconnected,
+    status        :: connected | disconnected | disconnected_timeout | recovered,
     connected_at  :: integer(),
     attributes    :: map(),
     last_seen     :: integer(),

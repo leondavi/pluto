@@ -149,15 +149,30 @@ def render_dashboard(data, host, tcp_port, http_port):
     print(f"    {'Victims':<19} {CYAN}{g('deadlock_victims'):>10,}{NC}")
     print()
 
+    total_req = g('total_requests')
+    coord_req = g('coordination_requests')
+    maint_req = total_req - coord_req
+
     print(f"  {GREEN}▸ Agents{NC}")
-    print(f"    {'Registered (cum)':<19} {CYAN}{g('agents_registered'):>10,}{NC}")
+    print(f"    {'Registered (Total)':<19} {CYAN}{g('agents_registered'):>10,}{NC}")
+    print(f"    {'Unregistered (clean)':<21} {CYAN}{g('agents_unregistered_clean'):>8,}{NC}")
     print(f"    {'Disconnected':<19} {CYAN}{g('agents_disconnected'):>10,}{NC}")
-    print(f"    {'Total requests':<19} {CYAN}{g('total_requests'):>10,}{NC}")
     print()
+    print(f"  {GREEN}▸ Requests{NC}")
+    print(f"    {BOLD}{'Coordination':<19}{NC} {CYAN}{coord_req:>10,}{NC}  "
+          f"(register/unregister, locks, messaging, tasks, pub/sub)")
+    print(f"    {'Maintenance':<19} {CYAN}{maint_req:>10,}{NC}  "
+          f"(ping, stats, queries, admin, ack)")
+    print(f"    {'Total':<19} {CYAN}{total_req:>10,}{NC}")
+    print()
+
+    total_agents = live.get('total_agents', 0)
+    selftest_agents = live.get('selftest_agents', 0)
+    selftest_note = f"  ({selftest_agents} selftest)" if selftest_agents > 0 else ""
 
     print(f"  {GREEN}▸ Live{NC}")
     print(f"    {'Connected agents':<19} {CYAN}{live.get('connected_agents', 0):>10,}{NC}")
-    print(f"    {'Total agents':<19} {CYAN}{live.get('total_agents', 0):>10,}{NC}")
+    print(f"    {'Total agents':<19} {CYAN}{total_agents:>10,}{NC}{selftest_note}")
     print(f"    {'Active locks':<19} {CYAN}{live.get('active_locks', 0):>10,}{NC}")
     print(f"    {'Pending waiters':<19} {CYAN}{live.get('pending_waiters', 0):>10,}{NC}")
     print(f"    {'Wait-graph edges':<19} {CYAN}{live.get('wait_graph_edges', 0):>10,}{NC}")

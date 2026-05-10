@@ -51,7 +51,7 @@
 -include("pluto.hrl").
 
 %% API
--export([start/1]).
+-export([start/1, build_recovery_prompt/1]).
 
 %% Internal entry point (called by proc_lib)
 -export([init/1]).
@@ -268,6 +268,14 @@ handle_request(#{<<"op">> := ?OP_UNREGISTER}, S) ->
     pluto_stats:inc(total_requests),
     pluto_stats:inc(coordination_requests),
     handle_unregister(S);
+handle_request(#{<<"op">> := ?OP_SNAPSHOT_SELF}, S) ->
+    pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
+    handle_snapshot_self(S);
+handle_request(#{<<"op">> := ?OP_RESTORE_FROM_SNAPSHOT} = Msg, S) ->
+    pluto_stats:inc(total_requests),
+    pluto_stats:inc(coordination_requests),
+    handle_restore_from_snapshot(Msg, S);
 handle_request(#{<<"op">> := ?OP_ACQUIRE} = Msg, S) ->
     pluto_stats:inc(total_requests),
     pluto_stats:inc(coordination_requests),
@@ -456,6 +464,87 @@ handle_unregister(#sess{socket = Sock, agent_id = AgentId, session_id = SessId} 
     pluto_stats:inc(agents_unregistered_clean),
     send_json(Sock, #{<<"status">> => ?STATUS_OK}),
     S#sess{agent_id = undefined}.
+
+%% ── Snapshot self ───────────────────────────────────────────────────
+%% Returns a JSON `.plut` payload + a markdown `prompt` the agent can save
+%% to disk. The agent presents the .plut later (after register) to restore
+%% its identity, attributes, subscriptions, and any still-held locks.
+handle_snapshot_self(#sess{socket = Sock, agent_id = AgentId} = S) ->
+    case pluto_msg_hub:capture_snapshot(AgentId) of
+        {ok, Snapshot} ->
+            Prompt = build_recovery_prompt(Snapshot),
+            send_json(Sock, #{
+                <<"status">> => ?STATUS_OK,
+                <<"plut">>   => Snapshot,
+                <<"prompt">> => Prompt
+            });
+        {error, not_found} ->
+            send_error(Sock, ?ERR_NOT_FOUND)
+    end,
+    S.
+
+%% ── Restore from snapshot ───────────────────────────────────────────
+%% The agent must already be registered (any normal `register` op). This
+%% overlays the snapshot state and flips status to `recovered_from_file`.
+handle_restore_from_snapshot(#{<<"plut">> := Snapshot},
+                             #sess{socket = Sock, agent_id = AgentId} = S)
+  when is_map(Snapshot) ->
+    case pluto_msg_hub:restore_from_snapshot(AgentId, Snapshot) of
+        {ok, Result} ->
+            send_json(Sock, Result);
+        {error, not_registered} ->
+            send_error(Sock, ?ERR_NOT_REGISTERED);
+        {error, Reason} ->
+            send_json(Sock, #{<<"status">> => ?STATUS_ERROR,
+                              <<"reason">> => atom_to_binary(Reason, utf8)})
+    end,
+    S;
+handle_restore_from_snapshot(_, #sess{socket = Sock} = S) ->
+    send_error(Sock, ?ERR_BAD_REQUEST),
+    S.
+
+%% @private Build a markdown recovery prompt for the agent.
+build_recovery_prompt(Snapshot) ->
+    AgentId   = maps:get(<<"agent_id">>, Snapshot, <<"unknown">>),
+    TakenAt   = maps:get(<<"taken_at">>, Snapshot, 0),
+    Locks     = maps:get(<<"held_locks">>, Snapshot, []),
+    Subs      = maps:get(<<"subscriptions">>, Snapshot, []),
+    LockCount = length(Locks),
+    SubCount  = length(Subs),
+    iolist_to_binary([
+        <<"# Pluto Agent Recovery — ">>, AgentId, <<"\n\n">>,
+        <<"You were previously registered with Pluto as `">>, AgentId, <<"` and\n">>,
+        <<"took a self-snapshot at unix-ms ">>, integer_to_binary(TakenAt), <<".\n\n">>,
+        <<"## Step 1 — Re-register on Pluto\n\n">>,
+        <<"Send the standard register op first to claim your name:\n\n">>,
+        <<"```json\n">>,
+        <<"{\"op\":\"register\",\"agent_id\":\"">>, AgentId, <<"\"}\n">>,
+        <<"```\n\n">>,
+        <<"## Step 2 — Restore your saved state\n\n">>,
+        <<"Send the contents of the `.plut` file as the `plut` field:\n\n">>,
+        <<"```json\n">>,
+        <<"{\"op\":\"restore_from_snapshot\",\"plut\": <contents of agent.plut>}\n">>,
+        <<"```\n\n">>,
+        <<"On success Pluto returns `reclaimed_locks` (still held) and\n">>,
+        <<"`lost_locks` (released since snapshot — re-acquire if needed).\n">>,
+        <<"Your status will become `recovered_from_file`.\n\n">>,
+        <<"## Step 3 — Recover your own context\n\n">>,
+        <<"Pluto only restores coordination state; you must rebuild domain\n">>,
+        <<"context yourself. Suggested checklist:\n\n">>,
+        <<"- Read your project root `CLAUDE.md` / `README.md` for active goals.\n">>,
+        <<"- Inspect `git log -20` and `git status` to see what changed while you were offline.\n">>,
+        <<"- Re-poll your Pluto inbox for messages (delivered automatically on register).\n">>,
+        <<"- Verify each entry in `reclaimed_locks` (">>,
+            integer_to_binary(LockCount), <<" locks at snapshot time) is still safe to hold.\n">>,
+        <<"- Re-confirm topic subscriptions (">>,
+            integer_to_binary(SubCount), <<" topics at snapshot time).\n">>,
+        <<"- Check the orchestrator/coordinator for new task assignments.\n">>,
+        <<"- If any held resource has changed hands, release before reusing.\n\n">>,
+        <<"## Status semantics\n\n">>,
+        <<"- `recovered`           — Pluto remembered you within grace period.\n">>,
+        <<"- `recovered_from_file` — you presented a `.plut` snapshot to restore.\n">>,
+        <<"\nProceed with your prior assignment unless the orchestrator says otherwise.\n">>
+    ]).
 
 %% ── Ping ────────────────────────────────────────────────────────────
 handle_ping(#sess{socket = Sock} = S) ->

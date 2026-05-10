@@ -181,6 +181,60 @@ with PlutoClient(host="localhost", port=9000, agent_id="coder-1") as client:
 
 The context manager calls `disconnect()` automatically on exit.
 
+### Snapshot & restore (v0.2.9)
+
+Take a self-restorable snapshot of the agent's coordination state and
+recover it on a later run — useful for surviving host restarts or
+explicit shutdowns:
+
+```python
+from pluto_client import PlutoClient
+import json
+
+# ── Take a snapshot ──────────────────────────────────────────────────
+with PlutoClient(host="localhost", port=9000, agent_id="coder-1") as client:
+    # Option A: receive payload inline
+    snap = client.snapshot_self()
+    # snap = {"plut": {...}, "prompt": "...markdown..."}
+
+    # Option B: write both files to disk in one call
+    plut_path, md_path = client.save_snapshot_files("/tmp/pluto/snapshots")
+    # → /tmp/pluto/snapshots/coder-1.plut
+    # → /tmp/pluto/snapshots/coder-1-recovery.md
+
+# ── Restore on a later run ───────────────────────────────────────────
+with open("/tmp/pluto/snapshots/coder-1.plut") as f:
+    plut = json.load(f)
+
+with PlutoClient(host="localhost", port=9000, agent_id="coder-1") as client:
+    # `connect()` already called register; now overlay the snapshot
+    result = client.restore_from_snapshot(plut)
+    # result["reclaimed_locks"] — still held; fencing tokens unchanged
+    # result["lost_locks"]      — released since snapshot; re-acquire if safe
+    # agent's status is now 'recovered_from_file'
+```
+
+`PlutoHttpClient` exposes the same three methods (`snapshot_self`,
+`restore_from_snapshot`, `save_snapshot_files`) for HTTP/stateless agents.
+
+What the snapshot captures:
+
+| Field            | Notes |
+|------------------|-------|
+| `agent_id`       | identity to claim on next register |
+| `session_id`     | original session ID (for diagnostics) |
+| `attributes`     | full key/value map — restored on overlay |
+| `custom_status`  | last `set_status` value |
+| `subscriptions`  | every topic the agent had joined |
+| `held_locks`     | each ref + resource + mode + fencing token + expiry |
+| `taken_at`       | unix-ms when the snapshot was captured |
+| `version`        | Pluto version that produced the snapshot |
+
+The snapshot **does not** preserve the inbox; messages received while
+offline are governed by Pluto's normal grace-period delivery (default
+30 s). For longer outages, message durability is the orchestrator's
+responsibility, not the snapshot's.
+
 ---
 
 ## HTTP API (Quick Reference)

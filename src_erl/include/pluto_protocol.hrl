@@ -11,6 +11,8 @@
 %% ── Operation names (the "op" field in client requests) ─────────────────────
 -define(OP_REGISTER,            <<"register">>).
 -define(OP_UNREGISTER,          <<"unregister">>).
+-define(OP_SNAPSHOT_SELF,       <<"snapshot_self">>).
+-define(OP_RESTORE_FROM_SNAPSHOT,<<"restore_from_snapshot">>).
 -define(OP_ACQUIRE,             <<"acquire">>).
 -define(OP_RELEASE,             <<"release">>).
 -define(OP_RENEW,               <<"renew">>).

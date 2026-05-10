@@ -201,6 +201,79 @@ above. `--require-consent` is not needed for these frameworks.
 
 ---
 
+## Snapshot & restore (v0.2.9)
+
+When the wrapped agent needs to survive a host restart or graceful
+shutdown, ask Pluto for a `.plut` snapshot file via the wire op
+`snapshot_self` and feed it back at next launch with `--restore`.
+
+### Saving a snapshot mid-session
+
+From inside the agent (TCP or HTTP), call `snapshot_self`:
+
+```bash
+# TCP via PlutoClient.sh
+./PlutoClient.sh raw '{"op":"snapshot_self"}' > snapshot.json
+jq '.plut'   < snapshot.json > /tmp/pluto/snapshots/coder-1.plut
+jq -r '.prompt' < snapshot.json > /tmp/pluto/snapshots/coder-1-recovery.md
+```
+
+Or from Python (works for both TCP `PlutoClient` and HTTP `PlutoHttpClient`):
+
+```python
+client.save_snapshot_files("/tmp/pluto/snapshots")
+# → writes <agent_id>.plut + <agent_id>-recovery.md
+```
+
+### Re-launching with `--restore`
+
+Pass the `.plut` to PlutoAgentFriend on the next invocation:
+
+```bash
+./PlutoAgentFriend.sh \
+    --agent-id coder-1 \
+    --restore  /tmp/pluto/snapshots/coder-1.plut
+```
+
+The launcher:
+
+1. Registers `coder-1` on Pluto as usual.
+2. Calls `restore_from_snapshot` with the file contents — Pluto
+   re-applies attributes, custom_status, subscriptions, and audits
+   each held lock against the snapshot.
+3. Prepends the recovery markdown to the agent's first turn so the
+   model knows it is resuming.
+
+After restore the agent appears in `pluto_list_agents` with status
+`recovered_from_file`.
+
+### What the response tells you
+
+```json
+{
+  "status": "ok",
+  "agent_id": "coder-1",
+  "session_id": "sess-...",
+  "reclaimed_locks": [...],   // still owned by you
+  "lost_locks": [...],        // released since snapshot — re-acquire if needed
+  "subscriptions": ["alerts"],
+  "attributes": {"role": "coder"}
+}
+```
+
+`reclaimed_locks` are safe to keep — fencing tokens are unchanged.
+`lost_locks` should be treated as not held; re-acquire only after
+verifying the resource is still safe and free.
+
+### When grace-period reconnect is enough
+
+For sub-30-second outages Pluto already restores everything via the
+normal reconnect path (status = `recovered`, locks reclaimed, queued
+inbox delivered). Save snapshots only for known long outages or
+explicit shutdowns — not as continuous insurance.
+
+---
+
 ## Disclaimer & Liability
 
 Pluto is provided **as-is**, without warranty of any kind — express or

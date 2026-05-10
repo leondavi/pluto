@@ -16,7 +16,7 @@
 -define(APP, pluto).
 
 %% ── Version ─────────────────────────────────────────────────────────────────
--define(VERSION, "0.2.8").
+-define(VERSION, "0.2.9").
 
 %% ── Default configuration values ────────────────────────────────────────────
 -define(DEFAULT_TCP_PORT,               9000).

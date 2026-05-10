@@ -45,7 +45,9 @@
     peek_inbox/1,
     peek_inbox/2,
     ack_inbox/2,
-    push_event_to_agent/2
+    push_event_to_agent/2,
+    capture_snapshot/1,
+    restore_from_snapshot/2
 ]).
 
 %% gen_server callbacks
@@ -246,6 +248,24 @@ peek_inbox(AgentId, SinceToken) ->
 ack_inbox(AgentId, UpToSeq) when is_integer(UpToSeq), UpToSeq >= 0 ->
     gen_server:call(?MODULE, {ack_inbox, AgentId, UpToSeq}).
 
+%% @doc Capture a self-restorable snapshot of the agent's state.
+%% Returns a map containing agent_id, session_id, attributes, custom_status,
+%% subscriptions, held_locks (with fencing tokens), and a taken_at timestamp.
+%% The agent persists this and may later present it via restore_from_snapshot/2.
+-spec capture_snapshot(binary()) -> {ok, map()} | {error, not_found}.
+capture_snapshot(AgentId) ->
+    gen_server:call(?MODULE, {capture_snapshot, AgentId}).
+
+%% @doc Apply a previously captured snapshot to a freshly registered session.
+%% The agent must already be registered (via the normal `register` op) before
+%% calling this; restore overlays the saved attributes/subscriptions/custom_status
+%% on top, sets status to `recovered_from_file`, and reports which locks
+%% from the snapshot are still recoverable. Locks released since the snapshot
+%% are reported in `lost_locks`.
+-spec restore_from_snapshot(binary(), map()) -> {ok, map()} | {error, term()}.
+restore_from_snapshot(AgentId, Snapshot) when is_map(Snapshot) ->
+    gen_server:call(?MODULE, {restore_from_snapshot, AgentId, Snapshot}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -350,7 +370,7 @@ handle_call({send, From, To, Payload, RequestId}, _From,
     pluto_event_log:log(message_sent, #{from => From, to => To, msg_id => MsgId}),
     case ets:lookup(?ETS_AGENTS, To) of
         [#agent{status = S, session_pid = Pid, session_type = SType}]
-          when (S =:= connected orelse S =:= recovered), is_pid(Pid), SType =:= tcp ->
+          when (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file), is_pid(Pid), SType =:= tcp ->
             Pid ! {pluto_event, Event2},
             pluto_stats:inc(messages_sent),
             pluto_stats:inc(messages_received),
@@ -362,7 +382,8 @@ handle_call({send, From, To, Payload, RequestId}, _From,
                 _ ->
                     case ets:lookup(?ETS_AGENTS, From) of
                         [#agent{status = SF, session_pid = SenderPid}]
-                          when (SF =:= connected orelse SF =:= recovered),
+                          when (SF =:= connected orelse SF =:= recovered
+                                orelse SF =:= recovered_from_file),
                                is_pid(SenderPid) ->
                             AckEvt = #{
                                 <<"event">>      => ?EVT_DELIVERY_ACK,
@@ -377,7 +398,7 @@ handle_call({send, From, To, Payload, RequestId}, _From,
             end,
             {reply, {ok, MsgId}, State#state{msg_seq = NewSeq}};
         [#agent{status = S, session_type = SType}]
-          when (S =:= connected orelse S =:= recovered),
+          when (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file),
                (SType =:= http orelse SType =:= stateless) ->
             %% HTTP/stateless agent — queue message in inbox for polling
             queue_inbox_message(To, Event2),
@@ -398,7 +419,9 @@ handle_call({send, From, To, Payload, RequestId}, _From,
 handle_call(list_agents, _From, State) ->
     All = ets:tab2list(?ETS_AGENTS),
     Ids = [A#agent.agent_id || A <- All,
-           A#agent.status =:= connected orelse A#agent.status =:= recovered],
+           A#agent.status =:= connected
+           orelse A#agent.status =:= recovered
+           orelse A#agent.status =:= recovered_from_file],
     {reply, Ids, State};
 
 %% ── List agents with full detail (attributes, last-seen, status) ────
@@ -427,6 +450,7 @@ handle_call({find_agents, Filter}, _From, State) ->
             {ok, <<"disconnected">>}        -> Status =:= disconnected;
             {ok, <<"disconnected_timeout">>}-> Status =:= disconnected_timeout;
             {ok, <<"recovered">>}           -> Status =:= recovered;
+            {ok, <<"recovered_from_file">>} -> Status =:= recovered_from_file;
             _ -> true
         end,
         %% Check custom_status filter if present
@@ -552,6 +576,91 @@ handle_call({ack_inbox, AgentId, UpToSeq}, _From, State) ->
     end,
     {reply, {ok, Drained}, State};
 
+%% ── capture_snapshot — build a self-restorable state map for AgentId ──
+handle_call({capture_snapshot, AgentId}, _From, State) ->
+    case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{agent_id    = AId,
+                session_id   = SessId,
+                attributes   = Attrs,
+                custom_status= CStatus,
+                subscriptions= Subs,
+                session_type = SType}] ->
+            Locks = pluto_lock_mgr:locks_for_agent(AgentId),
+            LockMaps = [#{
+                <<"lock_ref">>      => L#lock.lock_ref,
+                <<"resource">>      => L#lock.resource,
+                <<"mode">>          => atom_to_binary(L#lock.mode, utf8),
+                <<"fencing_token">> => L#lock.fencing_token,
+                <<"expires_at">>    => L#lock.expires_at
+            } || L <- Locks],
+            Snapshot = #{
+                <<"version">>        => list_to_binary(?VERSION),
+                <<"taken_at">>       => erlang:system_time(millisecond),
+                <<"agent_id">>       => AId,
+                <<"session_id">>     => case SessId of undefined -> null; _ -> SessId end,
+                <<"attributes">>     => Attrs,
+                <<"custom_status">>  => CStatus,
+                <<"subscriptions">>  => Subs,
+                <<"session_type">>   => atom_to_binary(SType, utf8),
+                <<"held_locks">>     => LockMaps
+            },
+            {reply, {ok, Snapshot}, State};
+        [] ->
+            {reply, {error, not_found}, State}
+    end;
+
+%% ── restore_from_snapshot — overlay snapshot onto a freshly registered session
+handle_call({restore_from_snapshot, AgentId, Snapshot}, _From, State) ->
+    case ets:lookup(?ETS_AGENTS, AgentId) of
+        [Agent = #agent{}] ->
+            SnapAttrs    = maps:get(<<"attributes">>, Snapshot, #{}),
+            SnapCStatus  = maps:get(<<"custom_status">>, Snapshot, Agent#agent.custom_status),
+            SnapSubs     = maps:get(<<"subscriptions">>, Snapshot, []),
+            SnapLocks    = maps:get(<<"held_locks">>, Snapshot, []),
+            SnapTakenAt  = maps:get(<<"taken_at">>, Snapshot, 0),
+
+            %% Merge attributes: snapshot values win on conflict (agent's prior identity)
+            MergedAttrs = maps:merge(Agent#agent.attributes, SnapAttrs),
+            ets:insert(?ETS_AGENTS, Agent#agent{
+                attributes    = MergedAttrs,
+                custom_status = SnapCStatus,
+                subscriptions = SnapSubs,
+                status        = recovered_from_file
+            }),
+
+            %% Determine which snapshot locks are still held by this agent.
+            %% Locks released since the snapshot are "lost".
+            CurrentLocks = pluto_lock_mgr:locks_for_agent(AgentId),
+            CurrentRefs  = [L#lock.lock_ref || L <- CurrentLocks],
+            {Reclaimed, Lost} = lists:foldl(fun(LockMap, {Ok, Bad}) ->
+                Ref = maps:get(<<"lock_ref">>, LockMap, undefined),
+                case Ref =/= undefined andalso lists:member(Ref, CurrentRefs) of
+                    true  -> {[LockMap | Ok], Bad};
+                    false -> {Ok, [LockMap | Bad]}
+                end
+            end, {[], []}, SnapLocks),
+
+            pluto_event_log:log(snapshot_restored,
+                                #{agent_id => AgentId,
+                                  taken_at => SnapTakenAt,
+                                  reclaimed => length(Reclaimed),
+                                  lost => length(Lost)}),
+
+            Result = #{
+                <<"status">>          => ?STATUS_OK,
+                <<"agent_id">>        => AgentId,
+                <<"session_id">>      => Agent#agent.session_id,
+                <<"taken_at">>        => SnapTakenAt,
+                <<"reclaimed_locks">> => lists:reverse(Reclaimed),
+                <<"lost_locks">>      => lists:reverse(Lost),
+                <<"attributes">>      => MergedAttrs,
+                <<"subscriptions">>   => SnapSubs
+            },
+            {reply, {ok, Result}, State};
+        [] ->
+            {reply, {error, not_registered}, State}
+    end;
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
@@ -567,7 +676,7 @@ handle_cast({broadcast, From, Payload}, State) ->
     %% Send to all active agents except the sender
     AllAgents = ets:tab2list(?ETS_AGENTS),
     lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid, status = S}) ->
-        case (S =:= connected orelse S =:= recovered) andalso AId =/= From
+        case (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file) andalso AId =/= From
              andalso is_pid(Pid) of
             true  -> Pid ! {pluto_event, Event};
             false -> ok
@@ -629,7 +738,7 @@ handle_cast({publish, From, Topic, Payload}, State) ->
     AllAgents = ets:tab2list(?ETS_AGENTS),
     lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid,
                              subscriptions = Subs, status = S}) ->
-        case (S =:= connected orelse S =:= recovered) andalso AId =/= From
+        case (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file) andalso AId =/= From
              andalso is_pid(Pid) andalso lists:member(Topic, Subs) of
             true  -> Pid ! {pluto_event, Event};
             false -> ok
@@ -769,7 +878,7 @@ do_register(AgentId, SessionId, SessionPid, Attrs, SessionType) ->
 broadcast_event(Event, ExcludeAgentId) ->
     AllAgents = ets:tab2list(?ETS_AGENTS),
     lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid, status = S}) ->
-        case (S =:= connected orelse S =:= recovered)
+        case (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file)
              andalso AId =/= ExcludeAgentId andalso is_pid(Pid) of
             true  -> Pid ! {pluto_event, Event};
             false -> ok
@@ -784,10 +893,11 @@ broadcast_event(Event, ExcludeAgentId) ->
 push_event_to_agent(AgentId, Event) ->
     case ets:lookup(?ETS_AGENTS, AgentId) of
         [#agent{status = S, session_pid = Pid}]
-          when (S =:= connected orelse S =:= recovered), is_pid(Pid) ->
+          when (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file), is_pid(Pid) ->
             Pid ! {pluto_event, Event},
             ok;
-        [#agent{status = S}] when S =:= connected; S =:= disconnected; S =:= recovered ->
+        [#agent{status = S}] when S =:= connected; S =:= disconnected;
+                                    S =:= recovered; S =:= recovered_from_file ->
             queue_inbox_message(AgentId, Event);
         _ ->
             ok
@@ -829,7 +939,8 @@ do_deliver_inbox(AgentId) ->
     NowMs = erlang:system_time(millisecond),
     case ets:lookup(?ETS_AGENTS, AgentId) of
         [#agent{status = AgSt, session_pid = Pid}]
-          when (AgSt =:= connected orelse AgSt =:= recovered), is_pid(Pid) ->
+          when (AgSt =:= connected orelse AgSt =:= recovered
+                orelse AgSt =:= recovered_from_file), is_pid(Pid) ->
             Keys = ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}),
             SortedSeqs = lists:sort([Seq || [Seq] <- Keys]),
             lists:foreach(fun(Seq) ->

@@ -280,6 +280,60 @@ def register_tools(
         return await inbox.piggyback(resp)
 
     @mcp.tool(
+        name="pluto_snapshot_self",
+        description=(
+            "Capture a self-restorable snapshot of this agent's Pluto state. "
+            "Returns {plut: {...}, prompt: '...'} where 'plut' is the "
+            "coordination-state JSON the agent should write to "
+            "<output_dir>/<agent_id>.plut and 'prompt' is a markdown "
+            "recovery prompt for <agent_id>-recovery.md. Pass output_dir "
+            "(defaults to /tmp/pluto/snapshots) to also write both files "
+            "to disk and have the file paths returned."
+        ),
+    )
+    async def pluto_snapshot_self(
+        output_dir: Optional[str] = None,
+    ) -> dict:
+        if output_dir:
+            plut_path, md_path = await _run(client.save_snapshot_files, output_dir)
+            resp = {
+                "status": "ok",
+                "plut_path": plut_path,
+                "prompt_path": md_path,
+                "message": (
+                    f"Snapshot saved. To restore later, run "
+                    f"PlutoMCPFriend with --restore {plut_path}"
+                ),
+            }
+        else:
+            snap = await _run(client.snapshot_self)
+            resp = {"status": "ok", **snap}
+        return await inbox.piggyback(resp)
+
+    @mcp.tool(
+        name="pluto_restore_from_snapshot",
+        description=(
+            "Restore a previously saved Pluto state from a .plut payload. "
+            "Pass either 'plut' (the parsed JSON dict) or 'plut_path' "
+            "(file path). Agent must already be registered via the "
+            "MCP friend launcher. After restore, status becomes "
+            "'recovered_from_file'. Returns reclaimed_locks and lost_locks."
+        ),
+    )
+    async def pluto_restore_from_snapshot(
+        plut: Optional[dict] = None,
+        plut_path: Optional[str] = None,
+    ) -> dict:
+        if plut is None and plut_path:
+            import json as _json
+            with open(plut_path, "r", encoding="utf-8") as f:
+                plut = _json.load(f)
+        if not isinstance(plut, dict):
+            return {"status": "error", "reason": "missing plut or plut_path"}
+        resp = await _run(client.restore_from_snapshot, plut)
+        return await inbox.piggyback(resp)
+
+    @mcp.tool(
         name="pluto_session",
         description=(
             "Read-only diagnostic. Returns this MCP adapter's "

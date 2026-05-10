@@ -94,6 +94,11 @@ Options:
                           watchdog. Keep <=120 to be safe.
   --no-launch             Generate .mcp.json but do not start Claude.
   --no-wizard             Refuse the interactive wizard; require all args.
+  --restore <path>        After registering, apply a previously saved .plut
+                          snapshot via restore_from_snapshot. The agent_id
+                          inside the file is authoritative — when --agent-id
+                          is omitted it is auto-derived from the snapshot;
+                          when both are given they must match.
   --log-level <lvl>       DEBUG | INFO | WARNING | ERROR (default: WARNING).
   --version               Print version and exit.
   --help                  Show this help.
@@ -104,6 +109,8 @@ Examples:
   $(basename "$0") --agent-id coder-1 --role specialist
   $(basename "$0") --agent-id reviewer-1 --wait-timeout-s 90         # tune watcher cycle
   $(basename "$0") --agent-id worker-1 --no-launch                   # config only
+  $(basename "$0") --role orchestrator \\
+                  --restore /tmp/pluto/snapshots/cells-orch.plut    # resume identity
 EOF
 }
 
@@ -295,6 +302,23 @@ except Exception:
   print("?")' 2>/dev/null || echo "?"
 }
 
+# True if *any* TCP listener responds on the given host:port within timeout.
+# Used to distinguish "no server at all" from "server bound to a different
+# HTTP port than what the config file says" (typical after editing the
+# config without restarting the daemon).
+tcp_port_reachable() {
+    local host="$1" port="$2"
+    "${VENV_DIR}/bin/python" - "$host" "$port" <<'PYEOF' 2>/dev/null
+import socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+try:
+    with socket.create_connection((host, port), timeout=2):
+        sys.exit(0)
+except OSError:
+    sys.exit(1)
+PYEOF
+}
+
 # Print server status; return 0 if reachable, 1 otherwise.
 check_pluto_reachable() {
     local host="$1" port="$2"
@@ -306,6 +330,37 @@ check_pluto_reachable() {
         return 0
     fi
     warn "Pluto server is ${YELLOW}OFFLINE${NC} at ${host}:${port}"
+
+    # Disambiguate: is the daemon up but bound to different HTTP port?
+    # Probe the TCP control port and a few common HTTP defaults; if any
+    # of them respond we tell the user the daemon is alive on the wrong
+    # port (the typical cause: config bumped from 9201 -> 9202 without
+    # restarting the daemon).
+    local tcp_port
+    tcp_port=$(read_config_value host_tcp_port "${DEFAULT_TCP_PORT}")
+    local found=""
+    if tcp_port_reachable "$host" "$tcp_port"; then
+        found="${tcp_port} (TCP control port)"
+    fi
+    local p
+    for p in 9201 9202; do
+        [[ "$p" == "$port" ]] && continue
+        if tcp_port_reachable "$host" "$p"; then
+            found="${found:+${found}, }${p}"
+        fi
+    done
+    if [[ -n "${found}" ]]; then
+        echo ""
+        echo -e "  ${YELLOW}A Pluto process appears to be running, just not on${NC}"
+        echo -e "  ${YELLOW}HTTP port ${port}.${NC} Live ports: ${BOLD}${found}${NC}"
+        echo ""
+        echo -e "  Likely cause: ${CYAN}config/pluto_config.json${NC} was changed"
+        echo -e "  after the daemon started. Restart it so it picks up the new"
+        echo -e "  HTTP port:"
+        echo ""
+        echo -e "    ${CYAN}./PlutoServer.sh --kill && ./PlutoServer.sh --daemon${NC}"
+        echo ""
+    fi
     return 1
 }
 
@@ -318,7 +373,9 @@ offer_to_start_server() {
     echo ""
     read -rp "  Start Pluto server in the background now? [Y/n] " ans
     ans="${ans:-y}"
-    case "${ans,,}" in
+    # Portable lowercase: bash 3.2 (macOS default) doesn't support ${var,,}.
+    ans=$(printf '%s' "${ans}" | tr '[:upper:]' '[:lower:]')
+    case "${ans}" in
         y|yes)
             if [[ ! -x "${SCRIPT_DIR}/PlutoServer.sh" ]]; then
                 err "PlutoServer.sh not found or not executable."
@@ -343,12 +400,14 @@ offer_to_start_server() {
 
 write_mcp_json() {
     local agent_id="$1" host="$2" port="$3" ttl="$4" log_level="$5" wait_s="$6"
+    local restore_path="${7:-}"
     local target="${SCRIPT_DIR}/.mcp.json"
     "${VENV_DIR}/bin/python" - "$target" "$agent_id" "$host" "$port" "$ttl" \
-        "$log_level" "$wait_s" "${VENV_DIR}/bin/python" "${PY_ENTRY}" <<'PYEOF'
+        "$log_level" "$wait_s" "${VENV_DIR}/bin/python" "${PY_ENTRY}" \
+        "$restore_path" <<'PYEOF'
 import json, os, sys
 (target, agent_id, host, port, ttl, log_level, wait_s, py_bin,
- entry) = sys.argv[1:]
+ entry, restore_path) = sys.argv[1:]
 existing = {}
 if os.path.isfile(target):
     try:
@@ -357,18 +416,18 @@ if os.path.isfile(target):
     except Exception:
         existing = {}
 servers = existing.get("mcpServers") or {}
-servers["pluto"] = {
-    "command": py_bin,
-    "args": [
-        entry,
-        "--agent-id", agent_id,
-        "--host", host,
-        "--http-port", str(port),
-        "--ttl-ms", str(ttl),
-        "--wait-timeout-s", str(wait_s),
-        "--log-level", log_level,
-    ],
-}
+args = [
+    entry,
+    "--agent-id", agent_id,
+    "--host", host,
+    "--http-port", str(port),
+    "--ttl-ms", str(ttl),
+    "--wait-timeout-s", str(wait_s),
+    "--log-level", log_level,
+]
+if restore_path:
+    args += ["--restore", restore_path]
+servers["pluto"] = {"command": py_bin, "args": args}
 existing["mcpServers"] = servers
 with open(target, "w") as f:
     json.dump(existing, f, indent=2)
@@ -618,6 +677,7 @@ main() {
     local log_level="WARNING"
     local no_launch=false
     local no_wizard=false
+    local restore_path=""
     local extra_cmd=()
     local past_separator=false
 
@@ -639,6 +699,7 @@ main() {
             --log-level) log_level="$2"; shift 2 ;;
             --no-launch) no_launch=true; shift ;;
             --no-wizard) no_wizard=true; shift ;;
+            --restore) restore_path="$2"; shift 2 ;;
             --framework)
                 err "--framework was removed in v0.2.8 — Claude Code only."
                 err "For Cursor/Aider/Copilot use ./PlutoAgentFriend.sh instead."
@@ -653,6 +714,32 @@ main() {
     if ! [[ "${wait_timeout_s}" =~ ^[0-9]+$ ]] || (( wait_timeout_s < 1 )); then
         err "--wait-timeout-s must be a positive integer (seconds)."
         exit 1
+    fi
+
+    # ── --restore validation + agent_id auto-detect ─────────────────────────
+    # If --restore was given, the .plut file is authoritative for agent_id —
+    # using a different name silently lands all snapshot locks in lost_locks.
+    # When --agent-id wasn't passed, derive it from the file. When both were
+    # passed and disagree, abort with a clear error rather than continuing.
+    if [[ -n "${restore_path}" ]]; then
+        if [[ ! -f "${restore_path}" ]]; then
+            err "--restore: file not found: ${restore_path}"
+            exit 1
+        fi
+        local plut_id
+        plut_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('agent_id',''))" "${restore_path}" 2>/dev/null || echo "")
+        if [[ -z "${plut_id}" ]]; then
+            err "--restore: ${restore_path} has no agent_id field — not a valid .plut snapshot."
+            exit 1
+        fi
+        if [[ -z "${agent_id}" ]]; then
+            agent_id="${plut_id}"
+            info "Using agent_id from snapshot: ${agent_id}"
+        elif [[ "${agent_id}" != "${plut_id}" ]]; then
+            err "--agent-id ${agent_id} does not match snapshot agent_id ${plut_id}."
+            err "Use --agent-id ${plut_id} (or omit --agent-id to auto-detect from the .plut)."
+            exit 1
+        fi
     fi
 
     ensure_venv
@@ -709,7 +796,7 @@ main() {
     # ── Generate .mcp.json ──────────────────────────────────────────────────
     local mcp_json
     mcp_json=$(write_mcp_json "${agent_id}" "${host}" "${http_port}" \
-        "${ttl_ms}" "${log_level}" "${wait_timeout_s}")
+        "${ttl_ms}" "${log_level}" "${wait_timeout_s}" "${restore_path}")
     ok "Wrote MCP config:  ${mcp_json}"
 
     if $no_launch; then

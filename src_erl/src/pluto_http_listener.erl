@@ -795,6 +795,55 @@ route('POST', <<"/agents/set_status">>, Body, _Sock) ->
             {400, #{<<"error">> => <<"missing token and custom_status">>}}
     end;
 
+%% POST /agents/snapshot_self — Capture self-restorable .plut + recovery prompt
+%% Body: {"token": "PLUTO-..."}
+route('POST', <<"/agents/snapshot_self">>, Body, _Sock) ->
+    case decode_body(Body) of
+        {ok, #{<<"token">> := Token}} ->
+            case auth_token_to_agent(Token) of
+                {ok, AgentId} ->
+                    case pluto_msg_hub:capture_snapshot(AgentId) of
+                        {ok, Snapshot} ->
+                            Prompt = pluto_session:build_recovery_prompt(Snapshot),
+                            {200, #{<<"status">> => <<"ok">>,
+                                    <<"plut">>   => Snapshot,
+                                    <<"prompt">> => Prompt}};
+                        {error, not_found} ->
+                            {404, #{<<"status">> => <<"error">>,
+                                    <<"reason">> => <<"agent_not_found">>}}
+                    end;
+                {error, _} ->
+                    {401, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"unauthorized">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing token">>}}
+    end;
+
+%% POST /agents/restore_from_snapshot — Restore prior state from .plut
+%% Body: {"token": "PLUTO-...", "plut": {...}}
+route('POST', <<"/agents/restore_from_snapshot">>, Body, _Sock) ->
+    case decode_body(Body) of
+        {ok, #{<<"token">> := Token, <<"plut">> := Plut}} when is_map(Plut) ->
+            case auth_token_to_agent(Token) of
+                {ok, AgentId} ->
+                    case pluto_msg_hub:restore_from_snapshot(AgentId, Plut) of
+                        {ok, Result} -> {200, Result};
+                        {error, not_registered} ->
+                            {404, #{<<"status">> => <<"error">>,
+                                    <<"reason">> => <<"not_registered">>}};
+                        {error, Reason} ->
+                            {400, #{<<"status">> => <<"error">>,
+                                    <<"reason">> => atom_to_binary(Reason, utf8)}}
+                    end;
+                {error, _} ->
+                    {401, #{<<"status">> => <<"error">>,
+                            <<"reason">> => <<"unauthorized">>}}
+            end;
+        _ ->
+            {400, #{<<"error">> => <<"missing token and plut">>}}
+    end;
+
 %% POST /agents/task_assign — Assign a task via HTTP (token auth)
 %% Body: {"token": "PLUTO-...", "assignee": "agent-b", "description": "...", "payload": {...}}
 route('POST', <<"/agents/task_assign">>, Body, _Sock) ->

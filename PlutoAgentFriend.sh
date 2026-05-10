@@ -134,6 +134,11 @@ OPTIONS
                             (default: interactive menu when stdin is a terminal)
     --roles-dir <dir>       Directory to scan for role files
                             (default: library/roles/ under project root)
+    --restore <path>        Apply a previously saved .plut snapshot after
+                            registering. The agent_id inside the .plut is
+                            authoritative — when --agent-id is omitted it is
+                            auto-derived; when both are given they must match.
+                            Status becomes recovered_from_file.
     --verbose               Enable debug logging
     --help, -h              Show this help
 
@@ -253,6 +258,7 @@ main() {
     local no_guide=""
     local role_file=""
     local roles_dir=""
+    local restore_path=""
     local extra_cmd=()
     local past_separator=false
 
@@ -324,6 +330,10 @@ main() {
                 roles_dir="$2"
                 shift 2
                 ;;
+            --restore)
+                restore_path="$2"
+                shift 2
+                ;;
             --)
                 past_separator=true
                 shift
@@ -358,6 +368,28 @@ main() {
     fi
 
     local banner_shown=false
+
+    # ── --restore: validate file + auto-detect agent_id from snapshot ──
+    if [[ -n "${restore_path}" ]]; then
+        if [[ ! -f "${restore_path}" ]]; then
+            err "--restore: file not found: ${restore_path}"
+            exit 1
+        fi
+        local plut_id
+        plut_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('agent_id',''))" "${restore_path}" 2>/dev/null || echo "")
+        if [[ -z "${plut_id}" ]]; then
+            err "--restore: ${restore_path} has no agent_id field — not a valid .plut snapshot."
+            exit 1
+        fi
+        if [[ -z "${agent_id}" ]]; then
+            agent_id="${plut_id}"
+            info "Using agent_id from snapshot: ${agent_id}"
+        elif [[ "${agent_id}" != "${plut_id}" ]]; then
+            err "--agent-id ${agent_id} does not match snapshot agent_id ${plut_id}."
+            err "Use --agent-id ${plut_id} (or omit --agent-id to auto-detect from the .plut)."
+            exit 1
+        fi
+    fi
 
     # Interactive prompts when arguments are missing
     if [[ -z "${agent_id}" ]]; then
@@ -634,6 +666,9 @@ BANNER
     fi
     if [[ -n "${roles_dir}" ]]; then
         py_args+=("--roles-dir" "${roles_dir}")
+    fi
+    if [[ -n "${restore_path}" ]]; then
+        py_args+=("--restore" "${restore_path}")
     fi
 
     if [[ ${#extra_cmd[@]} -gt 0 ]]; then

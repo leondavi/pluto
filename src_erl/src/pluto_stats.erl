@@ -9,7 +9,7 @@
 %%%   - locks_acquired / locks_released / locks_expired
 %%%   - deadlocks_detected / deadlock_victims
 %%%   - messages_sent / messages_received / broadcasts_sent
-%%%   - agents_registered / agents_disconnected
+%%%   - agents_registered / agents_disconnected / agents_unregistered_clean
 %%%   - Per-agent message counters (sent / received)
 %%% @end
 %%%-------------------------------------------------------------------
@@ -56,7 +56,9 @@
     broadcasts_sent,
     agents_registered,
     agents_disconnected,
-    total_requests
+    agents_unregistered_clean,
+    total_requests,
+    coordination_requests
 ]).
 
 -record(state, {
@@ -190,6 +192,9 @@ handle_call(get_summary, _From, #state{started_at = StartedAt} = State) ->
     TotalAgents = ets:info(?ETS_AGENTS, size),
     PendingWaiters = ets:info(?ETS_WAITERS, size),
     WaitGraphEdges = ets:info(?ETS_WAIT_GRAPH, size),
+    SelfTestAgents = length([1 || [Id] <- ets:match(?ETS_AGENTS,
+        #agent{agent_id = '$1', _ = '_'}),
+        binary:match(Id, <<"selftest-">>) =/= nomatch]),
 
     Summary = #{
         <<"status">> => <<"ok">>,
@@ -201,6 +206,7 @@ handle_call(get_summary, _From, #state{started_at = StartedAt} = State) ->
             <<"active_locks">> => ActiveLocks,
             <<"connected_agents">> => ConnectedAgents,
             <<"total_agents">> => TotalAgents,
+            <<"selftest_agents">> => SelfTestAgents,
             <<"pending_waiters">> => PendingWaiters,
             <<"wait_graph_edges">> => WaitGraphEdges
         }

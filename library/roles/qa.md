@@ -5,6 +5,13 @@ behavior end-to-end via tests, evaluation scripts, and black-box checks.
 
 You MUST follow the shared protocol at `library/protocol.md`.
 
+**Spec contracts (§4.12 / §7).** When the Orchestrator broadcasts a
+`spec_contract`, cache it by `spec_id` for the rest of the session.
+Every later `task_assigned` carrying `spec_ref="<that id>"` inherits
+that contract's universal constraints (lock protocol, queue rule,
+no-emoji, test command, release locks); do not require them to be
+re-inlined. If a `spec_ref` arrives that you have not seen, emit
+`task_clarification_request` asking for a re-broadcast.
 
 ## Mission
 

@@ -17,6 +17,9 @@
 
 %% API
 -export([start_link/0, flush/0]).
+%% Exposed for unit testing the stale-agent filter without requiring a
+%% full restart cycle.
+-export([drop_stale_agents/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -110,9 +113,12 @@ do_flush(#state{dir = Dir}) ->
     FSeq = try pluto_lock_mgr:get_fencing_seq()
            catch _:_ -> 0
            end,
+    Now = erlang:system_time(millisecond),
+    StaleAfterMs = pluto_config:get(agent_stale_after_ms, ?DEFAULT_AGENT_STALE_AFTER_MS),
+    Agents = drop_stale_agents(ets:tab2list(?ETS_AGENTS), Now, StaleAfterMs),
     Snapshot = #{
         locks       => ets:tab2list(?ETS_LOCKS),
-        agents      => ets:tab2list(?ETS_AGENTS),
+        agents      => Agents,
         sessions    => ets:tab2list(?ETS_SESSIONS),
         waiters     => ets:tab2list(?ETS_WAITERS),
         fencing_seq => FSeq
@@ -153,8 +159,11 @@ load_snapshot(Dir) ->
 
 %% @private Restore ETS tables from a snapshot map.
 %% Discards expired locks and marks all sessions as disconnected.
+%% Agents whose last_seen is older than agent_stale_after_ms are dropped.
 restore_snapshot(#{locks := Locks, agents := Agents}) ->
     Now = pluto_lease:now_ms(),
+    SysNow = erlang:system_time(millisecond),
+    StaleAfterMs = pluto_config:get(agent_stale_after_ms, ?DEFAULT_AGENT_STALE_AFTER_MS),
 
     %% Restore non-expired locks
     lists:foreach(fun(Lock) ->
@@ -164,7 +173,15 @@ restore_snapshot(#{locks := Locks, agents := Agents}) ->
         end
     end, Locks),
 
-    %% Restore agents as disconnected (they need to reconnect)
+    %% Restore agents as disconnected (they need to reconnect),
+    %% skipping any whose last_seen exceeds the stale threshold.
+    Fresh = drop_stale_agents(Agents, SysNow, StaleAfterMs),
+    Dropped = length(Agents) - length(Fresh),
+    case Dropped > 0 of
+        true  -> ?LOG_INFO("pluto_persistence: dropped ~w stale agent(s) "
+                           "older than ~w ms", [Dropped, StaleAfterMs]);
+        false -> ok
+    end,
     lists:foreach(fun(Agent) ->
         case is_record(Agent, agent) of
             true ->
@@ -176,11 +193,26 @@ restore_snapshot(#{locks := Locks, agents := Agents}) ->
             false ->
                 ok
         end
-    end, Agents),
+    end, Fresh),
     ok;
 restore_snapshot(_) ->
     %% Unknown snapshot format — ignore
     ok.
+
+%% @private Drop agents whose last_seen is older than StaleAfterMs.
+%% Non-agent records and records without a usable last_seen are kept
+%% (defensive — we'd rather over-keep than silently delete).
+%% Exposed for unit testing via the eunit -compile(export_all) directive
+%% in the test module.
+-spec drop_stale_agents([#agent{} | term()], integer(), integer()) ->
+    [#agent{} | term()].
+drop_stale_agents(Agents, NowMs, StaleAfterMs) ->
+    lists:filter(fun
+        (#agent{last_seen = LS}) when is_integer(LS) ->
+            (NowMs - LS) =< StaleAfterMs;
+        (_) ->
+            true
+    end, Agents).
 
 %% @private Convert interval config to milliseconds.
 %% Accepts atoms `minute` and `hour`, or a raw integer.

@@ -63,27 +63,59 @@ Answer *yes* to all three, or refine:
 ## Core Workflow
 
 1. Verify all required role agents are present via `GET /agents`.
-2. Write/update the task list and broadcast a `task_list` message whenever
+2. **Session bootstrap — broadcast a `spec_contract` (protocol §4.12)
+   exactly once** with a `spec_id` like `spec-001`. Put the universal
+   constraints there (lock protocol, queue rule, no-emoji, test
+   command, release locks). From this point on, every `task_assigned`
+   you emit MUST include `"spec_ref": "<that spec_id>"` and MUST OMIT
+   those universal constraints from the per-task payload — workers
+   apply them via the cached contract. This is the single biggest
+   token-saving move in a multi-task session (~1-2K tokens per
+   dispatch). See protocol §7 for the full pattern. If you change a
+   universal constraint mid-session, re-broadcast the same `spec_id`
+   with a higher `version`.
+3. Write/update the task list and broadcast a `task_list` message whenever
    it changes.
-3. For each ready task (dependencies met):
-   - Send a `task_assigned` message (protocol §4.1) directly to the owner.
+4. For each ready task (dependencies met):
+   - Send a `task_assigned` message (protocol §4.1) directly to the owner,
+     with `spec_ref` pointing at the active contract.
    - Move state `pending -> in_progress`.
-4. On `task_result`:
+5. On `task_result`:
    - If `status=done`: mark `completed`, advance dependents.
    - If `status=error`: move to `failed`, reflect, refine/re-decompose
      before re-assigning.
-5. On `task_clarification_request` / `decomposition_feedback`:
+6. On `task_clarification_request` / `decomposition_feedback`:
    - Treat as a **planning bug**. Revise the task (tighten
      `definition_of_done`, split further, re-scope files), then re-send a
      new `task_assigned`.
-6. On `scope_mismatch`:
+   - If the worker is asking because it has not yet seen the referenced
+     `spec_ref`, **re-broadcast the `spec_contract`** (a worker may have
+     joined the session late) before re-dispatching.
+7. On `scope_mismatch`:
    - Create a new task covering the observed need; do not expand the old one.
-7. On `review` with `needs_changes`:
+8. On `review` with `needs_changes`:
    - Create a follow-up task referencing `task_id` and dispatch.
-8. On `qa_result` with `fail` or `inconclusive`:
+9. On `qa_result` with `fail` or `inconclusive`:
    - Tighten `definition_of_done` / `verification_hint`, then re-run.
 
 ## Concrete Operations (curl examples)
+
+### Session bootstrap: broadcast the spec contract once
+
+Do this **before** the first `task_assigned`. Pick a `spec_id` (e.g.
+`spec-001`). All universal constraints live here; per-task payloads stay
+small and reference this contract via `spec_ref`.
+
+```bash
+curl -s -X POST http://localhost:9001/agents/broadcast \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"'"$PLUTO_TOKEN"'","payload":{"type":"spec_contract","spec_id":"spec-001","version":1,"applies_to":["all_workers"],"constraints":{"lock_protocol":"Acquire a confirmed write lock before any file write. If POST /locks/acquire returns a ref instead of status:ok, the request is queued — do not spin-poll. Wait for a lock_granted event.","queue_rule":"When a lock is queued (ref returned), park that task and work on a different parallel-safe task in the meantime.","no_emoji":"Do not produce emoji in messages, code, comments, or commit text unless the user explicitly requests them.","test_command":"Run the project test command (e.g. mix test, pytest, npm test) after any code change and before emitting task_result status=done.","release_locks":"Release every lock you acquire, on every code path including errors and early returns."}}}'
+```
+
+After this is broadcast, every `task_assigned` you send MUST include
+`"spec_ref":"spec-001"` and MUST OMIT those five universal constraints
+from `task_assigned.constraints` (only put **task-specific** constraints
+there).
 
 ### Claim resources before delegating
 
@@ -103,13 +135,19 @@ queued your request. Switch to a different subtask and wait for a
 
 ### Delegate to the Specialist
 
-Send the Specialist a structured task message:
+Send the Specialist a structured `task_assigned` message **referencing
+the active spec contract**. Do NOT inline the universal constraints —
+the worker already has them cached from the bootstrap broadcast.
 
 ```bash
 curl -s -X POST http://localhost:9001/agents/send \
   -H 'Content-Type: application/json' \
-  -d '{"token":"$PLUTO_TOKEN","to":"specialist","payload":{"task":"<description>","files":["<list>"]}}'
+  -d '{"token":"'"$PLUTO_TOKEN"'","to":"specialist","payload":{"type":"task_assigned","spec_ref":"spec-001","task":{"task_id":"t-001","title":"...","files":["file:/abs/path"],"definition_of_done":"...","verification_hint":"..."},"constraints":["no changes outside listed files"],"acceptance_criteria":["..."]}}'
 ```
+
+The `constraints` field now carries only **task-specific** constraints
+(scope boundaries, network policy for this one task, etc.) — the
+universal ones are resolved through `spec_ref`.
 
 For payloads with embedded quotes/newlines, use the heredoc-to-file pattern
 described in `agent_friend_guide.md`.

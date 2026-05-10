@@ -163,6 +163,7 @@ class PlutoAgentFriend(TerminalProxy):
         inject_submit_delay: float = INJECT_SUBMIT_DELAY_S,
         role_file: str | None = None,
         inject_format: str = INJECT_FORMAT_NATURAL,
+        restore_path: str | None = None,
         verbose: bool = False,
     ):
         super().__init__(cmd)
@@ -179,6 +180,8 @@ class PlutoAgentFriend(TerminalProxy):
         self.verbose = verbose
         self.guide_file = guide_file
         self.role_file = role_file
+        self.restore_path = restore_path
+        self.restore_summary: dict | None = None
         self.guide_startup_delay = guide_startup_delay
         self.guide_ready_grace = guide_ready_grace
         self.guide_max_wait = guide_max_wait
@@ -221,6 +224,8 @@ class PlutoAgentFriend(TerminalProxy):
                 f"Connected to Pluto at {self.pluto.host}:{self.pluto.http_port} "
                 f"(token: {self.pluto.token}...)"
             )
+            if self.restore_path:
+                self._apply_restore_snapshot()
             self._pluto_env = {
                 "PLUTO_AGENT_ID": self.pluto.agent_id,
                 "PLUTO_TOKEN": self.pluto.full_token,
@@ -723,6 +728,33 @@ class PlutoAgentFriend(TerminalProxy):
         )
         sys.stderr.flush()
 
+    def _apply_restore_snapshot(self) -> None:
+        """Load --restore .plut and call restore_from_snapshot. Best-effort."""
+        import json
+        try:
+            with open(self.restore_path, encoding="utf-8") as f:
+                plut = json.load(f)
+        except Exception as exc:
+            self._info(f"--restore: cannot read {self.restore_path}: {exc}")
+            return
+        snap_id = plut.get("agent_id")
+        if snap_id and snap_id != self.pluto.agent_id:
+            self._info(
+                f"--restore: snapshot agent_id {snap_id!r} differs from "
+                f"registered {self.pluto.agent_id!r} — locks will land in lost_locks."
+            )
+        try:
+            result = self.pluto.restore_from_snapshot(plut)
+        except Exception as exc:
+            self._info(f"--restore: restore_from_snapshot failed: {exc}")
+            return
+        self.restore_summary = result
+        self._info(
+            f"Restored from {self.restore_path} — "
+            f"reclaimed={len(result.get('reclaimed_locks', []))} "
+            f"lost={len(result.get('lost_locks', []))}"
+        )
+
     @staticmethod
     def _info(msg: str) -> None:
         """Print an informational line to stderr."""
@@ -814,6 +846,15 @@ def main() -> None:
         "--roles-dir", default=None, metavar="DIR",
         help="Directory to scan for role files (default: library/roles/ "
              "under the project root). Used when listing available roles.",
+    )
+    parser.add_argument(
+        "--restore", default=None, metavar="PATH", dest="restore",
+        help="Path to a .plut snapshot file. After registering, the wrapper "
+             "calls restore_from_snapshot and reattaches saved attributes, "
+             "subscriptions, custom status, and reclaimable locks; status "
+             "becomes recovered_from_file. The agent_id inside the .plut is "
+             "authoritative — pass --agent-id matching it (or omit it; the "
+             "shell launcher auto-derives it from the snapshot).",
     )
     parser.add_argument(
         "--guide-startup-delay", type=float, default=GUIDE_STARTUP_DELAY_S,
@@ -1098,6 +1139,7 @@ def main() -> None:
         inject_submit_delay=args.inject_submit_delay,
         role_file=role_file,
         inject_format=args.inject_format,
+        restore_path=args.restore,
         verbose=args.verbose,
     )
     sys.exit(friend.run())

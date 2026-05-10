@@ -81,8 +81,30 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--iterations", type=int, default=15, metavar="N",
+        help=(
+            "How many short-poll iterations the watcher subagent runs "
+            "before exiting and letting the parent respawn it (default: "
+            "15). Total subagent lifetime ≈ iterations * wait-timeout-s "
+            "seconds (default 15 * 60 = 15 minutes). Larger values "
+            "reduce respawn-gap latency for orchestrators driving idle "
+            "agents; smaller values bound subagent runtime more tightly."
+        ),
+    )
+    parser.add_argument(
         "--roles-dir", default=None,
         help="Override the directory scanned for role prompt files.",
+    )
+    parser.add_argument(
+        "--restore", dest="restore_path", default=None, metavar="PATH",
+        help=(
+            "Path to a .plut snapshot file. After registering with Pluto, "
+            "the launcher applies the snapshot via restore_from_snapshot — "
+            "attributes, custom_status, subscriptions, and any reclaimable "
+            "locks are reattached, and status flips to recovered_from_file. "
+            "Use the agent_id stored inside the .plut as --agent-id to "
+            "rejoin the same identity (otherwise locks land in lost_locks)."
+        ),
     )
     parser.add_argument(
         "--log-level", default="WARNING",
@@ -118,7 +140,9 @@ def main(argv: list[str] | None = None) -> int:
         http_port=http_port,
         ttl_ms=args.ttl_ms,
         wait_timeout_s=args.wait_timeout_s,
+        iterations=args.iterations,
         roles_dir=args.roles_dir,
+        restore_path=args.restore_path,
     )
     try:
         server.run()

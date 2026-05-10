@@ -4,6 +4,12 @@ Defines the **shared ontology** and **typed message schemas** every role
 in a Pluto-coordinated team must speak. No ad-hoc message shapes: if a
 new interaction is needed, extend this doc first, then implement.
 
+> **v0.2.8 addition:** the `spec_contract` message (§4.12) and the
+> `spec_ref` field on `task_assigned` (§4.1) let the Orchestrator
+> establish session-wide universal constraints **once** and reference
+> them by `spec_id` thereafter — saving ~1–2K tokens per dispatch. See
+> §7 for the full pattern.
+
 All messages travel over Pluto's `agents/send` / `agents/broadcast`
 channels; delivered as the `payload` of `msg_recv` events.
 
@@ -55,8 +61,16 @@ Unknown types MUST be ignored with a warning, never acted on.
 ### 4.1 `task_assigned` (Orchestrator -> Specialist / other worker)
 
 ```json
-{"type":"task_assigned","task":{"...":"full task object from §3"},"constraints":["no network calls","no changes outside listed files"],"acceptance_criteria":["unit test test_iterate passes"],"verification_hints":["pytest tests/test_mandelbrot.py -k iterate"]}
+{"type":"task_assigned","spec_ref":"spec-001","task":{"...":"full task object from §3"},"constraints":["no network calls","no changes outside listed files"],"acceptance_criteria":["unit test test_iterate passes"],"verification_hints":["pytest tests/test_mandelbrot.py -k iterate"]}
 ```
+
+`spec_ref` (optional) is the `spec_id` of a `spec_contract` (§4.12) the
+worker has already received. When present, the worker MUST apply every
+constraint from that contract **in addition to** any task-local
+`constraints` listed here. This lets the Orchestrator establish universal
+rules (lock protocol, queue rule, no-emoji, test command, release locks)
+once per session instead of inlining ~40 lines of boilerplate in every
+dispatch — saving ~1-2K tokens per task. See §8 for the full pattern.
 
 ### 4.2 `task_clarification_request` (Worker -> Orchestrator)
 
@@ -131,6 +145,31 @@ Used when a task is under-specified or overlapping with another.
 {"type":"scope_mismatch","task_id":"t-004","observed_need":"requires editing file:/.../utils/io.py which is not in scope","refuse_reason":"not in my lock set","proposed_new_tasks":[{"title":"Refactor io.py","owner":"specialist"}]}
 ```
 
+### 4.12 `spec_contract` (Orchestrator -> all workers, broadcast)
+
+A one-time message that establishes **session-wide universal
+constraints**. Every constraint inside applies to every subsequent
+`task_assigned` whose `spec_ref` matches this contract's `spec_id`,
+without the Orchestrator having to re-inline them.
+
+```json
+{"type":"spec_contract","spec_id":"spec-001","version":1,"applies_to":["all_workers"],"constraints":{"lock_protocol":"Acquire a confirmed write lock before any file write. If POST /locks/acquire returns a 'ref' instead of 'status:ok', the request is queued — do not spin-poll. Wait for a lock_granted event.","queue_rule":"When a lock is queued (ref returned), park that task and work on a different parallel-safe task in the meantime; do not block the main loop.","no_emoji":"Do not produce emoji in messages, code, comments, or commit text unless the user explicitly requests them.","test_command":"Run the project's standard test command (e.g. mix test, pytest, npm test) after any code change and before emitting task_result status=done. Do not report done if tests are red.","release_locks":"Release every lock you acquire, on every code path including errors and early returns."},"notes":"Workers MUST cache this by spec_id and apply it whenever a task_assigned arrives with a matching spec_ref."}
+```
+
+Rules:
+
+- The Orchestrator broadcasts this **once per session** (or whenever the
+  contract changes — bump `version`) via `POST /agents/broadcast`.
+- Workers MUST keep the most-recently-received contract per `spec_id` in
+  memory for the rest of the session.
+- A `task_assigned` with `spec_ref="spec-001"` means "apply spec-001's
+  constraints in addition to any task-local `constraints`".
+- If a worker receives a `task_assigned` whose `spec_ref` it has not yet
+  seen, it MUST emit `task_clarification_request` asking the Orchestrator
+  to (re)broadcast the contract; do not proceed.
+- Constraints in the contract are additive, not overriding. Task-local
+  `constraints` may tighten but never relax a contract constraint.
+
 ## 5. Locking Discipline
 
 1. **Write-before-edit invariant:** no agent writes to a `file:` or `dir:`
@@ -161,7 +200,49 @@ A task is ambiguous if **any** of the following holds:
 - Scope requires touching resources outside the `files` / `resources` lists.
 - Two valid interpretations exist with different observable outputs.
 
-## 7. Deterministic Injection Frames (PlutoAgentFriend)
+## 7. Spec Contracts (token-saving boilerplate factoring)
+
+Without spec contracts, every `task_assigned` had to inline ~40 lines of
+the same boilerplate (lock protocol reminder, queue rule, no-emoji rule,
+test command, lock-release reminder). Across a multi-task session that
+is the dominant cost — **60–70% of every task payload was repeated
+boilerplate, ~1–2K wasted tokens per dispatch**.
+
+The pattern:
+
+1. **Orchestrator, on session bootstrap** (before any `task_assigned`):
+
+   ```bash
+   curl -s -X POST http://$PLUTO_HOST:$PLUTO_HTTP/agents/broadcast \
+     -H 'Content-Type: application/json' \
+     -d '{"token":"'"$PLUTO_TOKEN"'","payload":{"type":"spec_contract","spec_id":"spec-001","version":1,"constraints":{...}}}'
+   ```
+
+   The Orchestrator captures the returned `msg_id` (and/or chosen
+   `spec_id`) and uses it as `spec_ref` in every later dispatch.
+
+2. **Worker, on receiving `spec_contract`**: cache it by `spec_id` for
+   the rest of the session. No acknowledgement payload required beyond
+   the normal seq ack.
+
+3. **Orchestrator, on every `task_assigned`**: include
+   `"spec_ref":"spec-001"` and OMIT the universal constraints. Inline
+   only the task-specific constraints (e.g. "no changes outside listed
+   files" — that's per-task, not universal).
+
+4. **Worker, on `task_assigned`**: look up the cached contract by
+   `spec_ref`, treat its constraints as binding, then apply task-local
+   `constraints` on top.
+
+5. **Updating the contract mid-session**: re-broadcast the same
+   `spec_id` with a higher `version`. Workers MUST replace the cached
+   copy.
+
+This factoring is the single biggest token-saving move in a long
+multi-task session. Roles MUST honour it; the Orchestrator role file
+explicitly bootstraps it, the worker role files explicitly cache it.
+
+## 8. Deterministic Injection Frames (PlutoAgentFriend)
 
 When PlutoAgentFriend is launched with `--inject-format=deterministic`,
 each Pluto message is written into the agent's stdin wrapped in

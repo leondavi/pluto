@@ -29,6 +29,7 @@ try:
         build_role_prompt_body,
         build_status_prompt_body,
         build_watch_prompt_body,
+        build_watch_stop_prompt_body,
         list_role_names,
         role_prompt_specs,
     )
@@ -340,11 +341,26 @@ class TestPromptAssembly(unittest.TestCase):
         # The subagent prompt must describe a loop, not a single call.
         self.assertIn("loop", block.lower())
         # Bounded number of iterations so the subagent self-terminates
-        # before any platform-level cleanup.
-        self.assertIn("5 iterations", block)
+        # before any platform-level cleanup. Default is 15 (15 min total
+        # at 60s per call) — large enough to reduce respawn-gap latency
+        # but still bounded.
+        self.assertIn("15 iterations", block)
         # Must explain the watchdog reason so future maintainers don't
         # "simplify" it back to a single block.
         self.assertIn("watchdog", block.lower())
+
+    def test_connection_block_honours_custom_iterations(self):
+        """Orchestrators tune the iteration count via --iterations to trade
+        respawn-gap latency against subagent budget."""
+        block = build_connection_block(
+            host="h", http_port=1, agent_id="a",
+            wait_timeout_s=60, iterations=30,
+        )
+        self.assertIn("30 iterations", block)
+        # Total lifetime calculation reflects the new value.
+        self.assertIn(f"{30 * 60} s", block)
+        # Default value should not appear when overridden.
+        self.assertNotIn("15 iterations", block)
 
     def test_role_prompt_includes_role_and_connection(self):
         body = build_role_prompt_body(
@@ -406,8 +422,17 @@ class TestPromptAssembly(unittest.TestCase):
         stream watchdog never fires."""
         body = build_watch_prompt_body(wait_timeout_s=60)
         self.assertIn("loop", body.lower())
-        self.assertIn("5 iterations", body)
+        # Default iteration count is 15.
+        self.assertIn("15 iterations", body)
         self.assertIn("watchdog", body.lower())
+
+    def test_watch_prompt_honours_custom_iterations(self):
+        """``/pluto-watch`` must propagate the configured iteration count
+        so orchestrators can tune subagent lifetime without code changes."""
+        body = build_watch_prompt_body(wait_timeout_s=60, iterations=30)
+        self.assertIn("30 iterations", body)
+        self.assertIn(f"{30 * 60} s", body)
+        self.assertNotIn("15 iterations", body)
 
     def test_watch_prompt_honours_custom_timeout(self):
         body = build_watch_prompt_body(wait_timeout_s=120)
@@ -438,6 +463,67 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("@pluto://locks", body)
         # And specifically warns NOT to call pluto_recv (which would drain).
         self.assertIn("do not call", body.lower())
+
+    # ── /pluto-watch-stop and the respawn-on-drain rule ─────────────────
+
+    def test_watch_stop_prompt_engages_kill_switch(self):
+        """``/pluto-watch-stop`` must engage the watcher_stop kill switch:
+        no new watcher Tasks until ``/pluto-watch`` resumes."""
+        body = build_watch_stop_prompt_body()
+        # Names the kill switch by its session-level token.
+        self.assertIn("watcher_stop", body)
+        # Tells the agent explicitly NOT to spawn new watcher Tasks.
+        self.assertIn("Do NOT spawn", body)
+        # Allows the in-flight watcher to drain naturally — agent must
+        # not kill it, just not re-arm.
+        self.assertIn("do not re-arm", body)
+        # Falls back to turn-driven pluto_recv + piggyback.
+        self.assertIn("pluto_recv", body)
+        self.assertIn("_pluto_inbox", body)
+        # Resume path is documented.
+        self.assertIn("/pluto-watch", body)
+        # Exact ack reply so an orchestrator can detect the engaged state.
+        self.assertIn("watcher_stop engaged", body)
+
+    def test_check_prompt_respawns_watcher_after_drain(self):
+        """``/pluto-check`` is a drain — the agent must re-arm the watcher
+        after it, unless the kill switch is in effect."""
+        body = build_check_prompt_body()
+        # Existing contract still holds.
+        self.assertIn("pluto_recv", body)
+        # New respawn instruction.
+        self.assertIn("Respawn the watcher", body)
+        # Honours the kill switch.
+        self.assertIn("watcher_stop", body)
+
+    def test_connection_block_drain_respawn_rule(self):
+        """The always-on role connection block must spell out: any drain
+        path triggers an immediate watcher respawn in the same turn,
+        with watcher_stop as the documented exception."""
+        block = build_connection_block(
+            host="h", http_port=1, agent_id="a",
+        )
+        # The MANDATORY heading itself.
+        self.assertIn("respawn the watcher immediately after every drain",
+                      block.lower())
+        # All three drain paths called out by name.
+        self.assertIn("pluto_recv", block)
+        self.assertIn("_pluto_inbox", block)
+        self.assertIn("watcher Task fires", block)
+        # The kill-switch exception with both invocation forms.
+        self.assertIn("watcher_stop", block)
+        self.assertIn("/pluto-watch-stop", block)
+        # Resume path is mentioned so the agent doesn't get stuck.
+        self.assertIn("/pluto-watch", block)
+
+    def test_watch_prompt_clears_kill_switch(self):
+        """``/pluto-watch`` is the documented resume path — invoking it
+        must implicitly clear any in-effect ``watcher_stop``."""
+        body = build_watch_prompt_body()
+        self.assertIn("watcher_stop", body)
+        # Wording specifically says "clears" so the agent treats this as
+        # a state reset, not just a one-shot watcher start.
+        self.assertIn("clears", body.lower())
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -481,6 +567,7 @@ class TestServerCapabilities(unittest.IsolatedAsyncioTestCase):
         # Action prompts.
         self.assertIn("pluto-check", prompt_names)
         self.assertIn("pluto-watch", prompt_names)
+        self.assertIn("pluto-watch-stop", prompt_names)
         self.assertIn("pluto-status", prompt_names)
 
         resource_uris = {str(r.uri) for r in resources}

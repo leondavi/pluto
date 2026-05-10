@@ -62,6 +62,11 @@ OP_TASK_BATCH    = "task_batch"
 OP_TASK_PROGRESS = "task_progress"
 OP_RESOURCE_INFO = "resource_info"
 
+# v0.2.9 operations
+OP_UNREGISTER             = "unregister"
+OP_SNAPSHOT_SELF          = "snapshot_self"
+OP_RESTORE_FROM_SNAPSHOT  = "restore_from_snapshot"
+
 # ── Lock modes ───────────────────────────────────────────────────────────────
 
 MODE_WRITE = "write"

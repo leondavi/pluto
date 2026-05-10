@@ -74,6 +74,9 @@ from pluto_client_def import (
     OP_TASK_BATCH,
     OP_TASK_PROGRESS,
     OP_RESOURCE_INFO,
+    OP_UNREGISTER,
+    OP_SNAPSHOT_SELF,
+    OP_RESTORE_FROM_SNAPSHOT,
     MODE_WRITE,
     STATUS_OK,
     STATUS_WAIT,
@@ -365,6 +368,51 @@ class PlutoClient:
         resp = self._send_and_wait({"op": OP_AGENT_STATUS, "custom_status": custom_status})
         if resp.get("status") != STATUS_OK:
             raise PlutoError(resp.get("reason", "set_status failed"))
+
+    # ── Snapshot / restore (v0.2.9) ────────────────────────────────────────
+    def snapshot_self(self) -> dict:
+        """Capture this agent's restorable state.
+
+        Returns ``{"plut": {...}, "prompt": "..."}`` where ``plut`` is the
+        coordination-state JSON to persist (.plut file) and ``prompt`` is
+        a markdown recovery prompt (.md file). The agent is responsible
+        for writing both to disk.
+        """
+        resp = self._send_and_wait({"op": OP_SNAPSHOT_SELF})
+        if resp.get("status") != STATUS_OK:
+            raise PlutoError(resp.get("reason", "snapshot_self failed"))
+        return {"plut": resp.get("plut", {}), "prompt": resp.get("prompt", "")}
+
+    def restore_from_snapshot(self, plut: dict) -> dict:
+        """Apply a previously saved ``.plut`` snapshot to this session.
+
+        The agent must already be registered (call :py:meth:`connect` first).
+        Returns the server response with ``reclaimed_locks`` and ``lost_locks``.
+        After this call the agent's status is ``recovered_from_file``.
+        """
+        if not isinstance(plut, dict):
+            raise TypeError("plut must be a dict (parsed .plut JSON)")
+        resp = self._send_and_wait({"op": OP_RESTORE_FROM_SNAPSHOT, "plut": plut})
+        if resp.get("status") != STATUS_OK:
+            raise PlutoError(resp.get("reason", "restore_from_snapshot failed"))
+        return resp
+
+    def save_snapshot_files(self, output_dir: str) -> tuple:
+        """Convenience: take a snapshot and write both files to disk.
+
+        Writes ``<output_dir>/<agent_id>.plut`` (JSON) and
+        ``<output_dir>/<agent_id>-recovery.md`` (markdown prompt).
+        Returns ``(plut_path, md_path)``.
+        """
+        snap = self.snapshot_self()
+        os.makedirs(output_dir, exist_ok=True)
+        plut_path = os.path.join(output_dir, f"{self.agent_id}.plut")
+        md_path   = os.path.join(output_dir, f"{self.agent_id}-recovery.md")
+        with open(plut_path, "w", encoding="utf-8") as f:
+            json.dump(snap["plut"], f, indent=2)
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(snap["prompt"])
+        return plut_path, md_path
 
     # ── Event handlers ────────────────────────────────────────────────────────
 
@@ -757,6 +805,45 @@ class PlutoHttpClient:
             "token": self.token,
             "custom_status": custom_status,
         })
+
+    # ── Snapshot / restore (v0.2.9) ────────────────────────────────────────
+    def snapshot_self(self) -> dict:
+        """Capture this HTTP agent's restorable state (.plut + recovery prompt)."""
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        resp = self._post("/agents/snapshot_self", {"token": self.token})
+        if resp.get("status") != STATUS_OK:
+            raise PlutoError(resp.get("reason", "snapshot_self failed"))
+        return {"plut": resp.get("plut", {}), "prompt": resp.get("prompt", "")}
+
+    def restore_from_snapshot(self, plut: dict) -> dict:
+        """Apply a previously saved ``.plut`` snapshot to this HTTP session.
+
+        Caller must already be registered (have a valid token).
+        """
+        if not self.token:
+            raise PlutoError("not registered (no token)")
+        if not isinstance(plut, dict):
+            raise TypeError("plut must be a dict (parsed .plut JSON)")
+        resp = self._post("/agents/restore_from_snapshot", {
+            "token": self.token,
+            "plut":  plut,
+        })
+        if resp.get("status") != STATUS_OK:
+            raise PlutoError(resp.get("reason", "restore_from_snapshot failed"))
+        return resp
+
+    def save_snapshot_files(self, output_dir: str) -> tuple:
+        """Take a snapshot and write ``<agent_id>.plut`` + ``<agent_id>-recovery.md``."""
+        snap = self.snapshot_self()
+        os.makedirs(output_dir, exist_ok=True)
+        plut_path = os.path.join(output_dir, f"{self.agent_id}.plut")
+        md_path   = os.path.join(output_dir, f"{self.agent_id}-recovery.md")
+        with open(plut_path, "w", encoding="utf-8") as f:
+            json.dump(snap["plut"], f, indent=2)
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(snap["prompt"])
+        return plut_path, md_path
 
     def task_assign(self, assignee: str, description: str = "",
                     payload: Optional[Dict] = None) -> dict:

@@ -201,6 +201,91 @@ above. `--require-consent` is not needed for these frameworks.
 
 ---
 
+## Snapshot & restore (v0.2.9)
+
+When the wrapped agent needs to survive a host restart or graceful
+shutdown, ask Pluto for a `.plut` snapshot file via the wire op
+`snapshot_self` and feed it back at next launch with `--restore`.
+
+### Saving a snapshot mid-session
+
+From inside the agent (TCP or HTTP), call `snapshot_self`:
+
+```bash
+# TCP via PlutoClient.sh
+./PlutoClient.sh raw '{"op":"snapshot_self"}' > snapshot.json
+jq '.plut'   < snapshot.json > /tmp/pluto/snapshots/coder-1.plut
+jq -r '.prompt' < snapshot.json > /tmp/pluto/snapshots/coder-1-recovery.md
+```
+
+Or from Python (works for both TCP `PlutoClient` and HTTP `PlutoHttpClient`):
+
+```python
+client.save_snapshot_files("/tmp/pluto/snapshots")
+# → writes <agent_id>.plut + <agent_id>-recovery.md
+```
+
+### Re-launching with `--restore`
+
+Pass the `.plut` to PlutoAgentFriend on the next invocation. The
+`agent_id` stored inside the file is authoritative, so you can omit
+`--agent-id`:
+
+```bash
+./PlutoAgentFriend.sh --restore /tmp/pluto/snapshots/coder-1.plut
+```
+
+If you also pass `--agent-id` it must match the snapshot's value — a
+mismatch is rejected up-front because every snapshot lock would
+otherwise silently land in `lost_locks` (a different identity owns
+them). The launcher tells you the right name when it refuses.
+
+What runs on launch:
+
+1. Validate the `.plut` and derive `agent_id` from it.
+2. Register on Pluto as usual.
+3. Call `restore_from_snapshot` — Pluto re-applies attributes,
+   custom_status, subscriptions, and audits each held lock against
+   the snapshot.
+4. Log `reclaimed=N lost=M` to stderr.
+5. Hand control to the wrapped agent CLI (Claude, Cursor, Aider, …).
+
+After restore the agent appears in `pluto_list_agents` with status
+`recovered_from_file`.
+
+The launcher does not yet auto-inject the recovery markdown
+(`<agent_id>-recovery.md`) into the agent's first prompt — load it
+yourself or paste it into the first user message. Every step it lists
+is also captured by the standard Pluto agent guide, so a protocol-aware
+agent will reconstruct most of the checklist anyway.
+
+### What the response tells you
+
+```json
+{
+  "status": "ok",
+  "agent_id": "coder-1",
+  "session_id": "sess-...",
+  "reclaimed_locks": [...],   // still owned by you
+  "lost_locks": [...],        // released since snapshot — re-acquire if needed
+  "subscriptions": ["alerts"],
+  "attributes": {"role": "coder"}
+}
+```
+
+`reclaimed_locks` are safe to keep — fencing tokens are unchanged.
+`lost_locks` should be treated as not held; re-acquire only after
+verifying the resource is still safe and free.
+
+### When grace-period reconnect is enough
+
+For sub-30-second outages Pluto already restores everything via the
+normal reconnect path (status = `recovered`, locks reclaimed, queued
+inbox delivered). Save snapshots only for known long outages or
+explicit shutdowns — not as continuous insurance.
+
+---
+
 ## Disclaimer & Liability
 
 Pluto is provided **as-is**, without warranty of any kind — express or

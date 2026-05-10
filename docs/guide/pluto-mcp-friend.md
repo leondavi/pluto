@@ -52,9 +52,65 @@ launches reuse the venv.
 
 ---
 
+## Agent name & role — how the launcher arguments map into Claude and Pluto
+
+Two flags on `PlutoMCPFriend.sh` control how Claude sees the role and how
+Pluto sees the agent. Get these right and the rest "just works".
+
+### `--agent-id <name>` is your identity in Pluto's distributed system
+
+The `--agent-id` you pass to the launcher is the **name the agent is
+recognized as inside the Pluto coordination server** — it's what other
+agents, the Orchestrator, and tools like `pluto_send`, `pluto_list_agents`,
+`/locks/*` all use to address this session. Choose something role-shaped
+and unique, e.g. `specialist-1`, `orchestrator`, `reviewer-frontend`.
+
+```bash
+./PlutoMCPFriend.sh --agent-id specialist-1 --role specialist
+```
+
+**Name conflicts → Pluto auto-suffixes.** If the name you requested is
+already taken by an active session, the Pluto server registers you under
+an auto-generated suffixed variant (e.g. `specialist-1` → `specialist-1-2`)
+rather than refusing the registration. The launcher logs the actual
+registered ID, and Pluto returns it in the registration response. **Always
+use the returned `agent_id`, not the one you requested**, for subsequent
+operations — `pluto_session` will show you the canonical name. This means
+two `./PlutoMCPFriend.sh --agent-id specialist-1 ...` invocations against
+the same Pluto server will both succeed; the second one ends up under a
+different ID.
+
+### Activating a role inside Claude — invoke the MCP slash command
+
+`--role <name>` at launch time pre-applies the role on turn 1 via Claude's
+`--append-system-prompt`. **But mid-session, the user activates a role by
+running its MCP slash command** in Claude Code:
+
+```
+/pluto-role-specialist
+/pluto-role-orchestrator
+/pluto-role-reviewer
+... (one per file in library/roles/)
+```
+
+Each of these is an MCP **prompt** registered by PlutoMCPFriend (see the
+"Prompts" table below). Typing the slash command in Claude inlines the
+matching `library/roles/<name>.md` plus the shared `protocol.md` plus the
+live connection block (host/port + your registered `agent_id`) into the
+conversation. That is the canonical way to switch or re-apply a role
+without restarting the wrapper.
+
+So: **the script's `--agent-id` is your name on the Pluto network; the
+`/pluto-role-<name>` slash command in Claude is what tells the agent
+which role to play.** Both can be changed independently — different
+sessions can rotate through roles without changing their `agent_id`,
+and a fresh `agent_id` can pick any role on its first turn.
+
+---
+
 ## What ships out of the box
 
-### 18 Pluto tools
+### 20 Pluto tools
 
 Each is a thin wrapper around the existing `PlutoHttpClient` HTTP method;
 the adapter injects the session token transparently.
@@ -78,6 +134,8 @@ the adapter injects the session token transparently.
 | `pluto_task_update` | `POST /agents/task_update` | report task progress |
 | `pluto_task_list` | `POST /agents/task_list` | enumerate tasks |
 | `pluto_set_status` | `POST /agents/set_status` | custom status string |
+| `pluto_snapshot_self` | `POST /agents/snapshot_self` | capture `.plut` + recovery prompt; pass `output_dir` to also write `<agent_id>.plut` and `<agent_id>-recovery.md` to disk |
+| `pluto_restore_from_snapshot` | `POST /agents/restore_from_snapshot` | re-apply a saved `.plut` to current session — status flips to `recovered_from_file`, returns `reclaimed_locks`/`lost_locks` |
 | `pluto_session` | (read-only, no network) | self-diagnostic: returns adapter↔Pluto registration state. The agent's "is MCP alive?" probe — if this errors, the user should run `/mcp` to refresh the Claude Code transport. |
 
 ### Prompts (slash commands)
@@ -88,8 +146,9 @@ In Claude Code these surface as slash commands. Two groups:
 
 | Prompt | What it does |
 |--------|-------------|
-| `/pluto-check` | Calls `pluto_recv` and summarizes whatever arrived (one-shot, no blocking) |
-| `/pluto-watch` | Starts a chat-speed inbox watcher by spawning a background Task that calls `pluto_wait_for_messages` |
+| `/pluto-check` | Calls `pluto_recv` and summarizes whatever arrived (one-shot, no blocking). Also re-arms the watcher unless `watcher_stop` is in effect. |
+| `/pluto-watch` | Starts a chat-speed inbox watcher by spawning a background Task that calls `pluto_wait_for_messages`. Implicitly clears any `watcher_stop` kill switch. |
+| `/pluto-watch-stop` | Engages the `watcher_stop` kill switch: stops auto-respawning the inbox watcher on drain for the rest of the session. Resume with `/pluto-watch`. |
 | `/pluto-status` | Reports my agent_id, connected peers, inbox depth, and locks held |
 
 **Roles & reference** — inlined documents.
@@ -183,6 +242,126 @@ opt out, pass `auto_renew=False` and renew manually with
 If a renewal call fails (connectivity blip, lock revoked) the manager
 stops retrying and logs a warning to stderr — the agent is responsible
 for treating subsequent writes as unsafe.
+
+---
+
+## Self-snapshot & recover-from-file (v0.2.9)
+
+When an agent is about to die for any reason — host restart, OS update,
+process crash, manual `/clear` — Pluto can hand the agent a self-contained
+state bundle so the *next* incarnation rejoins as the same identity.
+
+A snapshot is two files written next to each other:
+
+| File | Format | Purpose |
+|------|--------|---------|
+| `<agent_id>.plut`           | JSON     | coordination state — agent_id, session_id, attributes, custom_status, subscriptions, currently held locks (with fencing tokens) |
+| `<agent_id>-recovery.md`    | Markdown | step-by-step recovery prompt the new instance should read first turn |
+
+After restore, the agent's status becomes `recovered_from_file` (visible
+to other agents via `pluto_list_agents`).
+
+### Taking a snapshot from inside the agent
+
+The agent calls the MCP tool with an `output_dir`:
+
+```
+pluto_snapshot_self(output_dir="/tmp/pluto/snapshots")
+→ {
+    "status": "ok",
+    "plut_path":   "/tmp/pluto/snapshots/cells-orch.plut",
+    "prompt_path": "/tmp/pluto/snapshots/cells-orch-recovery.md",
+    "message":     "Snapshot saved. To restore later, run
+                    PlutoMCPFriend with --restore /tmp/pluto/snapshots/cells-orch.plut"
+  }
+```
+
+Omit `output_dir` to receive the raw payload inline (`{plut: {...}, prompt: "..."}`)
+without writing to disk — useful for sending the snapshot to another agent.
+
+### Restoring from a `.plut` file
+
+Two paths, depending on whether the agent is *already running* or being
+*launched fresh*:
+
+**Mid-session (already registered):**
+```
+pluto_restore_from_snapshot(plut_path="/tmp/pluto/snapshots/cells-orch.plut")
+→ {
+    "status":          "ok",
+    "agent_id":        "cells-orch",
+    "session_id":      "sess-...",
+    "reclaimed_locks": [{...}],   # still held — Pluto kept them through reconnect
+    "lost_locks":      [{...}],   # released since snapshot — re-acquire if needed
+    "subscriptions":   ["control", "alerts"],
+    "attributes":      {...}
+  }
+```
+
+**On launch (fresh process — recommended after a crash):** pass the
+file path to the launcher so re-registration happens before turn 1:
+
+```
+./PlutoMCPFriend.sh --restore /tmp/pluto/snapshots/cells-orch.plut
+```
+
+`--agent-id` is read from the `.plut` automatically, so you don't need
+to type it again — pass it explicitly only if you want to claim a
+*different* identity, in which case the launcher refuses (locks would
+silently land in `lost_locks`). Sequence on launch:
+
+1. Validate the `.plut` and derive `agent_id` from its `agent_id` field.
+2. Standard MCP register against Pluto.
+3. Call `restore_from_snapshot` — overlay attributes, custom_status,
+   subscriptions; split locks into `reclaimed_locks` / `lost_locks`;
+   set status to `recovered_from_file`.
+4. Log a one-line summary (`reclaimed=N lost=M`) to stderr.
+5. Hand control to Claude.
+
+What's *not* automated yet: the launcher does not auto-inject the
+markdown recovery prompt (`<agent_id>-recovery.md`) into Claude's
+system prompt. Read it yourself first turn, or paste it into the
+agent's first user message — every step it lists is also embedded in
+the `pluto-protocol` MCP prompt, so an agent that knows the protocol
+will reconstruct most of the checklist on its own.
+
+### What the recovery prompt contains
+
+A typical generated `<agent_id>-recovery.md` walks the agent through:
+
+1. Re-register on Pluto (the launcher already did this — for reference).
+2. Apply the `.plut` via `restore_from_snapshot` (also automated).
+3. Rebuild domain context — read `CLAUDE.md`, check `git log`, drain inbox.
+4. Audit each entry in `reclaimed_locks` — verify the resource is still
+   safe to keep holding given any drift while offline.
+5. Re-confirm subscriptions and check the orchestrator for new tasks.
+
+Pluto only restores *coordination* state, not application context — the
+agent must reload its own working memory from the project.
+
+### Lock semantics during snapshot/restore
+
+A snapshot records lock refs and fencing tokens at the moment it was
+taken. On restore Pluto checks each ref against current ownership:
+
+- Still held by you → `reclaimed_locks` (no re-acquire needed; fencing
+  token is unchanged).
+- Released since snapshot (TTL or grace expired, you released it,
+  forced release) → `lost_locks`. Treat as not-held; re-acquire only
+  if the resource is still safe and free.
+
+Snapshots **do not** preserve the inbox. Messages sent while you were
+offline live on Pluto via the normal grace-period delivery if you
+reconnect within `reconnect_grace_ms` (default 30 s); after that they
+are lost. For longer outages, durable persistence is the orchestrator's
+responsibility, not the snapshot's.
+
+### When *not* to use it
+
+Snapshots are best for known-imminent restarts or graceful shutdowns.
+For sub-second blips Pluto's grace-period reconnect (`recovered`
+status, automatic lock reclaim, queued inbox delivery) is already the
+right tool — don't snapshot every minute "just in case."
 
 ---
 

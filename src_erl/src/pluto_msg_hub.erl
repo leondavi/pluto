@@ -45,7 +45,9 @@
     peek_inbox/1,
     peek_inbox/2,
     ack_inbox/2,
-    push_event_to_agent/2
+    push_event_to_agent/2,
+    capture_snapshot/1,
+    restore_from_snapshot/2
 ]).
 
 %% gen_server callbacks
@@ -246,6 +248,24 @@ peek_inbox(AgentId, SinceToken) ->
 ack_inbox(AgentId, UpToSeq) when is_integer(UpToSeq), UpToSeq >= 0 ->
     gen_server:call(?MODULE, {ack_inbox, AgentId, UpToSeq}).
 
+%% @doc Capture a self-restorable snapshot of the agent's state.
+%% Returns a map containing agent_id, session_id, attributes, custom_status,
+%% subscriptions, held_locks (with fencing tokens), and a taken_at timestamp.
+%% The agent persists this and may later present it via restore_from_snapshot/2.
+-spec capture_snapshot(binary()) -> {ok, map()} | {error, not_found}.
+capture_snapshot(AgentId) ->
+    gen_server:call(?MODULE, {capture_snapshot, AgentId}).
+
+%% @doc Apply a previously captured snapshot to a freshly registered session.
+%% The agent must already be registered (via the normal `register` op) before
+%% calling this; restore overlays the saved attributes/subscriptions/custom_status
+%% on top, sets status to `recovered_from_file`, and reports which locks
+%% from the snapshot are still recoverable. Locks released since the snapshot
+%% are reported in `lost_locks`.
+-spec restore_from_snapshot(binary(), map()) -> {ok, map()} | {error, term()}.
+restore_from_snapshot(AgentId, Snapshot) when is_map(Snapshot) ->
+    gen_server:call(?MODULE, {restore_from_snapshot, AgentId, Snapshot}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -349,8 +369,8 @@ handle_call({send, From, To, Payload, RequestId}, _From,
     %% Log message to event log for auditability
     pluto_event_log:log(message_sent, #{from => From, to => To, msg_id => MsgId}),
     case ets:lookup(?ETS_AGENTS, To) of
-        [#agent{status = connected, session_pid = Pid, session_type = SType}]
-          when is_pid(Pid), SType =:= tcp ->
+        [#agent{status = S, session_pid = Pid, session_type = SType}]
+          when (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file), is_pid(Pid), SType =:= tcp ->
             Pid ! {pluto_event, Event2},
             pluto_stats:inc(messages_sent),
             pluto_stats:inc(messages_received),
@@ -361,8 +381,10 @@ handle_call({send, From, To, Payload, RequestId}, _From,
                 undefined -> ok;
                 _ ->
                     case ets:lookup(?ETS_AGENTS, From) of
-                        [#agent{status = connected, session_pid = SenderPid}]
-                          when is_pid(SenderPid) ->
+                        [#agent{status = SF, session_pid = SenderPid}]
+                          when (SF =:= connected orelse SF =:= recovered
+                                orelse SF =:= recovered_from_file),
+                               is_pid(SenderPid) ->
                             AckEvt = #{
                                 <<"event">>      => ?EVT_DELIVERY_ACK,
                                 <<"msg_id">>     => MsgId,
@@ -375,15 +397,16 @@ handle_call({send, From, To, Payload, RequestId}, _From,
                     end
             end,
             {reply, {ok, MsgId}, State#state{msg_seq = NewSeq}};
-        [#agent{status = connected, session_type = SType}]
-          when SType =:= http; SType =:= stateless ->
+        [#agent{status = S, session_type = SType}]
+          when (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file),
+               (SType =:= http orelse SType =:= stateless) ->
             %% HTTP/stateless agent — queue message in inbox for polling
             queue_inbox_message(To, Event2),
             pluto_stats:inc(messages_sent),
             pluto_stats:inc_agent(From, messages_sent),
             {reply, {ok, MsgId}, State#state{msg_seq = NewSeq}};
         [#agent{status = disconnected}] ->
-            %% Agent is disconnected — queue message in inbox
+            %% Agent is disconnected (grace period) — queue message in inbox
             queue_inbox_message(To, Event2),
             pluto_stats:inc(messages_sent),
             pluto_stats:inc_agent(From, messages_sent),
@@ -394,10 +417,11 @@ handle_call({send, From, To, Payload, RequestId}, _From,
 
 %% ── list agents ─────────────────────────────────────────────────────
 handle_call(list_agents, _From, State) ->
-    Agents = ets:match(?ETS_AGENTS, #agent{agent_id = '$1',
-                                           status = connected,
-                                           _ = '_'}),
-    Ids = [Id || [Id] <- Agents],
+    All = ets:tab2list(?ETS_AGENTS),
+    Ids = [A#agent.agent_id || A <- All,
+           A#agent.status =:= connected
+           orelse A#agent.status =:= recovered
+           orelse A#agent.status =:= recovered_from_file],
     {reply, Ids, State};
 
 %% ── List agents with full detail (attributes, last-seen, status) ────
@@ -422,8 +446,11 @@ handle_call({find_agents, Filter}, _From, State) ->
                                        custom_status = CStatus}) ->
         %% Check status filter if present
         StatusOk = case maps:find(<<"status">>, Filter) of
-            {ok, <<"connected">>}    -> Status =:= connected;
-            {ok, <<"disconnected">>} -> Status =:= disconnected;
+            {ok, <<"connected">>}           -> Status =:= connected;
+            {ok, <<"disconnected">>}        -> Status =:= disconnected;
+            {ok, <<"disconnected_timeout">>}-> Status =:= disconnected_timeout;
+            {ok, <<"recovered">>}           -> Status =:= recovered;
+            {ok, <<"recovered_from_file">>} -> Status =:= recovered_from_file;
             _ -> true
         end,
         %% Check custom_status filter if present
@@ -549,6 +576,91 @@ handle_call({ack_inbox, AgentId, UpToSeq}, _From, State) ->
     end,
     {reply, {ok, Drained}, State};
 
+%% ── capture_snapshot — build a self-restorable state map for AgentId ──
+handle_call({capture_snapshot, AgentId}, _From, State) ->
+    case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{agent_id    = AId,
+                session_id   = SessId,
+                attributes   = Attrs,
+                custom_status= CStatus,
+                subscriptions= Subs,
+                session_type = SType}] ->
+            Locks = pluto_lock_mgr:locks_for_agent(AgentId),
+            LockMaps = [#{
+                <<"lock_ref">>      => L#lock.lock_ref,
+                <<"resource">>      => L#lock.resource,
+                <<"mode">>          => atom_to_binary(L#lock.mode, utf8),
+                <<"fencing_token">> => L#lock.fencing_token,
+                <<"expires_at">>    => L#lock.expires_at
+            } || L <- Locks],
+            Snapshot = #{
+                <<"version">>        => list_to_binary(?VERSION),
+                <<"taken_at">>       => erlang:system_time(millisecond),
+                <<"agent_id">>       => AId,
+                <<"session_id">>     => case SessId of undefined -> null; _ -> SessId end,
+                <<"attributes">>     => Attrs,
+                <<"custom_status">>  => CStatus,
+                <<"subscriptions">>  => Subs,
+                <<"session_type">>   => atom_to_binary(SType, utf8),
+                <<"held_locks">>     => LockMaps
+            },
+            {reply, {ok, Snapshot}, State};
+        [] ->
+            {reply, {error, not_found}, State}
+    end;
+
+%% ── restore_from_snapshot — overlay snapshot onto a freshly registered session
+handle_call({restore_from_snapshot, AgentId, Snapshot}, _From, State) ->
+    case ets:lookup(?ETS_AGENTS, AgentId) of
+        [Agent = #agent{}] ->
+            SnapAttrs    = maps:get(<<"attributes">>, Snapshot, #{}),
+            SnapCStatus  = maps:get(<<"custom_status">>, Snapshot, Agent#agent.custom_status),
+            SnapSubs     = maps:get(<<"subscriptions">>, Snapshot, []),
+            SnapLocks    = maps:get(<<"held_locks">>, Snapshot, []),
+            SnapTakenAt  = maps:get(<<"taken_at">>, Snapshot, 0),
+
+            %% Merge attributes: snapshot values win on conflict (agent's prior identity)
+            MergedAttrs = maps:merge(Agent#agent.attributes, SnapAttrs),
+            ets:insert(?ETS_AGENTS, Agent#agent{
+                attributes    = MergedAttrs,
+                custom_status = SnapCStatus,
+                subscriptions = SnapSubs,
+                status        = recovered_from_file
+            }),
+
+            %% Determine which snapshot locks are still held by this agent.
+            %% Locks released since the snapshot are "lost".
+            CurrentLocks = pluto_lock_mgr:locks_for_agent(AgentId),
+            CurrentRefs  = [L#lock.lock_ref || L <- CurrentLocks],
+            {Reclaimed, Lost} = lists:foldl(fun(LockMap, {Ok, Bad}) ->
+                Ref = maps:get(<<"lock_ref">>, LockMap, undefined),
+                case Ref =/= undefined andalso lists:member(Ref, CurrentRefs) of
+                    true  -> {[LockMap | Ok], Bad};
+                    false -> {Ok, [LockMap | Bad]}
+                end
+            end, {[], []}, SnapLocks),
+
+            pluto_event_log:log(snapshot_restored,
+                                #{agent_id => AgentId,
+                                  taken_at => SnapTakenAt,
+                                  reclaimed => length(Reclaimed),
+                                  lost => length(Lost)}),
+
+            Result = #{
+                <<"status">>          => ?STATUS_OK,
+                <<"agent_id">>        => AgentId,
+                <<"session_id">>      => Agent#agent.session_id,
+                <<"taken_at">>        => SnapTakenAt,
+                <<"reclaimed_locks">> => lists:reverse(Reclaimed),
+                <<"lost_locks">>      => lists:reverse(Lost),
+                <<"attributes">>      => MergedAttrs,
+                <<"subscriptions">>   => SnapSubs
+            },
+            {reply, {ok, Result}, State};
+        [] ->
+            {reply, {error, not_registered}, State}
+    end;
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
@@ -561,10 +673,11 @@ handle_cast({broadcast, From, Payload}, State) ->
     },
     pluto_stats:inc(broadcasts_sent),
     pluto_stats:inc_agent(From, broadcasts_sent),
-    %% Send to all connected agents except the sender
-    AllAgents = ets:match_object(?ETS_AGENTS, #agent{status = connected, _ = '_'}),
-    lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid}) ->
-        case AId =/= From andalso is_pid(Pid) of
+    %% Send to all active agents except the sender
+    AllAgents = ets:tab2list(?ETS_AGENTS),
+    lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid, status = S}) ->
+        case (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file) andalso AId =/= From
+             andalso is_pid(Pid) of
             true  -> Pid ! {pluto_event, Event};
             false -> ok
         end
@@ -588,6 +701,13 @@ handle_cast({unregister, AgentId}, State) ->
             pluto_name_registry:release_name(AgentId),
             %% Remove the session record
             ets:delete(?ETS_SESSIONS, SessId),
+            %% Evict all HTTP session tokens for this agent. Without this,
+            %% an orphaned client could keep polling /agents/poll with the
+            %% old token after unregister and drain inbox messages destined
+            %% for whoever next claims the same agent_id. Grace-period
+            %% reconnects use session_id (not the token) so they are
+            %% unaffected — the reconnecting client gets a fresh token.
+            evict_http_sessions(AgentId),
             %% Notify other agents
             broadcast_event(#{
                 <<"event">>    => ?EVT_AGENT_LEFT,
@@ -614,12 +734,12 @@ handle_cast({publish, From, Topic, Payload}, State) ->
         <<"payload">> => Payload
     },
     pluto_event_log:log(topic_publish, #{from => From, topic => Topic}),
-    %% Deliver to all connected agents subscribed to this topic (except sender)
-    AllAgents = ets:match_object(?ETS_AGENTS, #agent{status = connected, _ = '_'}),
+    %% Deliver to all active agents subscribed to this topic (except sender)
+    AllAgents = ets:tab2list(?ETS_AGENTS),
     lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid,
-                             subscriptions = Subs}) ->
-        case AId =/= From andalso is_pid(Pid)
-             andalso lists:member(Topic, Subs) of
+                             subscriptions = Subs, status = S}) ->
+        case (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file) andalso AId =/= From
+             andalso is_pid(Pid) andalso lists:member(Topic, Subs) of
             true  -> Pid ! {pluto_event, Event};
             false -> ok
         end
@@ -646,7 +766,7 @@ handle_info({deliver_inbox_sync, AgentId}, State) ->
 %% ── Grace period expiry ─────────────────────────────────────────────
 handle_info({grace_expired, AgentId}, State) ->
     case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{status = disconnected}] ->
+        [Agent = #agent{status = disconnected}] ->
             ?LOG_INFO("Grace period expired for agent ~s -- releasing locks",
                       [AgentId]),
             %% Release all locks held by this agent
@@ -654,10 +774,19 @@ handle_info({grace_expired, AgentId}, State) ->
             lists:foreach(fun(#lock{lock_ref = Ref}) ->
                 pluto_lock_mgr:release(Ref, AgentId)
             end, Locks),
-            %% Remove the agent from the registry entirely
-            ets:delete(?ETS_AGENTS, AgentId),
-            %% Release from centralized name registry (belt and suspenders)
+            %% Keep a tombstone so the UI can show Disconnected (timeout);
+            %% name is freed so another agent may claim it
+            Now = erlang:system_time(millisecond),
+            ets:insert(?ETS_AGENTS, Agent#agent{
+                status      = disconnected_timeout,
+                session_pid = undefined,
+                session_id  = undefined,
+                last_seen   = Now
+            }),
+            %% Release from centralized name registry
             pluto_name_registry:release_name(AgentId),
+            %% Evict stale HTTP tokens
+            evict_http_sessions(AgentId),
             %% Clean up inbox
             clear_inbox(AgentId);
         _ ->
@@ -690,12 +819,18 @@ do_register(AgentId, SessionId, SessionPid, Attrs, SessionType) ->
         [] -> ok
     end,
 
-    %% Preserve existing attributes/subscriptions on reconnect
-    {MergedAttrs, ExistingSubs} = case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{attributes = OldAttrs, subscriptions = OldSubs}] ->
-            {maps:merge(OldAttrs, Attrs), OldSubs};
+    %% Preserve existing attributes/subscriptions on reconnect; track prior status
+    {MergedAttrs, ExistingSubs, PrevStatus} = case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{attributes = OldAttrs, subscriptions = OldSubs, status = PS}] ->
+            {maps:merge(OldAttrs, Attrs), OldSubs, PS};
         [] ->
-            {Attrs, []}
+            {Attrs, [], undefined}
+    end,
+    %% recovered if coming back from a clean disconnected grace window;
+    %% connected for fresh registrations or post-timeout re-entries
+    NewStatus = case PrevStatus of
+        disconnected -> recovered;
+        _            -> connected
     end,
 
     %% Upsert agent record
@@ -703,7 +838,7 @@ do_register(AgentId, SessionId, SessionPid, Attrs, SessionType) ->
         agent_id      = AgentId,
         session_id    = SessionId,
         session_pid   = SessionPid,
-        status        = connected,
+        status        = NewStatus,
         connected_at  = Now,
         attributes    = MergedAttrs,
         last_seen     = SysNow,
@@ -739,11 +874,12 @@ do_register(AgentId, SessionId, SessionPid, Attrs, SessionType) ->
 
     ok.
 
-%% @private Send an event to all connected agents except `ExcludeAgentId`.
+%% @private Send an event to all active (connected + recovered) agents except `ExcludeAgentId`.
 broadcast_event(Event, ExcludeAgentId) ->
-    AllAgents = ets:match_object(?ETS_AGENTS, #agent{status = connected, _ = '_'}),
-    lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid}) ->
-        case AId =/= ExcludeAgentId andalso is_pid(Pid) of
+    AllAgents = ets:tab2list(?ETS_AGENTS),
+    lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid, status = S}) ->
+        case (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file)
+             andalso AId =/= ExcludeAgentId andalso is_pid(Pid) of
             true  -> Pid ! {pluto_event, Event};
             false -> ok
         end
@@ -756,12 +892,14 @@ broadcast_event(Event, ExcludeAgentId) ->
 -spec push_event_to_agent(binary(), map()) -> ok.
 push_event_to_agent(AgentId, Event) ->
     case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{status = connected, session_pid = Pid}] when is_pid(Pid) ->
+        [#agent{status = S, session_pid = Pid}]
+          when (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file), is_pid(Pid) ->
             Pid ! {pluto_event, Event},
             ok;
-        [#agent{}] ->
+        [#agent{status = S}] when S =:= connected; S =:= disconnected;
+                                    S =:= recovered; S =:= recovered_from_file ->
             queue_inbox_message(AgentId, Event);
-        [] ->
+        _ ->
             ok
     end.
 
@@ -800,9 +938,11 @@ do_deliver_inbox(AgentId) ->
     InboxTtlMs = pluto_config:get(inbox_msg_ttl_ms, ?DEFAULT_INBOX_MSG_TTL_MS),
     NowMs = erlang:system_time(millisecond),
     case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{status = connected, session_pid = Pid}] when is_pid(Pid) ->
+        [#agent{status = AgSt, session_pid = Pid}]
+          when (AgSt =:= connected orelse AgSt =:= recovered
+                orelse AgSt =:= recovered_from_file), is_pid(Pid) ->
             Keys = ets:match(?ETS_MSG_INBOX, {{AgentId, '$1'}, '_'}),
-            SortedSeqs = lists:sort([S || [S] <- Keys]),
+            SortedSeqs = lists:sort([Seq || [Seq] <- Keys]),
             lists:foreach(fun(Seq) ->
                 Key = {AgentId, Seq},
                 case ets:lookup(?ETS_MSG_INBOX, Key) of
@@ -860,12 +1000,16 @@ do_register_http_with_token(AgentId, Token, Attrs, Mode, TtlMs) ->
     Now = pluto_lease:now_ms(),
     SysNow = erlang:system_time(millisecond),
 
-    %% Preserve existing attributes/subscriptions on reconnect
-    {MergedAttrs, ExistingSubs} = case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{attributes = OldAttrs, subscriptions = OldSubs}] ->
-            {maps:merge(OldAttrs, Attrs), OldSubs};
+    %% Preserve existing attributes/subscriptions on reconnect; track prior status
+    {MergedAttrs, ExistingSubs, PrevStatusHttp} = case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{attributes = OldAttrs, subscriptions = OldSubs, status = PS}] ->
+            {maps:merge(OldAttrs, Attrs), OldSubs, PS};
         [] ->
-            {Attrs, []}
+            {Attrs, [], undefined}
+    end,
+    NewStatusHttp = case PrevStatusHttp of
+        disconnected -> recovered;
+        _            -> connected
     end,
 
     %% Evict any previous HTTP sessions for this agent
@@ -876,7 +1020,7 @@ do_register_http_with_token(AgentId, Token, Attrs, Mode, TtlMs) ->
         agent_id      = AgentId,
         session_id    = SessionId,
         session_pid   = undefined,
-        status        = connected,
+        status        = NewStatusHttp,
         connected_at  = Now,
         attributes    = MergedAttrs,
         last_seen     = SysNow,
@@ -948,7 +1092,7 @@ do_register_http_with_session(AgentId, Token, Attrs, Mode, TtlMs, OldSessionId) 
         agent_id      = AgentId,
         session_id    = OldSessionId,
         session_pid   = undefined,
-        status        = connected,
+        status        = recovered,
         connected_at  = Now,
         attributes    = MergedAttrs,
         last_seen     = SysNow,

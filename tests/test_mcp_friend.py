@@ -329,7 +329,14 @@ class TestPromptAssembly(unittest.TestCase):
         # Required Task parameters still spelled out.
         self.assertIn("run_in_background", block)
         self.assertIn("subagent_type", block)
-        self.assertIn("pluto_wait_for_messages(60)", block)
+        # New contract: subagent calls pluto_inbox_watch (server-owned
+        # durable loop), not pluto_wait_for_messages directly.
+        self.assertIn("pluto_inbox_watch", block)
+        self.assertIn("wait_timeout_s=60", block)
+        # Watcher subagents share the parent's MCP server on Claude Code,
+        # so they MUST use peek mode (drain=false) — otherwise they steal
+        # the parent's inbox out from under pluto_recv.
+        self.assertIn("drain=false", block)
 
     def test_connection_block_uses_short_poll_loop(self):
         """A single 300+ s block in a subagent gets killed by Claude Code's
@@ -340,11 +347,9 @@ class TestPromptAssembly(unittest.TestCase):
         )
         # The subagent prompt must describe a loop, not a single call.
         self.assertIn("loop", block.lower())
-        # Bounded number of iterations so the subagent self-terminates
-        # before any platform-level cleanup. Default is 15 (15 min total
-        # at 60s per call) — large enough to reduce respawn-gap latency
-        # but still bounded.
-        self.assertIn("15 iterations", block)
+        # Bounded number of cycles so the subagent self-terminates
+        # before any platform-level cleanup. Default is 15.
+        self.assertIn("15 cycles", block)
         # Must explain the watchdog reason so future maintainers don't
         # "simplify" it back to a single block.
         self.assertIn("watchdog", block.lower())
@@ -356,11 +361,11 @@ class TestPromptAssembly(unittest.TestCase):
             host="h", http_port=1, agent_id="a",
             wait_timeout_s=60, iterations=30,
         )
-        self.assertIn("30 iterations", block)
+        self.assertIn("30 cycles", block)
         # Total lifetime calculation reflects the new value.
         self.assertIn(f"{30 * 60} s", block)
         # Default value should not appear when overridden.
-        self.assertNotIn("15 iterations", block)
+        self.assertNotIn("15 cycles", block)
 
     def test_role_prompt_includes_role_and_connection(self):
         body = build_role_prompt_body(
@@ -403,12 +408,12 @@ class TestPromptAssembly(unittest.TestCase):
         body = build_watch_prompt_body()
         # Claude-only path: background Task with run_in_background.
         self.assertIn("run_in_background", body)
-        self.assertIn("pluto_wait_for_messages", body)
+        # New contract: subagent calls pluto_inbox_watch in peek mode.
+        self.assertIn("pluto_inbox_watch", body)
+        self.assertIn("drain=false", body)
         # Must specify subagent_type — Claude Code's Task tool requires it.
         self.assertIn("subagent_type", body)
-        # Default timeout shows up. Default was lowered from 300 to 60
-        # so a single block fits comfortably under the 600s stream
-        # watchdog.
+        # Default timeout shows up.
         self.assertIn("300", body)
         # Failure-detection heuristic must be present so the agent doesn't
         # re-arm a non-functional watcher in a tight loop.
@@ -422,29 +427,32 @@ class TestPromptAssembly(unittest.TestCase):
         stream watchdog never fires."""
         body = build_watch_prompt_body(wait_timeout_s=60)
         self.assertIn("loop", body.lower())
-        # Default iteration count is 15.
-        self.assertIn("15 iterations", body)
+        # Default cycle count is 15.
+        self.assertIn("15 cycles", body)
         self.assertIn("watchdog", body.lower())
 
     def test_watch_prompt_honours_custom_iterations(self):
         """``/pluto-watch`` must propagate the configured iteration count
         so orchestrators can tune subagent lifetime without code changes."""
         body = build_watch_prompt_body(wait_timeout_s=60, iterations=30)
-        self.assertIn("30 iterations", body)
-        self.assertIn(f"{30 * 60} s", body)
-        self.assertNotIn("15 iterations", body)
+        self.assertIn("30 cycles", body)
+        self.assertNotIn("15 cycles", body)
 
     def test_watch_prompt_honours_custom_timeout(self):
         body = build_watch_prompt_body(wait_timeout_s=120)
-        self.assertIn("pluto_wait_for_messages(120)", body)
+        # New contract: pluto_inbox_watch with wait_timeout_s parameter.
+        self.assertIn("wait_timeout_s=120", body)
+        self.assertIn("pluto_inbox_watch", body)
         # Should not still mention the previous default we replaced.
-        self.assertNotIn("pluto_wait_for_messages(60)", body)
+        self.assertNotIn("wait_timeout_s=60", body)
 
     def test_connection_block_honours_custom_timeout(self):
         block = build_connection_block(
             host="h", http_port=1, agent_id="a", wait_timeout_s=900,
         )
-        self.assertIn("pluto_wait_for_messages(900)", block)
+        # New contract.
+        self.assertIn("wait_timeout_s=900", block)
+        self.assertIn("pluto_inbox_watch", block)
         # No fallback wording for non-Claude clients.
         self.assertNotIn("Cursor", block)
         self.assertNotIn("Aider", block)
@@ -454,7 +462,8 @@ class TestPromptAssembly(unittest.TestCase):
             "specialist",
             host="h", http_port=1, agent_id="a", wait_timeout_s=42,
         )
-        self.assertIn("pluto_wait_for_messages(42)", body)
+        self.assertIn("wait_timeout_s=42", body)
+        self.assertIn("pluto_inbox_watch", body)
 
     def test_status_prompt_lists_four_sections(self):
         body = build_status_prompt_body()
@@ -486,32 +495,32 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("watcher_stop engaged", body)
 
     def test_check_prompt_respawns_watcher_after_drain(self):
-        """``/pluto-check`` is a drain — the agent must re-arm the watcher
-        after it, unless the kill switch is in effect."""
+        """``/pluto-check`` is a drain — the agent must end-of-turn re-arm
+        the watcher, unless the kill switch is in effect."""
         body = build_check_prompt_body()
         # Existing contract still holds.
         self.assertIn("pluto_recv", body)
-        # New respawn instruction.
-        self.assertIn("Respawn the watcher", body)
+        # New respawn instruction: end-of-turn only.
+        self.assertIn("end of this turn", body.lower())
+        self.assertIn("last tool call", body.lower())
         # Honours the kill switch.
         self.assertIn("watcher_stop", body)
 
     def test_connection_block_drain_respawn_rule(self):
-        """The always-on role connection block must spell out: any drain
-        path triggers an immediate watcher respawn in the same turn,
-        with watcher_stop as the documented exception."""
+        """The always-on role connection block must spell out the
+        end-of-turn-only respawn rule and call out the kill switch."""
         block = build_connection_block(
             host="h", http_port=1, agent_id="a",
         )
-        # The MANDATORY heading itself.
-        self.assertIn("respawn the watcher immediately after every drain",
-                      block.lower())
-        # All three drain paths called out by name.
-        self.assertIn("pluto_recv", block)
-        self.assertIn("_pluto_inbox", block)
-        self.assertIn("watcher Task fires", block)
-        # The kill-switch exception with both invocation forms.
+        # New end-of-turn rule.
+        self.assertIn("end-of-turn", block.lower())
+        # The kill-switch exception still documented.
         self.assertIn("watcher_stop", block)
+        # Old "respawn immediately after every drain" wording is gone.
+        self.assertNotIn(
+            "respawn the watcher immediately after every drain",
+            block.lower(),
+        )
         self.assertIn("/pluto-watch-stop", block)
         # Resume path is mentioned so the agent doesn't get stuck.
         self.assertIn("/pluto-watch", block)
@@ -634,6 +643,374 @@ class TestToolWrappers(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(call_name, {"register", "peek", "ack",
                                          "send", "broadcast", "renew",
                                          "release", "list_agents_detailed"})
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Phase-1 + phase-2 hardening: durable watcher, dedupe, notifier, telemetry.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+from agent_mcp_friend.notifier import Notifier  # noqa: E402
+from agent_mcp_friend.tools import _mcp_inherited  # noqa: E402
+
+
+class TestWatcherDurable(unittest.IsolatedAsyncioTestCase):
+    """``watch_durable`` semantics — dedupe, adaptive iteration, soft retry."""
+
+    async def asyncSetUp(self):
+        self.client = FakeHttpClient()
+        self.inbox = InboxManager(self.client)
+
+    async def test_durable_returns_messages_when_they_arrive(self):
+        async def deliver_after_delay():
+            await asyncio.sleep(0.05)
+            await self.inbox._absorb([
+                {"event": "message", "from": "x", "seq_token": 11,
+                 "payload": {"text": "hi"}},
+            ])
+
+        asyncio.create_task(deliver_after_delay())
+        resp = await self.inbox.watch_durable(
+            inbox_id="default", wait_timeout_s=1.0, max_total_s=2.0,
+        )
+        self.assertEqual(resp["count"], 1)
+        self.assertEqual(resp["watcher_id"], "default")
+        self.assertEqual(resp["messages"][0]["seq_token"], 11)
+
+    async def test_durable_dedupes_concurrent_callers(self):
+        # First watcher blocks on an empty inbox.
+        first = asyncio.create_task(
+            self.inbox.watch_durable(
+                inbox_id="default", wait_timeout_s=0.5, max_total_s=1.0,
+            )
+        )
+        # Give it a moment to enter the loop and register the key.
+        await asyncio.sleep(0.05)
+        # Concurrent second call must short-circuit.
+        second = await self.inbox.watch_durable(
+            inbox_id="default", wait_timeout_s=0.5, max_total_s=1.0,
+        )
+        self.assertTrue(second.get("already_watching"))
+        self.assertEqual(second["watcher_id"], "default")
+        # First eventually returns on timeout.
+        first_resp = await first
+        self.assertTrue(first_resp.get("timeout"))
+
+    async def test_durable_releases_slot_after_return(self):
+        # Run, return, run again — second call must NOT see already_watching.
+        await self.inbox.watch_durable(
+            inbox_id="default", wait_timeout_s=0.1, max_total_s=0.1,
+        )
+        self.assertNotIn("default", self.inbox._active_watchers)
+        again = await self.inbox.watch_durable(
+            inbox_id="default", wait_timeout_s=0.1, max_total_s=0.1,
+        )
+        self.assertFalse(again.get("already_watching", False))
+        self.assertTrue(again.get("timeout"))
+
+    async def test_durable_adaptive_iteration_math(self):
+        # Run with a tiny budget and verify iterations done matches the cap.
+        resp = await self.inbox.watch_durable(
+            inbox_id="default", wait_timeout_s=0.05, max_total_s=0.15,
+        )
+        self.assertTrue(resp.get("timeout"))
+        # max_iters = ceil(0.15 / 0.05) = 3
+        self.assertEqual(resp.get("max_iterations"), 3)
+        self.assertLessEqual(resp.get("iterations"), 3)
+
+    async def test_durable_distinct_inbox_ids_not_deduped(self):
+        first = asyncio.create_task(
+            self.inbox.watch_durable(
+                inbox_id="conv-a", wait_timeout_s=0.3, max_total_s=0.5,
+            )
+        )
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(
+            self.inbox.watch_durable(
+                inbox_id="conv-b", wait_timeout_s=0.3, max_total_s=0.5,
+            )
+        )
+        a, b = await asyncio.gather(first, second)
+        # Neither should see already_watching — different keys.
+        self.assertFalse(a.get("already_watching", False))
+        self.assertFalse(b.get("already_watching", False))
+
+
+class TestPeekModeAndDrainEvent(unittest.IsolatedAsyncioTestCase):
+    """``wait_for_messages(drain=False)`` and the new ``drain()`` event
+    clear. These guarantee a watcher subagent sharing the parent's
+    ``InboxManager`` cannot steal messages from the parent's ``pluto_recv``."""
+
+    async def asyncSetUp(self):
+        self.client = FakeHttpClient()
+        self.inbox = InboxManager(self.client)
+
+    async def test_peek_mode_returns_snapshot_without_consuming(self):
+        await self.inbox._absorb([
+            {"event": "message", "from": "x", "seq_token": 5,
+             "payload": {"text": "hi"}},
+        ])
+        snap = await self.inbox.wait_for_messages(timeout_s=1.0, drain=False)
+        # Snapshot reflects buffered content.
+        self.assertEqual(len(snap), 1)
+        self.assertEqual(snap[0]["seq_token"], 5)
+        # Buffer still holds the message; no ack was sent.
+        self.assertEqual(len(await self.inbox.peek_only()), 1)
+        self.assertNotIn(5, self.client.acks)
+
+    async def test_peek_mode_blocks_until_arrival_then_returns_snapshot(self):
+        async def deliver_late():
+            await asyncio.sleep(0.1)
+            await self.inbox._absorb([
+                {"event": "message", "from": "y", "seq_token": 7,
+                 "payload": {"text": "yo"}},
+            ])
+
+        asyncio.create_task(deliver_late())
+        snap = await self.inbox.wait_for_messages(timeout_s=2.0, drain=False)
+        self.assertEqual(len(snap), 1)
+        # Still buffered, still un-acked.
+        self.assertEqual(len(await self.inbox.peek_only()), 1)
+        self.assertNotIn(7, self.client.acks)
+
+    async def test_drain_clears_new_message_event(self):
+        # _absorb sets the event; drain must clear it so a subsequent
+        # peek-mode wait re-arms instead of returning immediately.
+        await self.inbox._absorb([
+            {"event": "message", "from": "z", "seq_token": 11,
+             "payload": {"x": 1}},
+        ])
+        self.assertTrue(self.inbox._new_message_event.is_set())
+        await self.inbox.drain()
+        self.assertFalse(self.inbox._new_message_event.is_set())
+
+    async def test_peek_then_parent_drain_round_trip(self):
+        # End-to-end: watcher peeks (no consume), parent drains, next
+        # watcher peek blocks again until a fresh arrival.
+        await self.inbox._absorb([
+            {"event": "message", "from": "p", "seq_token": 21,
+             "payload": {"x": 1}},
+        ])
+        snap = await self.inbox.wait_for_messages(timeout_s=1.0, drain=False)
+        self.assertEqual(len(snap), 1)
+
+        drained = await self.inbox.drain()
+        self.assertEqual(len(drained), 1)
+        self.assertIn(21, self.client.acks)
+
+        # Next peek-mode call must time out — no new arrivals.
+        start = asyncio.get_event_loop().time()
+        snap2 = await self.inbox.wait_for_messages(timeout_s=0.3, drain=False)
+        elapsed = asyncio.get_event_loop().time() - start
+        self.assertEqual(snap2, [])
+        self.assertGreaterEqual(elapsed, 0.25)
+
+    async def test_watch_durable_drain_false_does_not_consume(self):
+        await self.inbox._absorb([
+            {"event": "message", "from": "a", "seq_token": 30,
+             "payload": {"x": 1}},
+        ])
+        resp = await self.inbox.watch_durable(
+            inbox_id="default",
+            wait_timeout_s=0.5,
+            max_total_s=0.5,
+            drain=False,
+        )
+        self.assertEqual(resp["count"], 1)
+        # Buffer preserved, ack not sent.
+        self.assertEqual(len(await self.inbox.peek_only()), 1)
+        self.assertNotIn(30, self.client.acks)
+
+
+class TestMcpInheritedProbe(unittest.TestCase):
+    """Tri-state behavior of the PLUTO_MCP_INHERITED env var."""
+
+    def setUp(self):
+        self._prev = os.environ.pop("PLUTO_MCP_INHERITED", None)
+
+    def tearDown(self):
+        os.environ.pop("PLUTO_MCP_INHERITED", None)
+        if self._prev is not None:
+            os.environ["PLUTO_MCP_INHERITED"] = self._prev
+
+    def test_unset_returns_none(self):
+        self.assertIsNone(_mcp_inherited())
+
+    def test_truthy_returns_true(self):
+        for v in ["1", "true", "TRUE", "yes", "on"]:
+            os.environ["PLUTO_MCP_INHERITED"] = v
+            self.assertTrue(_mcp_inherited(), f"failed on {v!r}")
+
+    def test_falsy_returns_false(self):
+        for v in ["0", "false", "no", "off"]:
+            os.environ["PLUTO_MCP_INHERITED"] = v
+            self.assertEqual(_mcp_inherited(), False, f"failed on {v!r}")
+
+    def test_unrecognized_returns_none(self):
+        os.environ["PLUTO_MCP_INHERITED"] = "maybe"
+        self.assertIsNone(_mcp_inherited())
+
+
+class _FakeSession:
+    """Records calls instead of actually sending MCP frames."""
+
+    def __init__(self):
+        self.resource_updates: list = []
+        self.log_messages: list[dict] = []
+        self.fail_resource_updated = False
+        self.fail_log_message = False
+
+    async def send_resource_updated(self, uri):
+        if self.fail_resource_updated:
+            raise RuntimeError("simulated transport failure")
+        self.resource_updates.append(str(uri))
+
+    async def send_log_message(self, level, data, logger=None):
+        if self.fail_log_message:
+            raise RuntimeError("simulated transport failure")
+        self.log_messages.append(
+            {"level": level, "data": data, "logger": logger}
+        )
+
+
+class TestNotifier(unittest.IsolatedAsyncioTestCase):
+    """Notifier fan-out + drain-latency telemetry."""
+
+    async def test_disabled_notifier_is_noop(self):
+        n = Notifier(enabled=False)
+        sess = _FakeSession()
+        n.bind_session(sess)
+        await n.inbox_message([{"event": "message", "from": "a", "seq_token": 1}])
+        self.assertEqual(sess.resource_updates, [])
+        self.assertEqual(sess.log_messages, [])
+        self.assertEqual(n.inbox_message_fired, 0)
+
+    async def test_enabled_notifier_fires_both_channels(self):
+        n = Notifier(enabled=True)
+        sess = _FakeSession()
+        n.bind_session(sess)
+        await n.inbox_message([
+            {"event": "message", "from": "a", "seq_token": 1,
+             "payload": {"text": "hi"}},
+            {"event": "message", "from": "b", "seq_token": 2,
+             "payload": {"text": "yo"}},
+        ])
+        self.assertEqual(sess.resource_updates, ["pluto://inbox"])
+        self.assertEqual(len(sess.log_messages), 1)
+        log = sess.log_messages[0]
+        self.assertEqual(log["level"], "info")
+        self.assertEqual(log["logger"], "pluto.inbox")
+        self.assertEqual(log["data"]["event"], "pluto.inboxMessage")
+        self.assertEqual(log["data"]["count"], 2)
+        self.assertEqual(sorted(log["data"]["from"]), ["a", "b"])
+        self.assertEqual(n.inbox_message_fired, 1)
+
+    async def test_notifier_without_session_is_noop(self):
+        n = Notifier(enabled=True)
+        await n.inbox_message([{"event": "message", "from": "a", "seq_token": 1}])
+        self.assertEqual(n.inbox_message_fired, 0)
+
+    async def test_notifier_survives_send_failures(self):
+        n = Notifier(enabled=True)
+        sess = _FakeSession()
+        sess.fail_resource_updated = True
+        sess.fail_log_message = True
+        n.bind_session(sess)
+        # Should not raise; should record send_failures.
+        await n.inbox_message([{"event": "message", "from": "a", "seq_token": 1}])
+        self.assertEqual(n.send_failures, 2)
+        self.assertEqual(n.inbox_message_fired, 0)
+
+    async def test_watcher_error_fires_warning(self):
+        n = Notifier(enabled=True)
+        sess = _FakeSession()
+        n.bind_session(sess)
+        await n.watcher_error("default", "boom")
+        self.assertEqual(len(sess.log_messages), 1)
+        self.assertEqual(sess.log_messages[0]["level"], "warning")
+        self.assertEqual(
+            sess.log_messages[0]["data"]["event"], "pluto.watcherError",
+        )
+
+    def test_summary_has_expected_shape(self):
+        n = Notifier(enabled=True)
+        n.record_drain_latency_ms(10.0)
+        n.record_drain_latency_ms(20.0)
+        n.record_drain_latency_ms(30.0)
+        s = n.summary()
+        self.assertEqual(s["enabled"], True)
+        self.assertEqual(s["drain_samples"], 3)
+        self.assertEqual(s["drain_mean_ms"], 20.0)
+        self.assertIsNotNone(s["drain_p95_ms"])
+
+
+class TestInboxTelemetry(unittest.IsolatedAsyncioTestCase):
+    """Drain-latency telemetry: _absorb → _ack_messages delta is recorded."""
+
+    async def test_drain_latency_recorded_through_notifier(self):
+        client = FakeHttpClient()
+        inbox = InboxManager(client)
+        notifier = Notifier(enabled=True)
+        inbox.set_notifier(notifier)
+
+        await inbox._absorb([
+            {"event": "message", "from": "x", "seq_token": 42,
+             "payload": {"text": "hi"}},
+        ])
+        # A tiny delay so the recorded latency is > 0.
+        await asyncio.sleep(0.01)
+        msgs = await inbox.drain()
+        self.assertEqual(len(msgs), 1)
+        # One sample recorded, in milliseconds, > 0.
+        self.assertEqual(notifier.summary()["drain_samples"], 1)
+        self.assertGreater(notifier.summary()["drain_mean_ms"], 0.0)
+
+    async def test_absorb_fires_notifier_inbox_message(self):
+        client = FakeHttpClient()
+        inbox = InboxManager(client)
+        notifier = Notifier(enabled=True)
+        sess = _FakeSession()
+        notifier.bind_session(sess)
+        inbox.set_notifier(notifier)
+
+        await inbox._absorb([
+            {"event": "message", "from": "x", "seq_token": 99,
+             "payload": {"text": "hi"}},
+        ])
+        self.assertEqual(notifier.inbox_message_fired, 1)
+        self.assertEqual(sess.resource_updates, ["pluto://inbox"])
+
+
+class TestPromptsPhase2(unittest.TestCase):
+    """Prompts surface the new conventions and end-of-turn respawn rule."""
+
+    def test_connection_block_describes_end_of_turn_respawn(self):
+        body = build_connection_block(
+            host="127.0.0.1", http_port=9201, agent_id="a",
+            wait_timeout_s=60, iterations=15,
+        )
+        self.assertIn("end-of-turn", body.lower())
+        # And the old "respawn after every drain" mandate is gone.
+        self.assertNotIn("respawn the watcher immediately after every drain",
+                         body.lower())
+
+    def test_connection_block_mentions_spec_contract(self):
+        body = build_connection_block(
+            host="127.0.0.1", http_port=9201, agent_id="a",
+            wait_timeout_s=60, iterations=15,
+        )
+        self.assertIn("spec_contract", body)
+        self.assertIn("conv_seq", body)
+        # And tells the agent to drop from_role.
+        self.assertIn("from_role", body)
+
+    def test_connection_block_describes_inheritance_probe(self):
+        body = build_connection_block(
+            host="127.0.0.1", http_port=9201, agent_id="a",
+            wait_timeout_s=60, iterations=15,
+        )
+        self.assertIn("PLUTO_MCP_INHERITED", body)
+        self.assertIn("watcher_available", body)
 
 
 if __name__ == "__main__":

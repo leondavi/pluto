@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -20,6 +21,7 @@ from mcp.server.fastmcp import FastMCP
 
 from agent_mcp_friend.inbox import InboxManager
 from agent_mcp_friend.lock_manager import LockManager
+from agent_mcp_friend.notifier import Notifier
 from agent_mcp_friend.prompts import (
     build_check_prompt_body,
     build_guide_prompt_body,
@@ -84,6 +86,21 @@ class PlutoMCPServer:
         self.inbox = InboxManager(self.client)
         self.lock_mgr = LockManager(self.client)
 
+        # Phase-2 seam: MCP notifications. Gated behind the
+        # PLUTO_MCP_NOTIFICATIONS env var; default off. When on, we will
+        # emit notifications/inboxMessage on arrival and
+        # notifications/watcherError on hard watcher failures. The wire
+        # format is not yet implemented — this attribute exists so that
+        # downstream hook points can no-op cleanly today and light up
+        # later behind a single flag without code churn.
+        self.notifications_enabled = (
+            os.environ.get("PLUTO_MCP_NOTIFICATIONS", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+        self.notifier = Notifier(enabled=self.notifications_enabled)
+        self.inbox.set_notifier(self.notifier)
+        self.inbox.on_new_message(self._notify_inbox_message)
+
         self.mcp = FastMCP(
             name="pluto",
             instructions=(
@@ -102,6 +119,7 @@ class PlutoMCPServer:
         register_tools(
             self.mcp, self.client, self.inbox, self.lock_mgr,
             wait_timeout_s=self.wait_timeout_s,
+            notifier=self.notifier,
         )
         register_resources(self.mcp, self.client, self.inbox, self.lock_mgr)
         self._register_prompts()
@@ -219,6 +237,19 @@ class PlutoMCPServer:
                 name=prompt_name,
                 description=description,
             )(make_handler())
+
+    # ── Notification seam (phase-2 stub) ──────────────────────────────────
+
+    async def _notify_inbox_message(self, messages: list) -> None:
+        """Legacy seam — phase-2 wire format now lives in
+        :class:`Notifier`, which the inbox calls directly via
+        ``set_notifier``. This handler stays registered for diagnostic
+        symmetry (always-on debug log of fire events).
+        """
+        logger.debug(
+            "_absorb fan-out: %d fresh message(s); notifier.enabled=%s",
+            len(messages), self.notifications_enabled,
+        )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 

@@ -14,15 +14,43 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from agent_mcp_friend.inbox import InboxManager
 from agent_mcp_friend.lock_manager import LockManager
+from agent_mcp_friend.notifier import Notifier
 from pluto_client import PlutoHttpClient
 
 logger = logging.getLogger("pluto_mcp_friend.tools")
+
+
+def _mcp_inherited() -> Optional[bool]:
+    """Read the PLUTO_MCP_INHERITED env var as a tri-state.
+
+    Returned values:
+      - ``True``  → host has explicitly advertised that subagents inherit
+        this MCP server (env var set to a truthy value).
+      - ``False`` → host has explicitly advertised that subagents do NOT
+        inherit (env var set to a falsy value).
+      - ``None``  → unknown (env var not set); fall back to best-effort
+        watcher behavior and let the agent observe the outcome.
+
+    Truthy: "1", "true", "yes", "on" (case-insensitive). Falsy: "0",
+    "false", "no", "off".
+    """
+    raw = os.environ.get("PLUTO_MCP_INHERITED")
+    if raw is None:
+        return None
+    v = raw.strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return None
 
 
 def register_tools(
@@ -31,6 +59,7 @@ def register_tools(
     inbox: InboxManager,
     lock_mgr: LockManager,
     wait_timeout_s: int = 300,
+    notifier: Optional[Notifier] = None,
 ) -> None:
     """Register every Pluto tool on *mcp*.
 
@@ -41,6 +70,25 @@ def register_tools(
 
     async def _run(fn, *args, **kwargs) -> Any:
         return await asyncio.to_thread(fn, *args, **kwargs)
+
+    def _bind_session() -> None:
+        """Capture the live MCP ServerSession so background paths (the
+        inbox peek loop) can fire notifications without a request
+        context. Safe to call from any tool body; re-binds on every
+        call so reconnects update the reference. No-op if the notifier
+        is absent or the FastMCP request context is unavailable.
+        """
+        if notifier is None:
+            return
+        try:
+            ctx = mcp.get_context()
+            req_ctx = getattr(ctx, "request_context", None)
+            session = getattr(req_ctx, "session", None) if req_ctx else None
+            if session is not None:
+                notifier.bind_session(session)
+        except Exception:
+            # Outside an active request — fine, nothing to bind.
+            pass
 
     # ── Messaging ─────────────────────────────────────────────────────────
 
@@ -81,6 +129,7 @@ def register_tools(
         ),
     )
     async def pluto_recv() -> dict:
+        _bind_session()
         messages = await inbox.drain()
         return {"messages": messages, "count": len(messages)}
 
@@ -102,8 +151,81 @@ def register_tools(
         ),
     )
     async def pluto_wait_for_messages(timeout_s: int = _wait_default) -> dict:
+        _bind_session()
         messages = await inbox.wait_for_messages(timeout_s=float(timeout_s))
         return {"messages": messages, "count": len(messages)}
+
+    @mcp.tool(
+        name="pluto_inbox_watch",
+        description=(
+            "Single-slice inbox watcher. Blocks for up to wait_timeout_s "
+            "seconds (default = server wait timeout) waiting for fresh "
+            "messages, then returns. By default the tool call returns "
+            "inside one slice so the wrapping subagent's tool-call "
+            "stream stays visible to Claude Code's 600 s watchdog; pass "
+            "max_total_s > wait_timeout_s only on clients without that "
+            "watchdog."
+            "\n\nIdempotent dedupe: a second concurrent call for the "
+            "same inbox_id returns {already_watching: true} without "
+            "stacking a second loop — the existing waiter keeps running."
+            "\n\nMode: drain=true (default) pops messages off the buffer "
+            "and acks them server-side; drain=false returns a "
+            "non-consuming snapshot of what's currently buffered, leaving "
+            "the messages in place for the parent's pluto_recv to drain. "
+            "Watcher subagents on Claude Code (where the subagent inherits "
+            "the parent's MCP server) MUST pass drain=false, otherwise "
+            "they steal the parent's inbox."
+        ),
+    )
+    async def pluto_inbox_watch(
+        inbox_id: str = "default",
+        wait_timeout_s: Optional[int] = None,
+        max_total_s: Optional[int] = None,
+        drain: bool = True,
+    ) -> dict:
+        _bind_session()
+        slice_s = float(wait_timeout_s) if wait_timeout_s else float(_wait_default)
+        # Default the total budget to the slice so the tool call returns
+        # inside one slice (≤ wait_timeout_s seconds). Callers on clients
+        # without a stream-silence watchdog can pass a larger max_total_s
+        # explicitly to get the multi-slice durable-loop behavior.
+        total_s = float(max_total_s) if max_total_s else slice_s
+        resp = await inbox.watch_durable(
+            inbox_id=inbox_id,
+            wait_timeout_s=slice_s,
+            max_total_s=total_s,
+            drain=drain,
+        )
+        resp.setdefault("drain", drain)
+        # Skip piggyback (which would drain+ack the buffer) when the
+        # caller asked for peek-mode. The snapshot in resp["messages"]
+        # already reflects what's currently buffered; the parent's
+        # pluto_recv owns the actual drain.
+        if not drain:
+            return resp
+        return await inbox.piggyback(resp)
+
+    @mcp.tool(
+        name="pluto_heartbeat",
+        description=(
+            "Cheap liveness probe. Returns immediately with "
+            "{ok: true, ts, agent_id, connected, mcp_inherited}. No "
+            "network call. Use this between pluto_inbox_watch calls (or "
+            "any other long-running work) to demonstrate stream activity "
+            "to Claude Code's 600 s stream-silence watchdog without "
+            "doing meaningful work."
+        ),
+    )
+    async def pluto_heartbeat() -> dict:
+        _bind_session()
+        return {
+            "ok": True,
+            "ts": time.time(),
+            "agent_id": client.agent_id,
+            "connected": bool(client.token),
+            "mcp_inherited": _mcp_inherited(),
+            "notifications_enabled": notifier.enabled if notifier else False,
+        }
 
     @mcp.tool(
         name="pluto_publish",
@@ -346,12 +468,21 @@ def register_tools(
         ),
     )
     async def pluto_session() -> dict:
+        _bind_session()
         buffered = await inbox.peek_only()
-        return {
+        inherited = _mcp_inherited()
+        active_watchers = sorted(inbox._active_watchers)
+        out = {
             "agent_id": client.agent_id,
             "host": client.host,
             "http_port": client.http_port,
             "base_url": client.base_url,
             "connected": bool(client.token),
             "buffered_messages": len(buffered),
+            "mcp_inherited": inherited,
+            "watcher_available": inherited is not False,
+            "active_watchers": active_watchers,
         }
+        if notifier is not None:
+            out["notifications"] = notifier.summary()
+        return out

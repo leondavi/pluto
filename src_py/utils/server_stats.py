@@ -149,9 +149,7 @@ def render_dashboard(data, host, tcp_port, http_port):
     print(f"    {'Victims':<19} {CYAN}{g('deadlock_victims'):>10,}{NC}")
     print()
 
-    total_req = g('total_requests')
     coord_req = g('coordination_requests')
-    maint_req = total_req - coord_req
 
     print(f"  {GREEN}▸ Agents{NC}")
     print(f"    {'Registered (Total)':<19} {CYAN}{g('agents_registered'):>10,}{NC}")
@@ -161,9 +159,6 @@ def render_dashboard(data, host, tcp_port, http_port):
     print(f"  {GREEN}▸ Requests{NC}")
     print(f"    {BOLD}{'Coordination':<19}{NC} {CYAN}{coord_req:>10,}{NC}  "
           f"(register/unregister, locks, messaging, tasks, pub/sub)")
-    print(f"    {'Maintenance':<19} {CYAN}{maint_req:>10,}{NC}  "
-          f"(ping, stats, queries, admin, ack)")
-    print(f"    {'Total':<19} {CYAN}{total_req:>10,}{NC}")
     print()
 
     total_agents = live.get('total_agents', 0)

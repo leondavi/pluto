@@ -201,7 +201,36 @@ class PlutoConnection:
         """Background: periodically *peek* (non-destructive) the inbox."""
         PEEK_INTERVAL_S = 1.0
         SESSION_RETRY_BACKOFF_S = 5.0
+        EPOCH_CHECK_EVERY = 30  # ticks ≈ 30 s at PEEK_INTERVAL_S=1.0
+        epoch_tick = 0
         while self._running and self._client:
+            # Periodic server-epoch check: if the server was restarted
+            # the cached token is dead, but waiting for a real call to
+            # fail wastes a roundtrip. Probe /health and re-register up
+            # front on mismatch.
+            epoch_tick += 1
+            if (
+                epoch_tick >= EPOCH_CHECK_EVERY
+                and self._client is not None
+                and self._client.server_epoch is not None
+            ):
+                epoch_tick = 0
+                try:
+                    live = self._client.fetch_server_epoch()
+                    if live and live != self._client.server_epoch:
+                        logger.warning(
+                            "Pluto server_epoch changed (cached=%s live=%s); "
+                            "re-registering",
+                            self._client.server_epoch[:8],
+                            live[:8],
+                        )
+                        if not self._reregister():
+                            time.sleep(SESSION_RETRY_BACKOFF_S)
+                        continue
+                except Exception:
+                    # Probe failures are benign — fall through to the
+                    # normal peek path, which will surface the real error.
+                    pass
             try:
                 msgs = self._client.peek(since_token=self._last_acked_seq)
                 if msgs:

@@ -223,6 +223,19 @@ warns and starts fresh if the file is missing. **Re-pass `--role`** —
 snapshots restore Pluto identity, locks, and attributes but not the
 in-session role file the wrapper injects on startup.
 
+### Auto-recovery on server restart (v0.3.0)
+
+The polling loop also checks the server's `server_epoch` field every
+~30 s. If the server was restarted (or `--clean`-ed) since this wrapper
+registered, the wrapper transparently re-registers with the same
+`agent_id` rather than waiting for a token-bearing call to fail. Locks
+that existed pre-restart land in `lost_locks` because the server forgot
+them; identity and the polling loop survive uninterrupted.
+
+This complements `--resume`: `--resume` is for *launch-time* recovery
+(process died), the epoch loop is for *running-time* recovery (server
+died but the wrapper is still alive).
+
 ### Auto-snapshot flags
 
 | Flag | Default | Notes |

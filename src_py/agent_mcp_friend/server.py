@@ -35,6 +35,11 @@ from agent_mcp_friend.prompts import (
 from agent_mcp_friend.resources import register_resources
 from agent_mcp_friend.tools import register_tools
 from pluto_client import PlutoHttpClient
+from utils.snapshot_helper import (
+    DEFAULT_AUTO_SNAPSHOT_INTERVAL_S,
+    DEFAULT_SNAPSHOT_DIR,
+    AutoSnapshotter,
+)
 
 logger = logging.getLogger("pluto_mcp_friend.server")
 
@@ -63,6 +68,9 @@ class PlutoMCPServer:
         protocol_path: Optional[str] = None,
         guide_path: Optional[str] = None,
         restore_path: Optional[str] = None,
+        snapshot_dir: str = DEFAULT_SNAPSHOT_DIR,
+        auto_snapshot_enabled: bool = True,
+        auto_snapshot_interval_s: int = DEFAULT_AUTO_SNAPSHOT_INTERVAL_S,
     ):
         self.agent_id = agent_id
         self.host = host
@@ -75,6 +83,10 @@ class PlutoMCPServer:
         self.guide_path = guide_path
         self.restore_path = restore_path
         self.restore_summary = None  # populated after successful restore
+        self.snapshot_dir = snapshot_dir
+        self.auto_snapshot_enabled = auto_snapshot_enabled
+        self.auto_snapshot_interval_s = auto_snapshot_interval_s
+        self.autosnap: Optional[AutoSnapshotter] = None
 
         self.client = PlutoHttpClient(
             host=host,
@@ -120,6 +132,7 @@ class PlutoMCPServer:
             self.mcp, self.client, self.inbox, self.lock_mgr,
             wait_timeout_s=self.wait_timeout_s,
             notifier=self.notifier,
+            server=self,
         )
         register_resources(self.mcp, self.client, self.inbox, self.lock_mgr)
         self._register_prompts()
@@ -259,11 +272,20 @@ class PlutoMCPServer:
         registered = await asyncio.to_thread(self._register_blocking)
         if registered and self.restore_path:
             await asyncio.to_thread(self._restore_from_file_blocking)
+        if registered and self.auto_snapshot_enabled:
+            self.autosnap = AutoSnapshotter(
+                save_fn=self.client.save_snapshot_files,
+                snapshot_dir=self.snapshot_dir,
+                interval_s=self.auto_snapshot_interval_s,
+            )
+            self.autosnap.start()
         try:
             if registered:
                 self.inbox.start()
             yield {"agent_id": self.agent_id}
         finally:
+            if self.autosnap is not None:
+                await asyncio.to_thread(self.autosnap.stop, True)
             await self.inbox.stop()
             await self.lock_mgr.shutdown()
             if self.client.token:

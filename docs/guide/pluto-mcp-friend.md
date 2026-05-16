@@ -137,6 +137,7 @@ the adapter injects the session token transparently.
 | `pluto_snapshot_self` | `POST /agents/snapshot_self` | capture `.plut` + recovery prompt; pass `output_dir` to also write `<agent_id>.plut` and `<agent_id>-recovery.md` to disk |
 | `pluto_restore_from_snapshot` | `POST /agents/restore_from_snapshot` | re-apply a saved `.plut` to current session — status flips to `recovered_from_file`, returns `reclaimed_locks`/`lost_locks` |
 | `pluto_session` | (read-only, no network) | self-diagnostic: returns adapter↔Pluto registration state. The agent's "is MCP alive?" probe — if this errors, the user should run `/mcp` to refresh the Claude Code transport. |
+| `pluto_health` | `GET /health` (live ping) | end-to-end probe: adapter state + server reachability + last auto-snapshot. Use when coordination feels wedged: `pluto_server != "ok"` means the Pluto server is unreachable; otherwise the adapter is healthy. |
 
 ### Prompts (slash commands)
 
@@ -245,7 +246,74 @@ for treating subsequent writes as unsafe.
 
 ---
 
-## Self-snapshot & recover-from-file (v0.2.9)
+## Self-snapshot & recover-from-file (v0.2.9 / v0.3.0)
+
+> **v0.3.0** added *auto-snapshot* (default: every 2 h), a no-path
+> `--resume` flag, `--clean-snapshots`, and the `pluto_health` MCP tool
+> for end-to-end probing. The legacy `--restore <path>` flag still works
+> as before — `--resume` is just a shorthand for the common case.
+
+### TL;DR — recovering when `/mcp` says "Failed to reconnect to pluto"
+
+```bash
+# Easiest path: identity + locks come back automatically.
+./PlutoMCPFriend.sh --agent-id <id> --resume --role <same-role>
+```
+
+`--resume` looks up `/tmp/pluto/snapshots/<agent_id>.plut`, restores
+identity + locks + attributes, and warns-and-continues with a fresh
+register if no snapshot is found. **You must re-pass `--role` (and/or
+pick `/pluto-role-<name>` from the slash menu once Claude opens)** —
+snapshots restore Pluto-side coordination state, not the in-prompt
+role definition the MCP friend injects on launch.
+
+### Auto-snapshot loop
+
+Every registered MCP friend takes a snapshot every
+`--auto-snapshot-interval` seconds (default **7200 = 2 h**) and one
+final snapshot on graceful shutdown. Output goes to
+`--snapshot-dir` (default `/tmp/pluto/snapshots`), overwriting
+`<agent_id>.plut` each time. Disable with `--no-auto-snapshot`.
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--no-auto-snapshot` | off | disables the timer entirely |
+| `--auto-snapshot-interval <s>` | 7200 | minimum 60 s |
+| `--snapshot-dir <dir>` | `/tmp/pluto/snapshots` | shared with `--resume` |
+| `--clean-snapshots` | — | one-shot; deletes `*.plut` + `*-recovery.md` in `--snapshot-dir`. Combine with `--agent-id` to scope to one agent |
+
+### `pluto_health` MCP tool
+
+The agent can probe end-to-end coordination health at any time:
+
+```
+pluto_health()
+→ {
+    "mcp_adapter":   "ok",
+    "pluto_server":  "ok",            # "unreachable: ..." or "error: ..." otherwise
+    "agent_registered": true,
+    "agent_id":      "cells-orch",
+    "host":          "127.0.0.1",
+    "http_port":     9201,
+    "server_version": "0.3.0",
+    "auto_snapshot": {
+        "enabled":           true,
+        "interval_s":        7200,
+        "last_snapshot_at":  1715812345.6,
+        "last_snapshot_path": "/tmp/pluto/snapshots/cells-orch.plut",
+        "last_error":        null
+    }
+  }
+```
+
+`pluto_health` is complementary to `pluto_session`:
+`pluto_session` is a cheap adapter-only probe (no network call) — if
+*that* errors the MCP transport itself is dead and only `/mcp` in
+Claude Code can recover it. `pluto_health` adds the live HTTP ping to
+the Pluto server, so `pluto_server != "ok"` means the server is the
+problem, not the adapter.
+
+### Legacy section
 
 When an agent is about to die for any reason — host restart, OS update,
 process crash, manual `/clear` — Pluto can hand the agent a self-contained

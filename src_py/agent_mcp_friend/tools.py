@@ -60,6 +60,7 @@ def register_tools(
     lock_mgr: LockManager,
     wait_timeout_s: int = 300,
     notifier: Optional[Notifier] = None,
+    server: Optional[Any] = None,
 ) -> None:
     """Register every Pluto tool on *mcp*.
 
@@ -485,4 +486,64 @@ def register_tools(
         }
         if notifier is not None:
             out["notifications"] = notifier.summary()
+        return out
+
+    @mcp.tool(
+        name="pluto_health",
+        description=(
+            "End-to-end health probe. Reports MCP-adapter state (always 'ok' "
+            "if this tool returns) plus a live HTTP ping to the Pluto server "
+            "and the most recent auto-snapshot info. Use when the agent "
+            "suspects coordination is wedged: if pluto_server != 'ok', the "
+            "server itself is unreachable; if pluto_server == 'ok' but "
+            "agent_registered is false, the session was lost and the user "
+            "should relaunch the MCP friend (optionally with --resume)."
+        ),
+    )
+    async def pluto_health() -> dict:
+        import urllib.error
+        import urllib.request
+
+        server_status = "unknown"
+        server_version: Optional[str] = None
+        url = f"http://{client.host}:{client.http_port}/health"
+        try:
+            def _probe() -> dict:
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    import json as _json
+                    body = resp.read().decode("utf-8")
+                    try:
+                        return _json.loads(body)
+                    except Exception:
+                        return {"status": "ok", "raw": body[:200]}
+            probe = await _run(_probe)
+            server_status = "ok"
+            server_version = probe.get("version") if isinstance(probe, dict) else None
+        except urllib.error.URLError as exc:
+            server_status = f"unreachable: {exc.reason}"
+        except Exception as exc:
+            server_status = f"error: {exc}"
+
+        out: dict = {
+            "mcp_adapter": "ok",
+            "pluto_server": server_status,
+            "agent_registered": bool(client.token),
+            "agent_id": client.agent_id,
+            "host": client.host,
+            "http_port": client.http_port,
+        }
+        if server_version:
+            out["server_version"] = server_version
+        if server is not None and getattr(server, "autosnap", None) is not None:
+            autosnap = server.autosnap
+            out["auto_snapshot"] = {
+                "enabled": True,
+                "interval_s": autosnap.interval_s,
+                "last_snapshot_at": autosnap.last_snapshot_at,
+                "last_snapshot_path": autosnap.last_snapshot_path,
+                "last_error": autosnap.last_error,
+            }
+        elif server is not None:
+            out["auto_snapshot"] = {"enabled": False}
         return out

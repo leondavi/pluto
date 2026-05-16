@@ -90,6 +90,12 @@ class PlutoConnection:
             raise RuntimeError("not connected to Pluto")
         return self._client.restore_from_snapshot(plut)
 
+    def save_snapshot_files(self, output_dir: str) -> tuple:
+        """Take a snapshot and write ``<agent_id>.plut`` + recovery markdown."""
+        if self._client is None:
+            raise RuntimeError("not connected to Pluto")
+        return self._client.save_snapshot_files(output_dir)
+
     def disconnect(self) -> None:
         """Unregister from the Pluto server and stop polling."""
         self._running = False

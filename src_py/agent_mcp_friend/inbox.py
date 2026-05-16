@@ -43,6 +43,14 @@ class InboxManager:
 
     PEEK_INTERVAL_S = 1.0
     SESSION_RETRY_BACKOFF_S = 5.0
+    # Hard ceiling on a single peek RTT. asyncio.wait_for cancellation does
+    # not actually kill the to_thread worker (Python limitation), but it
+    # unblocks the peek loop so it can warn, sleep, and retry instead of
+    # silently wedging on a hung HTTP socket.
+    PEEK_HARD_TIMEOUT_S = 15.0
+    # A peek_loop_age_s above this triggers the "stalled" diagnostic in
+    # pluto_health. Tracks wall-clock since the last successful peek.
+    PEEK_STALL_WARN_S = 10.0
 
     def __init__(self, client: PlutoHttpClient):
         self._client = client
@@ -65,6 +73,16 @@ class InboxManager:
         self._landed_at: dict[int, float] = {}
         # Optional notifier hook (phase-2). Set via :meth:`set_notifier`.
         self._notifier = None
+        # Peek-loop liveness telemetry. Monotonic ts is used for age math;
+        # wall-clock ts is what pluto_health surfaces to the agent.
+        self._last_peek_ok_mono: float | None = None
+        self._last_peek_ok_wall: float | None = None
+        self._last_peek_error: str | None = None
+        self._peek_attempts: int = 0
+        self._peek_ok_count: int = 0
+        # Whether a stall warning has already been emitted for the current
+        # stall window — re-armed once the loop succeeds again.
+        self._stall_warned: bool = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -302,6 +320,34 @@ class InboxManager:
         finally:
             self._active_watchers.discard(key)
 
+    def peek_loop_state(self) -> dict:
+        """Snapshot of the background peek loop's liveness.
+
+        Surfaced by ``pluto_health`` so an agent can distinguish "no
+        messages arriving" (healthy peek loop, empty inbox) from "peek
+        loop is wedged" (no successful peek in N seconds).
+        """
+        alive = self._task is not None and not self._task.done()
+        last_ok_mono = self._last_peek_ok_mono
+        age_s = (
+            (time.monotonic() - last_ok_mono) if last_ok_mono is not None else None
+        )
+        stalled = (
+            age_s is not None and age_s > self.PEEK_STALL_WARN_S
+        ) or (alive and last_ok_mono is None and self._peek_attempts > 0)
+        return {
+            "alive": alive,
+            "age_s": age_s,
+            "last_ok_at": self._last_peek_ok_wall,
+            "last_error": self._last_peek_error,
+            "attempts": self._peek_attempts,
+            "ok_count": self._peek_ok_count,
+            "stalled": stalled,
+            "interval_s": self.PEEK_INTERVAL_S,
+            "hard_timeout_s": self.PEEK_HARD_TIMEOUT_S,
+            "stall_threshold_s": self.PEEK_STALL_WARN_S,
+        }
+
     async def peek_only(self) -> list[dict]:
         """Return buffered messages without acking.  Used by ``pluto://inbox``
         resource reads.
@@ -312,28 +358,75 @@ class InboxManager:
     # ── Internals ─────────────────────────────────────────────────────────
 
     async def _run(self) -> None:
-        """Background loop: peek → filter → buffer → notify."""
+        """Background loop: peek → filter → buffer → notify.
+
+        Wraps every peek in a hard timeout so a wedged HTTP socket can't
+        silently stall delivery. Successful peeks refresh the liveness
+        timestamps that ``peek_loop_state`` (and thus ``pluto_health``)
+        report; failures land in ``_last_peek_error`` for diagnostics.
+        """
         while not self._stop_event.is_set():
+            self._peek_attempts += 1
+            ok = False
+            msgs: list[dict] = []
             try:
-                msgs = await asyncio.to_thread(
-                    self._client.peek, self._last_acked_seq
+                msgs = await asyncio.wait_for(
+                    asyncio.to_thread(self._client.peek, self._last_acked_seq),
+                    timeout=self.PEEK_HARD_TIMEOUT_S,
                 )
+                ok = True
+            except asyncio.TimeoutError:
+                err = f"peek hard-timeout after {self.PEEK_HARD_TIMEOUT_S:.0f}s"
+                self._last_peek_error = err
+                logger.warning("%s — HTTP listener may be wedged", err)
+                if self._notifier is not None:
+                    try:
+                        await self._notifier.watcher_error(
+                            watcher_id="peek_loop", error=err,
+                        )
+                    except Exception as nx:
+                        logger.debug("notifier.watcher_error failed: %s", nx)
             except PlutoError as exc:
+                self._last_peek_error = str(exc)
                 logger.warning("Pluto peek error: %s", exc)
-                await self._sleep_or_stop(self.SESSION_RETRY_BACKOFF_S)
-                continue
             except Exception as exc:
+                self._last_peek_error = str(exc)
                 if self._is_session_lost(exc):
                     logger.warning("Pluto session lost; backing off")
-                    await self._sleep_or_stop(self.SESSION_RETRY_BACKOFF_S)
-                    continue
-                logger.warning("Pluto peek error: %s", exc)
-                await self._sleep_or_stop(self.SESSION_RETRY_BACKOFF_S)
-                continue
+                else:
+                    logger.warning("Pluto peek error: %s", exc)
 
-            if msgs:
-                await self._absorb(msgs)
-            await self._sleep_or_stop(self.PEEK_INTERVAL_S)
+            if ok:
+                now = time.monotonic()
+                self._last_peek_ok_mono = now
+                self._last_peek_ok_wall = time.time()
+                self._peek_ok_count += 1
+                # Stall-warning state is re-armed once a successful peek
+                # lands; the next stall window can warn afresh.
+                self._stall_warned = False
+                if msgs:
+                    await self._absorb(msgs)
+                await self._sleep_or_stop(self.PEEK_INTERVAL_S)
+            else:
+                # Emit a single stall warning per stall window so logs stay
+                # readable when the server is down for minutes.
+                if not self._stall_warned:
+                    last_ok = self._last_peek_ok_mono
+                    age = (
+                        (time.monotonic() - last_ok) if last_ok is not None
+                        else None
+                    )
+                    if age is None or age > self.PEEK_STALL_WARN_S:
+                        logger.warning(
+                            "peek loop stalled: no successful peek in %s "
+                            "(attempts=%d, last_error=%s)",
+                            f"{age:.1f}s" if age is not None else "any window",
+                            self._peek_attempts, self._last_peek_error,
+                        )
+                        self._stall_warned = True
+                # On any failure path, back off harder than the normal poll
+                # interval so we don't hot-loop against a broken server.
+                await self._sleep_or_stop(self.SESSION_RETRY_BACKOFF_S)
 
     async def _absorb(self, msgs: list[dict]) -> None:
         """Filter noise, dedupe by seq_token, append to buffer, fire callbacks.

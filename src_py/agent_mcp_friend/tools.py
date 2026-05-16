@@ -493,12 +493,12 @@ def register_tools(
         name="pluto_health",
         description=(
             "End-to-end health probe. Reports MCP-adapter state (always 'ok' "
-            "if this tool returns) plus a live HTTP ping to the Pluto server "
-            "and the most recent auto-snapshot info. Use when the agent "
-            "suspects coordination is wedged: if pluto_server != 'ok', the "
-            "server itself is unreachable; if pluto_server == 'ok' but "
-            "agent_registered is false, the session was lost and the user "
-            "should relaunch the MCP friend (optionally with --resume)."
+            "if this tool returns), a live HTTP ping to the Pluto server, "
+            "the background peek-loop liveness, and the most recent "
+            "auto-snapshot info. Diagnosis: pluto_server != 'ok' → server "
+            "unreachable; agent_registered false → session lost (relaunch "
+            "with --resume); peek_loop.unrecoverable → terminal session "
+            "loss (relaunch); peek_loop.stalled → HTTP listener wedged."
         ),
     )
     async def pluto_health() -> dict:
@@ -569,4 +569,24 @@ def register_tools(
             }
         elif server is not None:
             out["auto_snapshot"] = {"enabled": False}
+
+        # Background peek-loop liveness. Lets an agent distinguish
+        # "inbox quiet" (loop alive, ok_count growing) from "delivery
+        # is wedged" (stalled=true or unrecoverable=true).
+        loop_state = inbox.peek_loop_state()
+        out["peek_loop"] = loop_state
+        if loop_state.get("unrecoverable"):
+            out["agent_registered"] = False
+            out["recovery_hint"] = (
+                loop_state.get("unrecoverable_reason")
+                or "Peek loop entered unrecoverable state — restart "
+                f"./PlutoMCPFriend.sh --agent-id {client.agent_id} --resume"
+            )
+        elif loop_state.get("stalled"):
+            out.setdefault(
+                "recovery_hint",
+                "Peek loop stalled (no successful peek in >"
+                f"{loop_state.get('stall_threshold_s')}s). The Pluto "
+                "HTTP listener may be wedged; check server health.",
+            )
         return out

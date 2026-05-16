@@ -51,6 +51,13 @@ class InboxManager:
     # A peek_loop_age_s above this triggers the "stalled" diagnostic in
     # pluto_health. Tracks wall-clock since the last successful peek.
     PEEK_STALL_WARN_S = 10.0
+    # After this many consecutive session-lost errors (401/404/
+    # session_not_found), give up retrying. PlutoMCPFriend deliberately
+    # does NOT auto-re-register (commit 8d0ca13 contract) — an MCP friend
+    # is tied to a Claude Code session, so re-registering silently would
+    # mask identity loss. Instead we set _unrecoverable and surface it
+    # via pluto_health so the agent gets an actionable error.
+    SESSION_LOST_GIVE_UP_AFTER = 3
 
     def __init__(self, client: PlutoHttpClient):
         self._client = client
@@ -83,6 +90,13 @@ class InboxManager:
         # Whether a stall warning has already been emitted for the current
         # stall window — re-armed once the loop succeeds again.
         self._stall_warned: bool = False
+        # Terminal session-lost state. PlutoMCPFriend does not auto-
+        # re-register; this flag stops the peek loop after repeated 401s
+        # so we don't spin the HTTP path forever, and surfaces a clear
+        # actionable error through pluto_health.
+        self._unrecoverable: bool = False
+        self._unrecoverable_reason: str | None = None
+        self._consecutive_session_lost: int = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -343,6 +357,8 @@ class InboxManager:
             "attempts": self._peek_attempts,
             "ok_count": self._peek_ok_count,
             "stalled": stalled,
+            "unrecoverable": self._unrecoverable,
+            "unrecoverable_reason": self._unrecoverable_reason,
             "interval_s": self.PEEK_INTERVAL_S,
             "hard_timeout_s": self.PEEK_HARD_TIMEOUT_S,
             "stall_threshold_s": self.PEEK_STALL_WARN_S,
@@ -392,7 +408,35 @@ class InboxManager:
             except Exception as exc:
                 self._last_peek_error = str(exc)
                 if self._is_session_lost(exc):
-                    logger.warning("Pluto session lost; backing off")
+                    self._consecutive_session_lost += 1
+                    logger.warning(
+                        "Pluto session lost (#%d): %s",
+                        self._consecutive_session_lost, exc,
+                    )
+                    if (
+                        self._consecutive_session_lost
+                        >= self.SESSION_LOST_GIVE_UP_AFTER
+                    ):
+                        reason = (
+                            f"session_lost x{self._consecutive_session_lost} "
+                            f"(last_error={exc}); PlutoMCPFriend does not "
+                            f"auto-re-register, restart with --resume"
+                        )
+                        self._unrecoverable = True
+                        self._unrecoverable_reason = reason
+                        logger.error(
+                            "Peek loop entering unrecoverable state: %s", reason,
+                        )
+                        if self._notifier is not None:
+                            try:
+                                await self._notifier.watcher_error(
+                                    watcher_id="peek_loop", error=reason,
+                                )
+                            except Exception as nx:
+                                logger.debug(
+                                    "notifier.watcher_error failed: %s", nx,
+                                )
+                        return
                 else:
                     logger.warning("Pluto peek error: %s", exc)
 
@@ -404,6 +448,10 @@ class InboxManager:
                 # Stall-warning state is re-armed once a successful peek
                 # lands; the next stall window can warn afresh.
                 self._stall_warned = False
+                # A successful peek means we have a working session again —
+                # reset the session-lost streak so a transient 401 doesn't
+                # accumulate toward the terminal threshold over time.
+                self._consecutive_session_lost = 0
                 if msgs:
                     await self._absorb(msgs)
                 await self._sleep_or_stop(self.PEEK_INTERVAL_S)

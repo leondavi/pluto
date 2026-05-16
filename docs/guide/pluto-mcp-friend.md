@@ -296,22 +296,35 @@ pluto_health()
     "host":          "127.0.0.1",
     "http_port":     9201,
     "server_version": "0.3.0",
-    "auto_snapshot": {
-        "enabled":           true,
-        "interval_s":        7200,
-        "last_snapshot_at":  1715812345.6,
-        "last_snapshot_path": "/tmp/pluto/snapshots/cells-orch.plut",
-        "last_error":        null
-    }
+    "server_epoch":  "8c4f1e2a-...",  # current live server epoch
+    "session_epoch": "8c4f1e2a-...",  # epoch at register time
+    "auto_snapshot": { ... }
   }
 ```
+
+If the server has been restarted (or `--clean`-ed) since this adapter
+registered, the live `server_epoch` will differ from the cached
+`session_epoch` and `pluto_health` returns:
+
+```
+{
+  "agent_registered":  false,
+  "server_restarted":  true,
+  "recovery_hint":     "Server epoch changed — Pluto was restarted/cleaned. ..."
+}
+```
+
+This lets agents diagnose "session lost" *up-front* without first
+hitting a 404 on a token-bearing call. Recovery: relaunch the MCP
+friend (typically `./PlutoMCPFriend.sh --agent-id <id> --resume`).
 
 `pluto_health` is complementary to `pluto_session`:
 `pluto_session` is a cheap adapter-only probe (no network call) — if
 *that* errors the MCP transport itself is dead and only `/mcp` in
 Claude Code can recover it. `pluto_health` adds the live HTTP ping to
 the Pluto server, so `pluto_server != "ok"` means the server is the
-problem, not the adapter.
+problem, not the adapter; `server_restarted == true` means the
+adapter outlived its server session.
 
 ### Legacy section
 

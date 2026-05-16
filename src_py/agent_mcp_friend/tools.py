@@ -483,6 +483,7 @@ def register_tools(
             "mcp_inherited": inherited,
             "watcher_available": inherited is not False,
             "active_watchers": active_watchers,
+            "server_epoch": getattr(client, "server_epoch", None),
         }
         if notifier is not None:
             out["notifications"] = notifier.summary()
@@ -506,6 +507,7 @@ def register_tools(
 
         server_status = "unknown"
         server_version: Optional[str] = None
+        live_epoch: Optional[str] = None
         url = f"http://{client.host}:{client.http_port}/health"
         try:
             def _probe() -> dict:
@@ -519,22 +521,43 @@ def register_tools(
                         return {"status": "ok", "raw": body[:200]}
             probe = await _run(_probe)
             server_status = "ok"
-            server_version = probe.get("version") if isinstance(probe, dict) else None
+            if isinstance(probe, dict):
+                server_version = probe.get("version")
+                live_epoch = probe.get("server_epoch")
         except urllib.error.URLError as exc:
             server_status = f"unreachable: {exc.reason}"
         except Exception as exc:
             server_status = f"error: {exc}"
 
+        cached_epoch = getattr(client, "server_epoch", None)
+        epoch_mismatch = (
+            cached_epoch is not None
+            and live_epoch is not None
+            and cached_epoch != live_epoch
+        )
+
         out: dict = {
             "mcp_adapter": "ok",
             "pluto_server": server_status,
-            "agent_registered": bool(client.token),
+            "agent_registered": bool(client.token) and not epoch_mismatch,
             "agent_id": client.agent_id,
             "host": client.host,
             "http_port": client.http_port,
         }
         if server_version:
             out["server_version"] = server_version
+        if live_epoch:
+            out["server_epoch"] = live_epoch
+        if cached_epoch:
+            out["session_epoch"] = cached_epoch
+        if epoch_mismatch:
+            out["server_restarted"] = True
+            out["recovery_hint"] = (
+                "Server epoch changed — Pluto was restarted/cleaned. "
+                "Your token is dead. Relaunch PlutoMCPFriend "
+                "(./PlutoMCPFriend.sh --agent-id "
+                f"{client.agent_id} --resume) to re-register."
+            )
         if server is not None and getattr(server, "autosnap", None) is not None:
             autosnap = server.autosnap
             out["auto_snapshot"] = {

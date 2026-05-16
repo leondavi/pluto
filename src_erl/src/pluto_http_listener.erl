@@ -224,11 +224,15 @@ route('OPTIONS', _Path, _Body, _Sock) ->
 
 %% ── Health ──────────────────────────────────────────────────────────
 route('GET', <<"/health">>, _Body, _Sock) ->
-    {200, #{<<"status">> => <<"ok">>, <<"version">> => list_to_binary(?VERSION)}};
+    {200, #{<<"status">> => <<"ok">>,
+            <<"version">> => list_to_binary(?VERSION),
+            <<"server_epoch">> => pluto_app:server_epoch()}};
 
 route('GET', <<"/ping">>, _Body, _Sock) ->
     Now = erlang:system_time(millisecond),
-    {200, #{<<"status">> => <<"pong">>, <<"ts">> => Now}};
+    {200, #{<<"status">> => <<"pong">>,
+            <<"ts">> => Now,
+            <<"server_epoch">> => pluto_app:server_epoch()}};
 
 %% ── Agents ──────────────────────────────────────────────────────────
 route('GET', <<"/agents">>, _Body, _Sock) ->
@@ -531,6 +535,7 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"mode">>           => ModeStr,
                                     <<"ttl_ms">>         => TtlMs,
                                     <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"server_epoch">>   => pluto_app:server_epoch(),
                                     <<"guide">>          => http_registration_guide()}};
                         {ok, SessToken, SessId, resumed} ->
                             %% Session resumed — same session_id preserved
@@ -543,6 +548,7 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"ttl_ms">>         => TtlMs,
                                     <<"resumed">>        => true,
                                     <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"server_epoch">>   => pluto_app:server_epoch(),
                                     <<"guide">>          => http_registration_guide()}};
                         {ok, SessToken, SessId, ActualAgentId} ->
                             %% Name was taken — got a unique suffix
@@ -555,6 +561,7 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"mode">>           => ModeStr,
                                     <<"ttl_ms">>         => TtlMs,
                                     <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"server_epoch">>   => pluto_app:server_epoch(),
                                     <<"guide">>          => http_registration_guide()}}
                     end;
                 {error, unauthorized} ->

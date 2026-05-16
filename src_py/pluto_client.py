@@ -544,6 +544,7 @@ class PlutoHttpClient:
         self.base_url = f"http://{host}:{http_port}"
         self.token: Optional[str] = None
         self.session_id: Optional[str] = None
+        self.server_epoch: Optional[str] = None
 
     def _post(self, path: str, body: dict) -> dict:
         """Send a POST request and return the parsed JSON response."""
@@ -579,10 +580,23 @@ class PlutoHttpClient:
         if resp.get("status") == "ok":
             self.token = resp.get("token")
             self.session_id = resp.get("session_id")
+            self.server_epoch = resp.get("server_epoch")
             # Server may have assigned a different name
             if resp.get("agent_id"):
                 self.agent_id = resp["agent_id"]
         return resp
+
+    def fetch_server_epoch(self) -> Optional[str]:
+        """GET /health and return the server's current epoch (None on error).
+
+        Mismatch with self.server_epoch means the server was restarted /
+        cleaned — held tokens are dead and the client must re-register.
+        """
+        try:
+            resp = self._get("/health")
+            return resp.get("server_epoch")
+        except Exception:
+            return None
 
     def heartbeat(self) -> dict:
         """Send a heartbeat to keep the HTTP session alive."""

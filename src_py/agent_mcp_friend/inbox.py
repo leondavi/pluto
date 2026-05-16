@@ -58,6 +58,11 @@ class InboxManager:
     # mask identity loss. Instead we set _unrecoverable and surface it
     # via pluto_health so the agent gets an actionable error.
     SESSION_LOST_GIVE_UP_AFTER = 3
+    # Grace window after a watch_durable slice returns, during which the
+    # watcher_id stays in active_watchers. Lets a looping subagent re-enter
+    # without flapping the count, and lets a *peer* subagent (the bug case
+    # we're guarding against) see "already watching" between slices.
+    WATCHER_GRACE_S = 5.0
 
     def __init__(self, client: PlutoHttpClient):
         self._client = client
@@ -74,7 +79,12 @@ class InboxManager:
         # Currently-running durable watcher keys (inbox_id strings).
         # Dedupe: a second ``watch_durable`` call for an active key returns
         # ``{already_watching: True}`` immediately instead of stacking loops.
+        # Membership extends WATCHER_GRACE_S past the slice end so a peer
+        # subagent that calls in the gap between a looping subagent's
+        # slices still sees the watcher as active and bounces out.
         self._active_watchers: set[str] = set()
+        self._watcher_started_at: dict[str, float] = {}
+        self._watcher_evict_tasks: dict[str, asyncio.Task] = {}
         # Delivery-latency telemetry: monotonic timestamps keyed by
         # seq_token, set on _absorb and consumed on _ack_messages.
         self._landed_at: dict[int, float] = {}
@@ -268,6 +278,14 @@ class InboxManager:
                 "count": 0,
             }
         self._active_watchers.add(key)
+        # Wall clock so age survives across slices and is meaningful to
+        # the agent inspecting pluto_session / pluto_health.
+        self._watcher_started_at.setdefault(key, time.time())
+        # If a previous slice scheduled an eviction, cancel it — this is
+        # the same caller re-entering inside the grace window.
+        old_evict = self._watcher_evict_tasks.pop(key, None)
+        if old_evict is not None and not old_evict.done():
+            old_evict.cancel()
         # Floor at 0.01 s to prevent a degenerate zero-slice from spinning.
         # Production callers use seconds-scale slices; the low floor is a
         # safety net for tests and pathological configurations.
@@ -332,7 +350,41 @@ class InboxManager:
                         "iterations": iterations_done,
                     }
         finally:
-            self._active_watchers.discard(key)
+            # Don't discard immediately. Schedule a delayed eviction so a
+            # peer subagent that calls in the gap between this caller's
+            # slices still sees the watcher as active and bounces out. The
+            # next slice from the same caller will cancel this task and
+            # re-arm the entry.
+            evict = asyncio.create_task(self._evict_watcher_after_grace(key))
+            self._watcher_evict_tasks[key] = evict
+
+    async def _evict_watcher_after_grace(self, key: str) -> None:
+        try:
+            await asyncio.sleep(self.WATCHER_GRACE_S)
+        except asyncio.CancelledError:
+            return
+        self._active_watchers.discard(key)
+        self._watcher_started_at.pop(key, None)
+        self._watcher_evict_tasks.pop(key, None)
+
+    def active_watchers_snapshot(self) -> dict:
+        """Read-only view of currently-active watcher slots, including the
+        post-slice grace window. Surfaces enough state for an agent to
+        decide whether to spawn another inbox-watcher subagent.
+        """
+        now = time.time()
+        ids = sorted(self._active_watchers)
+        ages = [
+            now - self._watcher_started_at[i]
+            for i in ids
+            if i in self._watcher_started_at
+        ]
+        return {
+            "active": len(ids),
+            "ids": ids,
+            "oldest_age_s": max(ages) if ages else None,
+            "grace_s": self.WATCHER_GRACE_S,
+        }
 
     def peek_loop_state(self) -> dict:
         """Snapshot of the background peek loop's liveness.

@@ -472,7 +472,7 @@ def register_tools(
         _bind_session()
         buffered = await inbox.peek_only()
         inherited = _mcp_inherited()
-        active_watchers = sorted(inbox._active_watchers)
+        watchers = inbox.active_watchers_snapshot()
         out = {
             "agent_id": client.agent_id,
             "host": client.host,
@@ -482,7 +482,10 @@ def register_tools(
             "buffered_messages": len(buffered),
             "mcp_inherited": inherited,
             "watcher_available": inherited is not False,
-            "active_watchers": active_watchers,
+            # Legacy list-shaped field, kept for callers that already
+            # parse it. New callers should read ``watchers`` instead.
+            "active_watchers": watchers["ids"],
+            "watchers": watchers,
             "server_epoch": getattr(client, "server_epoch", None),
         }
         if notifier is not None:
@@ -575,6 +578,9 @@ def register_tools(
         # is wedged" (stalled=true or unrecoverable=true).
         loop_state = inbox.peek_loop_state()
         out["peek_loop"] = loop_state
+        # Watcher slot occupancy — feeds the role prompt's "is a watcher
+        # already running?" check before spawning a fresh subagent.
+        out["watchers"] = inbox.active_watchers_snapshot()
         if loop_state.get("unrecoverable"):
             out["agent_registered"] = False
             out["recovery_hint"] = (

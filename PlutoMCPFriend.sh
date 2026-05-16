@@ -880,6 +880,24 @@ main() {
         "${snapshot_dir}" "${no_auto_snapshot}" "${auto_snapshot_interval}")
     ok "Wrote MCP config:  ${mcp_json}"
 
+    # ── Recovery note ───────────────────────────────────────────────────────
+    # The MCP friend runs as a stdio child of Claude Code — when its parent
+    # exits, the adapter dies with it, and Claude is the only thing that can
+    # respawn it. So unlike PlutoAgentFriend (which auto-reregisters on
+    # server_epoch mismatch), an MCP friend that outlives its server cannot
+    # heal itself. Tell the user up-front what to do when that happens.
+    cat <<EOF
+
+  ${YELLOW}If Pluto is restarted or '--clean'-ed during this session:${NC}
+    ${DIM}- The agent will see${NC} ${BOLD}pluto_health → server_restarted: true${NC}${DIM}.${NC}
+    ${DIM}- This MCP friend does${NC} ${BOLD}not${NC} ${DIM}auto-reregister (it's a stdio child of${NC}
+    ${DIM}  Claude Code; only Claude can respawn it).${NC}
+    ${DIM}- To recover:${NC} run ${CYAN}/mcp${NC} ${DIM}in Claude Code, or relaunch with${NC}
+      ${CYAN}./PlutoMCPFriend.sh --agent-id ${agent_id} --resume${NC}
+      ${DIM}(then re-pick your /pluto-role-* from the slash menu).${NC}
+
+EOF
+
     if $no_launch; then
         cat <<EOF
 

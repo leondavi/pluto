@@ -318,6 +318,15 @@ This lets agents diagnose "session lost" *up-front* without first
 hitting a 404 on a token-bearing call. Recovery: relaunch the MCP
 friend (typically `./PlutoMCPFriend.sh --agent-id <id> --resume`).
 
+> **Why doesn't the MCP friend just re-register itself?** It runs as a
+> stdio child of Claude Code: when the transport dies (or the server
+> changes epoch under it), the adapter can detect the situation via
+> `pluto_health` but cannot respawn itself — only Claude can. So the
+> contract is: the agent (via `pluto_health`) flags the problem; the
+> user runs `/mcp` or relaunches `PlutoMCPFriend.sh`. By contrast
+> `PlutoAgentFriend` owns its own process and auto-reregisters on
+> `server_epoch` mismatch (see its guide).
+
 `pluto_health` is complementary to `pluto_session`:
 `pluto_session` is a cheap adapter-only probe (no network call) — if
 *that* errors the MCP transport itself is dead and only `/mcp` in

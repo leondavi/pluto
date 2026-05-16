@@ -14,6 +14,9 @@
 %% Application callbacks
 -export([start/2, stop/1]).
 
+%% Public helpers
+-export([server_epoch/0]).
+
 %%====================================================================
 %% Application callbacks
 %%====================================================================
@@ -23,6 +26,7 @@
 %% process tries to read them) and then hand control to the supervisor.
 start(_StartType, _StartArgs) ->
     pluto_config:load_json_config(),
+    ensure_server_epoch(),
     print_banner(),
     create_ets_tables(),
     case pluto_sup:start_link() of
@@ -32,6 +36,23 @@ start(_StartType, _StartArgs) ->
         Error ->
             Error
     end.
+
+%% @doc Public: read the boot-unique server epoch identifier.
+%% Clients cache this; a mismatch on subsequent calls means the
+%% server was restarted (or `--clean`-ed) and any held token is dead.
+server_epoch() ->
+    persistent_term:get({?MODULE, server_epoch}, <<"unknown">>).
+
+ensure_server_epoch() ->
+    %% A boot is also a clean — there is no persistent token store, so
+    %% every restart minted a fresh epoch is correct.
+    <<A:32, B:16, C:16, D:16, E:48>> = crypto:strong_rand_bytes(16),
+    Epoch = list_to_binary(
+              io_lib:format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b",
+                            [A, B, C, D, E])),
+    persistent_term:put({?MODULE, server_epoch}, Epoch),
+    ?LOG_NOTICE("Pluto server_epoch=~s", [Epoch]),
+    ok.
 
 %% @doc Called on clean shutdown.  Triggers a final persistence flush.
 stop(_State) ->

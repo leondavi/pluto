@@ -99,6 +99,20 @@ Options:
                           inside the file is authoritative — when --agent-id
                           is omitted it is auto-derived from the snapshot;
                           when both are given they must match.
+  --resume                Shorthand: look up the latest .plut for --agent-id
+                          under --snapshot-dir (default /tmp/pluto/snapshots).
+                          Warns and starts fresh if nothing is found.
+                          NOTE: after the Claude session opens, re-pick the
+                          same Pluto role from the slash menu (e.g.
+                          /pluto-role-<name>) — snapshots restore identity
+                          and locks but not the in-prompt role definition.
+  --snapshot-dir <dir>    Directory used for --resume + auto-snapshot
+                          (default: /tmp/pluto/snapshots).
+  --no-auto-snapshot      Disable the background snapshot loop.
+  --auto-snapshot-interval <s>
+                          Auto-snapshot every N seconds (default: 7200 = 2h).
+  --clean-snapshots       Delete every .plut + recovery.md in --snapshot-dir,
+                          then exit. With --agent-id, only that agent's files.
   --log-level <lvl>       DEBUG | INFO | WARNING | ERROR (default: WARNING).
   --version               Print version and exit.
   --help                  Show this help.
@@ -401,13 +415,16 @@ offer_to_start_server() {
 write_mcp_json() {
     local agent_id="$1" host="$2" port="$3" ttl="$4" log_level="$5" wait_s="$6"
     local restore_path="${7:-}"
+    local snapshot_dir="${8:-}"
+    local no_auto_snapshot="${9:-}"
+    local auto_interval="${10:-}"
     local target="${SCRIPT_DIR}/.mcp.json"
     "${VENV_DIR}/bin/python" - "$target" "$agent_id" "$host" "$port" "$ttl" \
         "$log_level" "$wait_s" "${VENV_DIR}/bin/python" "${PY_ENTRY}" \
-        "$restore_path" <<'PYEOF'
+        "$restore_path" "$snapshot_dir" "$no_auto_snapshot" "$auto_interval" <<'PYEOF'
 import json, os, sys
 (target, agent_id, host, port, ttl, log_level, wait_s, py_bin,
- entry, restore_path) = sys.argv[1:]
+ entry, restore_path, snapshot_dir, no_auto_snapshot, auto_interval) = sys.argv[1:]
 existing = {}
 if os.path.isfile(target):
     try:
@@ -427,6 +444,12 @@ args = [
 ]
 if restore_path:
     args += ["--restore", restore_path]
+if snapshot_dir:
+    args += ["--snapshot-dir", snapshot_dir]
+if no_auto_snapshot == "1":
+    args += ["--no-auto-snapshot"]
+if auto_interval:
+    args += ["--auto-snapshot-interval", auto_interval]
 servers["pluto"] = {"command": py_bin, "args": args}
 existing["mcpServers"] = servers
 with open(target, "w") as f:
@@ -678,6 +701,11 @@ main() {
     local no_launch=false
     local no_wizard=false
     local restore_path=""
+    local resume=false
+    local snapshot_dir=""
+    local no_auto_snapshot="0"
+    local auto_snapshot_interval=""
+    local clean_snapshots=false
     local extra_cmd=()
     local past_separator=false
 
@@ -700,6 +728,11 @@ main() {
             --no-launch) no_launch=true; shift ;;
             --no-wizard) no_wizard=true; shift ;;
             --restore) restore_path="$2"; shift 2 ;;
+            --resume) resume=true; shift ;;
+            --snapshot-dir) snapshot_dir="$2"; shift 2 ;;
+            --no-auto-snapshot) no_auto_snapshot="1"; shift ;;
+            --auto-snapshot-interval) auto_snapshot_interval="$2"; shift 2 ;;
+            --clean-snapshots) clean_snapshots=true; shift ;;
             --framework)
                 err "--framework was removed in v0.2.8 — Claude Code only."
                 err "For Cursor/Aider/Copilot use ./PlutoAgentFriend.sh instead."
@@ -714,6 +747,53 @@ main() {
     if ! [[ "${wait_timeout_s}" =~ ^[0-9]+$ ]] || (( wait_timeout_s < 1 )); then
         err "--wait-timeout-s must be a positive integer (seconds)."
         exit 1
+    fi
+
+    # ── --clean-snapshots: one-shot purge, then exit ────────────────────────
+    if $clean_snapshots; then
+        ensure_venv
+        local cs_args=()
+        cs_args+=("--clean-snapshots")
+        [[ -n "${agent_id}" ]] && cs_args+=("--agent-id" "${agent_id}")
+        [[ -n "${snapshot_dir}" ]] && cs_args+=("--snapshot-dir" "${snapshot_dir}")
+        exec "${VENV_DIR}/bin/python" "${PY_ENTRY}" "${cs_args[@]}"
+    fi
+
+    # ── --resume: resolve to a .plut path under the default dir ─────────────
+    if $resume && [[ -z "${restore_path}" ]]; then
+        local resume_dir="${snapshot_dir:-/tmp/pluto/snapshots}"
+        if [[ -n "${agent_id}" ]]; then
+            local candidate="${resume_dir}/${agent_id}.plut"
+            if [[ -f "${candidate}" ]]; then
+                restore_path="${candidate}"
+                info "--resume: using ${restore_path}"
+            else
+                warn "--resume: no snapshot at ${candidate}; starting fresh."
+            fi
+        else
+            local found=()
+            if [[ -d "${resume_dir}" ]]; then
+                while IFS= read -r f; do
+                    found+=("$f")
+                done < <(find "${resume_dir}" -maxdepth 1 -type f -name '*.plut' 2>/dev/null)
+            fi
+            if (( ${#found[@]} == 1 )); then
+                restore_path="${found[0]}"
+                info "--resume: using ${restore_path}"
+            elif (( ${#found[@]} == 0 )); then
+                warn "--resume: no .plut files in ${resume_dir}; starting fresh."
+            else
+                warn "--resume: multiple snapshots in ${resume_dir}; pass --agent-id to disambiguate. Starting fresh."
+            fi
+        fi
+        if [[ -n "${restore_path}" ]]; then
+            echo
+            info "${BOLD}After Claude Code starts:${NC} re-select your Pluto role"
+            info "from the slash menu (e.g. /pluto-role-${role:-<your-role>}) —"
+            info "snapshots restore identity, locks and attributes but the role"
+            info "prompt is reattached per session by the MCP friend."
+            echo
+        fi
     fi
 
     # ── --restore validation + agent_id auto-detect ─────────────────────────
@@ -796,8 +876,27 @@ main() {
     # ── Generate .mcp.json ──────────────────────────────────────────────────
     local mcp_json
     mcp_json=$(write_mcp_json "${agent_id}" "${host}" "${http_port}" \
-        "${ttl_ms}" "${log_level}" "${wait_timeout_s}" "${restore_path}")
+        "${ttl_ms}" "${log_level}" "${wait_timeout_s}" "${restore_path}" \
+        "${snapshot_dir}" "${no_auto_snapshot}" "${auto_snapshot_interval}")
     ok "Wrote MCP config:  ${mcp_json}"
+
+    # ── Recovery note ───────────────────────────────────────────────────────
+    # The MCP friend runs as a stdio child of Claude Code — when its parent
+    # exits, the adapter dies with it, and Claude is the only thing that can
+    # respawn it. So unlike PlutoAgentFriend (which auto-reregisters on
+    # server_epoch mismatch), an MCP friend that outlives its server cannot
+    # heal itself. Tell the user up-front what to do when that happens.
+    cat <<EOF
+
+  ${YELLOW}If Pluto is restarted or '--clean'-ed during this session:${NC}
+    ${DIM}- The agent will see${NC} ${BOLD}pluto_health → server_restarted: true${NC}${DIM}.${NC}
+    ${DIM}- This MCP friend does${NC} ${BOLD}not${NC} ${DIM}auto-reregister (it's a stdio child of${NC}
+    ${DIM}  Claude Code; only Claude can respawn it).${NC}
+    ${DIM}- To recover:${NC} run ${CYAN}/mcp${NC} ${DIM}in Claude Code, or relaunch with${NC}
+      ${CYAN}./PlutoMCPFriend.sh --agent-id ${agent_id} --resume${NC}
+      ${DIM}(then re-pick your /pluto-role-* from the slash menu).${NC}
+
+EOF
 
     if $no_launch; then
         cat <<EOF

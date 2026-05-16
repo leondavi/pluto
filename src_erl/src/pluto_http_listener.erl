@@ -111,47 +111,95 @@ warn_if_exposed(Ip, Proto, Port) ->
 %% HTTP connection handler
 %%====================================================================
 
+%% Idle wait between requests on a keep-alive connection. Longer than
+%% any short call but shorter than typical long-poll cycles so dead
+%% peers don't tie up sockets.
+-define(KEEPALIVE_IDLE_MS, 60000).
+
 handle_connection(Sock) ->
     try
-        case read_http_request(Sock) of
-            {ok, Method, Path, _Headers, Body} ->
-                pluto_stats:inc(total_requests),
-                case is_coordination_route(Method, Path) of
-                    true -> pluto_stats:inc(coordination_requests);
-                    false -> ok
-                end,
-                case route(Method, Path, Body, Sock) of
-                    {skip_response_, already_sent} ->
-                        %% Long-poll already sent response directly
-                        ok;
-                    {Status, RespBody} ->
-                        send_http_response(Sock, Status, RespBody)
-                end;
-            {error, _} ->
-                send_http_response(Sock, 400, #{<<"error">> => <<"bad_request">>})
-        end
+        serve(Sock, ?KEEPALIVE_IDLE_MS)
     catch
         _:_ ->
-            send_http_response(Sock, 500, #{<<"error">> => <<"internal_error">>})
+            (catch send_http_response(
+                Sock, 500,
+                #{<<"error">> => <<"internal_error">>}, false))
     after
         gen_tcp:close(Sock)
+    end.
+
+%% @private Serve a (possibly long-lived) HTTP/1.1 connection. Returns
+%% normally on EOF, idle timeout, parse error, or after a non-keep-alive
+%% response; the surrounding `try ... after gen_tcp:close/1` then closes
+%% the socket. Recurses while the negotiated `Connection` header allows
+%% it.
+serve(Sock, IdleMs) ->
+    %% After body reads we leave the socket in `packet=raw`; restore
+    %% the HTTP packet decoder before parsing the next request line.
+    inet:setopts(Sock, [{packet, http_bin}]),
+    case read_http_request(Sock, IdleMs) of
+        {ok, Vsn, Method, Path, Headers, Body} ->
+            pluto_stats:inc(total_requests),
+            case is_coordination_route(Method, Path) of
+                true -> pluto_stats:inc(coordination_requests);
+                false -> ok
+            end,
+            KeepAlive = wants_keep_alive(Vsn, Headers),
+            case route(Method, Path, Body, Sock) of
+                {skip_response_, already_sent} ->
+                    %% Long-poll wrote its own response with a
+                    %% close-by-default header — terminate the conn.
+                    ok;
+                {Status, RespBody} ->
+                    send_http_response(Sock, Status, RespBody, KeepAlive),
+                    case KeepAlive of
+                        true  -> serve(Sock, IdleMs);
+                        false -> ok
+                    end
+            end;
+        {error, timeout} ->
+            ok;
+        {error, closed} ->
+            ok;
+        {error, _} ->
+            send_http_response(
+                Sock, 400,
+                #{<<"error">> => <<"bad_request">>}, false)
     end.
 
 %%====================================================================
 %% HTTP request parsing (minimal HTTP/1.1)
 %%====================================================================
 
-read_http_request(Sock) ->
-    case gen_tcp:recv(Sock, 0, 5000) of
-        {ok, {http_request, Method, {abs_path, Path}, _Vsn}} ->
+read_http_request(Sock, FirstByteTimeoutMs) ->
+    case gen_tcp:recv(Sock, 0, FirstByteTimeoutMs) of
+        {ok, {http_request, Method, {abs_path, Path}, Vsn}} ->
             Headers = read_headers(Sock, []),
             ContentLen = content_length(Headers),
             Body = read_body(Sock, ContentLen),
-            {ok, Method, Path, Headers, Body};
+            {ok, Vsn, Method, Path, Headers, Body};
         {ok, {http_error, _}} ->
             {error, bad_request};
         {error, Reason} ->
             {error, Reason}
+    end.
+
+%% @private Negotiate keep-alive per RFC 7230 §6.3:
+%%   HTTP/1.1: persistent unless `Connection: close`.
+%%   HTTP/1.0: closed unless `Connection: keep-alive`.
+wants_keep_alive({1, 1}, Headers) ->
+    not header_token_present(Headers, <<"close">>);
+wants_keep_alive({1, 0}, Headers) ->
+    header_token_present(Headers, <<"keep-alive">>);
+wants_keep_alive(_, _) ->
+    false.
+
+header_token_present(Headers, Want) ->
+    case lists:keyfind(<<"Connection">>, 1, Headers) of
+        {_, V} when is_binary(V) ->
+            string:lowercase(string:trim(V)) =:= Want;
+        _ ->
+            false
     end.
 
 read_headers(Sock, Acc) ->
@@ -189,9 +237,20 @@ header_name(Bin) when is_binary(Bin) -> Bin.
 %% HTTP response
 %%====================================================================
 
+%% Back-compat: callers that don't know about keep-alive (e.g. the
+%% direct-write path in do_long_poll) default to `Connection: close`,
+%% which preserves the pre-keep-alive contract for those branches.
 send_http_response(Sock, StatusCode, Body) ->
+    send_http_response(Sock, StatusCode, Body, false).
+
+send_http_response(Sock, StatusCode, Body, KeepAlive) ->
     JsonBody = pluto_protocol_json:encode(Body),
     StatusLine = status_line(StatusCode),
+    ConnHdr = case KeepAlive of
+                  true  -> <<"Connection: keep-alive\r\n"
+                             "Keep-Alive: timeout=60\r\n">>;
+                  false -> <<"Connection: close\r\n">>
+              end,
     Headers = [
         <<"HTTP/1.1 ">>, StatusLine, <<"\r\n">>,
         <<"Content-Type: application/json\r\n">>,
@@ -199,7 +258,7 @@ send_http_response(Sock, StatusCode, Body) ->
         <<"Access-Control-Allow-Origin: *\r\n">>,
         <<"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n">>,
         <<"Access-Control-Allow-Headers: Content-Type, Authorization\r\n">>,
-        <<"Connection: close\r\n">>,
+        ConnHdr,
         <<"\r\n">>
     ],
     %% Ensure socket is in raw mode for writing
@@ -224,11 +283,15 @@ route('OPTIONS', _Path, _Body, _Sock) ->
 
 %% ── Health ──────────────────────────────────────────────────────────
 route('GET', <<"/health">>, _Body, _Sock) ->
-    {200, #{<<"status">> => <<"ok">>, <<"version">> => list_to_binary(?VERSION)}};
+    {200, #{<<"status">> => <<"ok">>,
+            <<"version">> => list_to_binary(?VERSION),
+            <<"server_epoch">> => pluto_app:server_epoch()}};
 
 route('GET', <<"/ping">>, _Body, _Sock) ->
     Now = erlang:system_time(millisecond),
-    {200, #{<<"status">> => <<"pong">>, <<"ts">> => Now}};
+    {200, #{<<"status">> => <<"pong">>,
+            <<"ts">> => Now,
+            <<"server_epoch">> => pluto_app:server_epoch()}};
 
 %% ── Agents ──────────────────────────────────────────────────────────
 route('GET', <<"/agents">>, _Body, _Sock) ->
@@ -531,6 +594,7 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"mode">>           => ModeStr,
                                     <<"ttl_ms">>         => TtlMs,
                                     <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"server_epoch">>   => pluto_app:server_epoch(),
                                     <<"guide">>          => http_registration_guide()}};
                         {ok, SessToken, SessId, resumed} ->
                             %% Session resumed — same session_id preserved
@@ -543,6 +607,7 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"ttl_ms">>         => TtlMs,
                                     <<"resumed">>        => true,
                                     <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"server_epoch">>   => pluto_app:server_epoch(),
                                     <<"guide">>          => http_registration_guide()}};
                         {ok, SessToken, SessId, ActualAgentId} ->
                             %% Name was taken — got a unique suffix
@@ -555,6 +620,7 @@ route('POST', <<"/agents/register">>, Body, _Sock) ->
                                     <<"mode">>           => ModeStr,
                                     <<"ttl_ms">>         => TtlMs,
                                     <<"reclaimed_locks">> => ReclaimedLocks,
+                                    <<"server_epoch">>   => pluto_app:server_epoch(),
                                     <<"guide">>          => http_registration_guide()}}
                     end;
                 {error, unauthorized} ->

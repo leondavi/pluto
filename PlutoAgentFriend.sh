@@ -139,6 +139,19 @@ OPTIONS
                             authoritative — when --agent-id is omitted it is
                             auto-derived; when both are given they must match.
                             Status becomes recovered_from_file.
+    --resume                Look up the latest .plut for --agent-id under
+                            --snapshot-dir and use it as --restore. Warns and
+                            starts fresh if no snapshot exists.
+                            NOTE: re-supply --role to reattach role context;
+                            snapshots do not preserve the in-session role
+                            prompt.
+    --snapshot-dir <dir>    Directory for --resume + auto-snapshot
+                            (default: /tmp/pluto/snapshots).
+    --no-auto-snapshot      Disable the background snapshot loop.
+    --auto-snapshot-interval <s>
+                            Auto-snapshot every N seconds (default: 7200 = 2h).
+    --clean-snapshots       Delete every .plut + recovery.md in --snapshot-dir,
+                            then exit. With --agent-id, only that agent's files.
     --verbose               Enable debug logging
     --help, -h              Show this help
 
@@ -259,6 +272,11 @@ main() {
     local role_file=""
     local roles_dir=""
     local restore_path=""
+    local resume=false
+    local snapshot_dir=""
+    local no_auto_snapshot=false
+    local auto_snapshot_interval=""
+    local clean_snapshots=false
     local extra_cmd=()
     local past_separator=false
 
@@ -334,6 +352,26 @@ main() {
                 restore_path="$2"
                 shift 2
                 ;;
+            --resume)
+                resume=true
+                shift
+                ;;
+            --snapshot-dir)
+                snapshot_dir="$2"
+                shift 2
+                ;;
+            --no-auto-snapshot)
+                no_auto_snapshot=true
+                shift
+                ;;
+            --auto-snapshot-interval)
+                auto_snapshot_interval="$2"
+                shift 2
+                ;;
+            --clean-snapshots)
+                clean_snapshots=true
+                shift
+                ;;
             --)
                 past_separator=true
                 shift
@@ -345,6 +383,26 @@ main() {
                 ;;
         esac
     done
+
+    # ── --clean-snapshots: one-shot purge, then exit ──────────────────────
+    if $clean_snapshots; then
+        local cs_args=()
+        cs_args+=("--clean-snapshots")
+        [[ -n "${agent_id}" ]] && cs_args+=("--agent-id" "${agent_id}")
+        [[ -n "${snapshot_dir}" ]] && cs_args+=("--snapshot-dir" "${snapshot_dir}")
+        exec python3 "${WRAP_SCRIPT}" "${cs_args[@]}"
+    fi
+
+    # ── --resume hint: remind user to re-pick role / re-read guide ─────────
+    if $resume; then
+        echo ""
+        echo -e "  ${BOLD}--resume:${NC} restoring identity from snapshot."
+        echo -e "  After your agent CLI starts, re-establish role context manually"
+        echo -e "  (e.g. pass --role <name> here, or have the agent re-read its"
+        echo -e "  guide/role file). Snapshots restore Pluto identity, locks, and"
+        echo -e "  attributes — they do not restore the in-session role prompt."
+        echo ""
+    fi
 
     # Resolve --role: accept either a file path OR a bare role name.
     # A bare name (no path separators, no .md suffix) is looked up as
@@ -669,6 +727,18 @@ BANNER
     fi
     if [[ -n "${restore_path}" ]]; then
         py_args+=("--restore" "${restore_path}")
+    fi
+    if $resume; then
+        py_args+=("--resume")
+    fi
+    if [[ -n "${snapshot_dir}" ]]; then
+        py_args+=("--snapshot-dir" "${snapshot_dir}")
+    fi
+    if $no_auto_snapshot; then
+        py_args+=("--no-auto-snapshot")
+    fi
+    if [[ -n "${auto_snapshot_interval}" ]]; then
+        py_args+=("--auto-snapshot-interval" "${auto_snapshot_interval}")
     fi
 
     if [[ ${#extra_cmd[@]} -gt 0 ]]; then

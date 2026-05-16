@@ -39,6 +39,12 @@ if _SRC_PY not in sys.path:
 from agent_friend.frameworks import load_pluto_config  # noqa: E402
 from agent_mcp_friend import __version__  # noqa: E402
 from agent_mcp_friend.server import PlutoMCPServer  # noqa: E402
+from utils.snapshot_helper import (  # noqa: E402
+    DEFAULT_AUTO_SNAPSHOT_INTERVAL_S,
+    DEFAULT_SNAPSHOT_DIR,
+    clean_snapshots,
+    resolve_resume_path,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -51,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
-        "--agent-id", required=True,
+        "--agent-id", required=False, default=None,
         help="Agent ID to register with Pluto (e.g. coder-1).",
     )
     parser.add_argument(
@@ -107,6 +113,42 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--resume", action="store_true",
+        help=(
+            "Restore from the default snapshot dir without specifying a "
+            "path. With --agent-id, picks "
+            f"{DEFAULT_SNAPSHOT_DIR}/<agent_id>.plut; without, picks the "
+            "only .plut present. Warns and continues with a fresh register "
+            "if no snapshot is found."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-dir", default=DEFAULT_SNAPSHOT_DIR, metavar="DIR",
+        help=(
+            f"Directory for auto-snapshots and --resume "
+            f"(default: {DEFAULT_SNAPSHOT_DIR})."
+        ),
+    )
+    parser.add_argument(
+        "--no-auto-snapshot", action="store_true",
+        help="Disable the periodic auto-snapshot loop.",
+    )
+    parser.add_argument(
+        "--auto-snapshot-interval", type=int,
+        default=DEFAULT_AUTO_SNAPSHOT_INTERVAL_S, metavar="SECONDS",
+        help=(
+            f"Auto-snapshot interval in seconds (default: "
+            f"{DEFAULT_AUTO_SNAPSHOT_INTERVAL_S} = 2 hours). Minimum 60s."
+        ),
+    )
+    parser.add_argument(
+        "--clean-snapshots", action="store_true",
+        help=(
+            "Delete every .plut + recovery.md in --snapshot-dir, then exit. "
+            "Combine with --agent-id to clean only one agent's files."
+        ),
+    )
+    parser.add_argument(
         "--log-level", default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help=(
@@ -128,6 +170,24 @@ def main(argv: list[str] | None = None) -> int:
         format="[pluto-mcp] %(levelname)s %(name)s: %(message)s",
     )
 
+    if args.clean_snapshots:
+        removed = clean_snapshots(args.agent_id, args.snapshot_dir)
+        print(
+            f"[pluto-mcp] removed {len(removed)} file(s) from "
+            f"{args.snapshot_dir}",
+            file=sys.stderr,
+        )
+        for p in removed:
+            print(f"  - {p}", file=sys.stderr)
+        return 0
+
+    if not args.agent_id:
+        parser.error("--agent-id is required (unless --clean-snapshots is the only action)")
+
+    restore_path = args.restore_path
+    if args.resume and not restore_path:
+        restore_path = resolve_resume_path(args.agent_id, args.snapshot_dir)
+
     # Resolve host / port from config when not given explicitly.
     config = load_pluto_config()
     server_cfg = config.get("pluto_server", {})
@@ -142,7 +202,10 @@ def main(argv: list[str] | None = None) -> int:
         wait_timeout_s=args.wait_timeout_s,
         iterations=args.iterations,
         roles_dir=args.roles_dir,
-        restore_path=args.restore_path,
+        restore_path=restore_path,
+        snapshot_dir=args.snapshot_dir,
+        auto_snapshot_enabled=not args.no_auto_snapshot,
+        auto_snapshot_interval_s=args.auto_snapshot_interval,
     )
     try:
         server.run()

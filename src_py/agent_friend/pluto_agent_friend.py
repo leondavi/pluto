@@ -126,6 +126,13 @@ from agent_friend.message_formatter import (  # noqa: E402,F401
 from agent_friend.pluto_connection import PlutoConnection  # noqa: E402
 from agent_friend.state_detector import AgentStateDetector  # noqa: E402
 from agent_friend.terminal_proxy import TerminalProxy  # noqa: E402
+from utils.snapshot_helper import (  # noqa: E402
+    DEFAULT_AUTO_SNAPSHOT_INTERVAL_S,
+    DEFAULT_SNAPSHOT_DIR,
+    AutoSnapshotter,
+    clean_snapshots,
+    resolve_resume_path,
+)
 
 logger = logging.getLogger("pluto_agent_friend")
 
@@ -164,6 +171,9 @@ class PlutoAgentFriend(TerminalProxy):
         role_file: str | None = None,
         inject_format: str = INJECT_FORMAT_NATURAL,
         restore_path: str | None = None,
+        snapshot_dir: str = DEFAULT_SNAPSHOT_DIR,
+        auto_snapshot_enabled: bool = True,
+        auto_snapshot_interval_s: int = DEFAULT_AUTO_SNAPSHOT_INTERVAL_S,
         verbose: bool = False,
     ):
         super().__init__(cmd)
@@ -182,6 +192,10 @@ class PlutoAgentFriend(TerminalProxy):
         self.role_file = role_file
         self.restore_path = restore_path
         self.restore_summary: dict | None = None
+        self.snapshot_dir = snapshot_dir
+        self.auto_snapshot_enabled = auto_snapshot_enabled
+        self.auto_snapshot_interval_s = auto_snapshot_interval_s
+        self.autosnap: AutoSnapshotter | None = None
         self.guide_startup_delay = guide_startup_delay
         self.guide_ready_grace = guide_ready_grace
         self.guide_max_wait = guide_max_wait
@@ -252,6 +266,19 @@ class PlutoAgentFriend(TerminalProxy):
 
         self._running = True
 
+        if self.pluto.connected and self.auto_snapshot_enabled:
+            self.autosnap = AutoSnapshotter(
+                save_fn=self.pluto.save_snapshot_files,
+                snapshot_dir=self.snapshot_dir,
+                interval_s=self.auto_snapshot_interval_s,
+                label="pluto-agent-auto-snapshot",
+            )
+            self.autosnap.start()
+            self._info(
+                f"Auto-snapshot enabled: every {self.autosnap.interval_s}s "
+                f"→ {self.snapshot_dir}"
+            )
+
         if self.pluto.connected:
             self.pluto.start_polling()
             self._injection_thread = threading.Thread(
@@ -280,6 +307,11 @@ class PlutoAgentFriend(TerminalProxy):
         except Exception as exc:
             logger.error("I/O loop error: %s", exc)
         finally:
+            if self.autosnap is not None:
+                try:
+                    self.autosnap.stop(take_final=True)
+                except Exception as exc:
+                    logger.debug("auto-snapshot stop failed: %s", exc)
             self.stop()
             self.restore_terminal()
             self.pluto.disconnect()
@@ -857,6 +889,31 @@ def main() -> None:
              "shell launcher auto-derives it from the snapshot).",
     )
     parser.add_argument(
+        "--resume", action="store_true",
+        help=f"Restore from {DEFAULT_SNAPSHOT_DIR}/<agent_id>.plut without "
+             "specifying a path. Warns and starts fresh if no snapshot found.",
+    )
+    parser.add_argument(
+        "--snapshot-dir", default=DEFAULT_SNAPSHOT_DIR, metavar="DIR",
+        help=f"Directory for auto-snapshots and --resume (default: "
+             f"{DEFAULT_SNAPSHOT_DIR}).",
+    )
+    parser.add_argument(
+        "--no-auto-snapshot", action="store_true",
+        help="Disable the periodic auto-snapshot loop.",
+    )
+    parser.add_argument(
+        "--auto-snapshot-interval", type=int,
+        default=DEFAULT_AUTO_SNAPSHOT_INTERVAL_S, metavar="SECONDS",
+        help=f"Auto-snapshot interval in seconds (default: "
+             f"{DEFAULT_AUTO_SNAPSHOT_INTERVAL_S} = 2 hours).",
+    )
+    parser.add_argument(
+        "--clean-snapshots", action="store_true",
+        help="Delete every .plut + recovery.md in --snapshot-dir, then exit. "
+             "Combine with --agent-id to clean only one agent's files.",
+    )
+    parser.add_argument(
         "--guide-startup-delay", type=float, default=GUIDE_STARTUP_DELAY_S,
         help=f"Seconds to wait after spawn before checking agent readiness "
              f"(default: {GUIDE_STARTUP_DELAY_S}, env: PLUTO_GUIDE_STARTUP_DELAY).",
@@ -913,6 +970,21 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.clean_snapshots:
+        removed = clean_snapshots(args.agent_id, args.snapshot_dir)
+        print(
+            f"[pluto-friend] removed {len(removed)} file(s) from "
+            f"{args.snapshot_dir}",
+            file=sys.stderr,
+        )
+        for p in removed:
+            print(f"  - {p}", file=sys.stderr)
+        sys.exit(0)
+
+    restore_path = args.restore
+    if args.resume and not restore_path:
+        restore_path = resolve_resume_path(args.agent_id, args.snapshot_dir)
 
     # ── Show banner ───────────────────────────────────────────────────────
     DKGRAY = "\033[1;30m"
@@ -1139,7 +1211,10 @@ def main() -> None:
         inject_submit_delay=args.inject_submit_delay,
         role_file=role_file,
         inject_format=args.inject_format,
-        restore_path=args.restore,
+        restore_path=restore_path,
+        snapshot_dir=args.snapshot_dir,
+        auto_snapshot_enabled=not args.no_auto_snapshot,
+        auto_snapshot_interval_s=args.auto_snapshot_interval,
         verbose=args.verbose,
     )
     sys.exit(friend.run())

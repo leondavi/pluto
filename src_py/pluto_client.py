@@ -30,7 +30,9 @@ Receiving async events:
     client.connect()
 """
 
+import contextlib
 import datetime
+import http.client
 import json
 import os
 import queue
@@ -38,8 +40,6 @@ import socket
 import sys
 import threading
 import time
-import urllib.request
-import urllib.error
 import urllib.parse
 from typing import Callable, Dict, List, Optional
 
@@ -501,6 +501,98 @@ class PlutoClient:
             self._response_queue.put(msg)
 
 
+# ── HTTP keep-alive connection pool ───────────────────────────────────────────
+
+class _HTTPConnectionPool:
+    """Small bounded pool of long-lived ``http.client.HTTPConnection``s.
+
+    Created once per ``PlutoHttpClient`` instance and shared across all
+    callers (asyncio.to_thread tasks in the MCP adapter, the
+    threading.Thread poll loop in the AgentFriend wrapper, and the
+    AutoSnapshotter). Uses ``queue.LifoQueue`` for free-list bookkeeping
+    — its internal lock makes ``get_nowait``/``put_nowait`` safe under
+    arbitrary thread mixes without us adding our own locks.
+
+    Connections are returned to the pool after a clean response so the
+    next call reuses the same TCP socket. Any HTTP/connection-level
+    error during a request marks the connection bad and discards it
+    instead of returning it.
+    """
+
+    def __init__(self, host: str, port: int, *,
+                 size: int = 4, default_timeout: float = 10.0):
+        self._host = host
+        self._port = port
+        self._default_timeout = default_timeout
+        self._size = max(1, int(size))
+        self._free: "queue.LifoQueue[http.client.HTTPConnection]" = (
+            queue.LifoQueue(maxsize=self._size)
+        )
+
+    def _new_conn(self) -> http.client.HTTPConnection:
+        return http.client.HTTPConnection(
+            self._host, self._port, timeout=self._default_timeout,
+        )
+
+    @contextlib.contextmanager
+    def acquire(self, *, read_timeout: Optional[float] = None):
+        """Yield a connection, returning it to the pool on success."""
+        try:
+            conn = self._free.get_nowait()
+        except queue.Empty:
+            conn = self._new_conn()
+        # Per-call socket read timeout overrides the connection default.
+        # Only effective once the underlying socket exists (i.e. on
+        # reused connections); brand-new ones use the default until the
+        # first request completes.
+        if read_timeout is not None and conn.sock is not None:
+            try:
+                conn.sock.settimeout(read_timeout)
+            except OSError:
+                pass
+        bad = False
+        try:
+            yield conn
+        except BaseException:
+            bad = True
+            raise
+        finally:
+            if bad:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            else:
+                # Restore the default timeout so the next consumer isn't
+                # surprised by a long-poll's relaxed deadline.
+                if conn.sock is not None:
+                    try:
+                        conn.sock.settimeout(self._default_timeout)
+                    except OSError:
+                        pass
+                try:
+                    self._free.put_nowait(conn)
+                except queue.Full:
+                    # Pool already saturated — close the overflow.
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+    def close_all(self) -> None:
+        """Close every pooled connection. Called from ``unregister``
+        so we don't leave half-open sockets at shutdown."""
+        while True:
+            try:
+                conn = self._free.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 # ── HTTP Client ───────────────────────────────────────────────────────────────
 
 class PlutoHttpClient:
@@ -544,27 +636,63 @@ class PlutoHttpClient:
         self.base_url = f"http://{host}:{http_port}"
         self.token: Optional[str] = None
         self.session_id: Optional[str] = None
+        self.server_epoch: Optional[str] = None
+        # HTTP/1.1 keep-alive connection pool. Sized so one slot can hold
+        # the (at most one) outstanding long-poll while short calls reuse
+        # the other slots, with no per-call socket churn (the
+        # urllib.urlopen pattern this replaces was leaking ~hundreds of
+        # TIME_WAIT entries per minute under load).
+        self._pool = _HTTPConnectionPool(
+            host=host, port=http_port,
+            size=4, default_timeout=self.timeout,
+        )
+
+    def _request(self, method: str, path: str, body: Optional[dict] = None,
+                 *, timeout: Optional[float] = None) -> dict:
+        """Send one HTTP request over a pooled keep-alive connection.
+
+        ``timeout`` overrides the pool's default for this call only
+        (used by ``long_poll`` to wait beyond the short-call default).
+        Stale-connection close from the server is retried once
+        transparently — the pool always discards the bad socket.
+        """
+        headers: Dict[str, str] = {
+            "Connection": "keep-alive",
+            "Accept-Encoding": "identity",
+        }
+        if body is not None:
+            data: Optional[bytes] = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        else:
+            data = None
+        last_exc: Optional[BaseException] = None
+        for attempt in (1, 2):
+            try:
+                with self._pool.acquire(read_timeout=timeout) as conn:
+                    conn.request(method, path, body=data, headers=headers)
+                    resp = conn.getresponse()
+                    raw = resp.read()  # must drain to make the socket reusable
+                    return json.loads(raw.decode("utf-8")) if raw else {}
+            except (http.client.RemoteDisconnected,
+                    ConnectionResetError,
+                    BrokenPipeError) as exc:
+                # Server closed the keep-alive socket between requests.
+                # The pool's context manager has already discarded the
+                # bad conn; loop and try once more on a fresh one.
+                last_exc = exc
+                if attempt == 2:
+                    raise
+                continue
+        # Unreachable — the loop either returns or raises.
+        raise last_exc if last_exc is not None else RuntimeError("unreachable")
 
     def _post(self, path: str, body: dict) -> dict:
         """Send a POST request and return the parsed JSON response."""
-        data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        return self._request("POST", path, body=body)
 
     def _get(self, path: str) -> dict:
         """Send a GET request and return the parsed JSON response."""
-        req = urllib.request.Request(
-            f"{self.base_url}{path}",
-            method="GET",
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        return self._request("GET", path)
 
     def register(self) -> dict:
         """Register this agent via HTTP. Returns server response with token."""
@@ -579,10 +707,23 @@ class PlutoHttpClient:
         if resp.get("status") == "ok":
             self.token = resp.get("token")
             self.session_id = resp.get("session_id")
+            self.server_epoch = resp.get("server_epoch")
             # Server may have assigned a different name
             if resp.get("agent_id"):
                 self.agent_id = resp["agent_id"]
         return resp
+
+    def fetch_server_epoch(self) -> Optional[str]:
+        """GET /health and return the server's current epoch (None on error).
+
+        Mismatch with self.server_epoch means the server was restarted /
+        cleaned — held tokens are dead and the client must re-register.
+        """
+        try:
+            resp = self._get("/health")
+            return resp.get("server_epoch")
+        except Exception:
+            return None
 
     def heartbeat(self) -> dict:
         """Send a heartbeat to keep the HTTP session alive."""
@@ -625,6 +766,12 @@ class PlutoHttpClient:
         resp = self._post("/agents/unregister", {"token": self.token})
         self.token = None
         self.session_id = None
+        # Drop any pooled keep-alive sockets so we don't strand them
+        # after the session is gone.
+        try:
+            self._pool.close_all()
+        except Exception:
+            pass
         return resp
 
     def list_agents(self) -> List[str]:
@@ -747,13 +894,13 @@ class PlutoHttpClient:
             params += "&ack=true"
         if auto_busy:
             params += "&auto_busy=true"
-        # Use a longer HTTP timeout than the long-poll timeout
-        old_timeout = self.timeout
-        self.timeout = max(self.timeout, timeout + 10)
-        try:
-            resp = self._get(f"/agents/poll?{params}")
-        finally:
-            self.timeout = old_timeout
+        # Long-poll needs a per-call read timeout longer than the
+        # server's wait. Pass it explicitly so the pool's other slots
+        # keep their short default for concurrent peek/ack callers.
+        resp = self._request(
+            "GET", f"/agents/poll?{params}",
+            timeout=float(timeout) + 10.0,
+        )
         return resp.get("messages", [])
 
     # ── At-least-once delivery (v0.2.43) ─────────────────────────────────

@@ -50,6 +50,11 @@ The first run creates a Python virtual environment under `/tmp/pluto/.venv`
 and installs the MCP SDK (`pip install -r requirements.txt`). Subsequent
 launches reuse the venv.
 
+**Inside Claude Code, go to the `/` menu and select the appropriate role
+(e.g., `/pluto-role-specialist`) to register with Pluto.** If you passed
+`--role` at launch, this is pre-applied on turn 1, but you can change roles
+mid-session via the slash menu.
+
 ---
 
 ## Agent name & role — how the launcher arguments map into Claude and Pluto

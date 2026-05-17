@@ -823,19 +823,18 @@ do_register(AgentId, SessionId, SessionPid, Attrs, SessionType) ->
         [] -> ok
     end,
 
-    %% Preserve existing attributes/subscriptions on reconnect; track prior status
-    {MergedAttrs, ExistingSubs, PrevStatus} = case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{attributes = OldAttrs, subscriptions = OldSubs, status = PS}] ->
-            {maps:merge(OldAttrs, Attrs), OldSubs, PS};
+    %% Preserve existing attributes/subscriptions on reconnect
+    {MergedAttrs, ExistingSubs} = case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{attributes = OldAttrs, subscriptions = OldSubs}] ->
+            {maps:merge(OldAttrs, Attrs), OldSubs};
         [] ->
-            {Attrs, [], undefined}
+            {Attrs, []}
     end,
-    %% recovered if coming back from a clean disconnected grace window;
-    %% connected for fresh registrations or post-timeout re-entries
-    NewStatus = case PrevStatus of
-        disconnected -> recovered;
-        _            -> connected
-    end,
+    %% Always register as connected; the resumed flag in the register
+    %% response is the signal for "came back from a grace window".
+    %% Using recovered here caused online: false in agent_status responses
+    %% because the status never transitioned back to connected.
+    NewStatus = connected,
 
     %% Upsert agent record
     Agent = #agent{
@@ -1004,16 +1003,12 @@ do_register_http_with_token(AgentId, Token, Attrs, Mode, TtlMs) ->
     Now = pluto_lease:now_ms(),
     SysNow = erlang:system_time(millisecond),
 
-    %% Preserve existing attributes/subscriptions on reconnect; track prior status
-    {MergedAttrs, ExistingSubs, PrevStatusHttp} = case ets:lookup(?ETS_AGENTS, AgentId) of
-        [#agent{attributes = OldAttrs, subscriptions = OldSubs, status = PS}] ->
-            {maps:merge(OldAttrs, Attrs), OldSubs, PS};
+    %% Preserve existing attributes/subscriptions on reconnect
+    {MergedAttrs, ExistingSubs} = case ets:lookup(?ETS_AGENTS, AgentId) of
+        [#agent{attributes = OldAttrs, subscriptions = OldSubs}] ->
+            {maps:merge(OldAttrs, Attrs), OldSubs};
         [] ->
-            {Attrs, [], undefined}
-    end,
-    NewStatusHttp = case PrevStatusHttp of
-        disconnected -> recovered;
-        _            -> connected
+            {Attrs, []}
     end,
 
     %% Evict any previous HTTP sessions for this agent
@@ -1024,7 +1019,7 @@ do_register_http_with_token(AgentId, Token, Attrs, Mode, TtlMs) ->
         agent_id      = AgentId,
         session_id    = SessionId,
         session_pid   = undefined,
-        status        = NewStatusHttp,
+        status        = connected,
         connected_at  = Now,
         attributes    = MergedAttrs,
         last_seen     = SysNow,

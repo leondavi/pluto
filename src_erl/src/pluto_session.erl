@@ -1004,7 +1004,9 @@ handle_agent_status(#{<<"agent_id">> := TargetId}, #sess{socket = Sock} = S)
             %% Flatten agent info into the response; rename ets "status" to
             %% "agent_status" to avoid conflict with the JSON response status
             AgentSt = maps:get(<<"status">>, Info, <<"disconnected">>),
-            Online = AgentSt =:= <<"connected">>,
+            Online = (AgentSt =:= <<"connected">>
+                      orelse AgentSt =:= <<"recovered">>
+                      orelse AgentSt =:= <<"recovered_from_file">>),
             InfoClean = maps:remove(<<"status">>, Info),
             send_json(Sock, maps:merge(
                 #{<<"status">> => ?STATUS_OK,

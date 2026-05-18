@@ -822,6 +822,175 @@ class TestPeekModeAndDrainEvent(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(30, self.client.acks)
 
 
+class TestSinglePopDelivery(unittest.IsolatedAsyncioTestCase):
+    """Single-pop / pipeline mode: pop_one + delivery_mode-aware piggyback."""
+
+    async def asyncSetUp(self):
+        self.client = FakeHttpClient()
+        self.inbox = InboxManager(self.client)
+
+    async def test_default_mode_is_batch(self):
+        self.assertEqual(self.inbox.delivery_mode, "batch")
+
+    async def test_set_delivery_mode_accepts_known_modes(self):
+        self.assertEqual(self.inbox.set_delivery_mode("single"), "single")
+        self.assertEqual(self.inbox.delivery_mode, "single")
+        self.assertEqual(self.inbox.set_delivery_mode("batch"), "batch")
+        self.assertEqual(self.inbox.delivery_mode, "batch")
+
+    async def test_set_delivery_mode_ignores_unknown(self):
+        self.inbox.set_delivery_mode("single")
+        result = self.inbox.set_delivery_mode("firehose")
+        self.assertEqual(result, "single")
+        self.assertEqual(self.inbox.delivery_mode, "single")
+
+    async def test_pop_one_returns_head_and_remaining(self):
+        await self.inbox._absorb([
+            {"event": "message", "from": "a", "seq_token": 1,
+             "payload": {"n": 1}},
+            {"event": "message", "from": "a", "seq_token": 2,
+             "payload": {"n": 2}},
+            {"event": "message", "from": "a", "seq_token": 3,
+             "payload": {"n": 3}},
+        ])
+        msg, remaining = await self.inbox.pop_one()
+        self.assertEqual(msg["seq_token"], 1)
+        self.assertEqual(remaining, 2)
+        self.assertIn(1, self.client.acks)
+        msg, remaining = await self.inbox.pop_one()
+        self.assertEqual(msg["seq_token"], 2)
+        self.assertEqual(remaining, 1)
+        msg, remaining = await self.inbox.pop_one()
+        self.assertEqual(msg["seq_token"], 3)
+        self.assertEqual(remaining, 0)
+
+    async def test_pop_one_empty_returns_none_immediately(self):
+        start = asyncio.get_event_loop().time()
+        msg, remaining = await self.inbox.pop_one()
+        elapsed = asyncio.get_event_loop().time() - start
+        self.assertIsNone(msg)
+        self.assertEqual(remaining, 0)
+        self.assertLess(elapsed, 0.1)
+
+    async def test_pop_one_blocks_until_arrival(self):
+        async def deliver_late():
+            await asyncio.sleep(0.1)
+            await self.inbox._absorb([
+                {"event": "message", "from": "z", "seq_token": 77,
+                 "payload": {"text": "late"}},
+            ])
+
+        asyncio.create_task(deliver_late())
+        start = asyncio.get_event_loop().time()
+        msg, remaining = await self.inbox.pop_one(wait_s=2.0)
+        elapsed = asyncio.get_event_loop().time() - start
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg["seq_token"], 77)
+        self.assertEqual(remaining, 0)
+        self.assertLess(elapsed, 1.0,
+            "pop_one(wait_s) should fire on event, not poll")
+
+    async def test_pop_one_times_out_when_no_arrival(self):
+        start = asyncio.get_event_loop().time()
+        msg, remaining = await self.inbox.pop_one(wait_s=0.3)
+        elapsed = asyncio.get_event_loop().time() - start
+        self.assertIsNone(msg)
+        self.assertEqual(remaining, 0)
+        self.assertGreaterEqual(elapsed, 0.25)
+
+    async def test_pop_one_clears_event_when_buffer_emptied(self):
+        await self.inbox._absorb([
+            {"event": "message", "from": "a", "seq_token": 5,
+             "payload": {"x": 1}},
+        ])
+        self.assertTrue(self.inbox._new_message_event.is_set())
+        await self.inbox.pop_one()
+        self.assertFalse(self.inbox._new_message_event.is_set())
+
+    async def test_pop_one_keeps_event_set_when_buffer_nonempty(self):
+        await self.inbox._absorb([
+            {"event": "message", "from": "a", "seq_token": 5,
+             "payload": {"x": 1}},
+            {"event": "message", "from": "a", "seq_token": 6,
+             "payload": {"x": 2}},
+        ])
+        await self.inbox.pop_one()
+        self.assertTrue(self.inbox._new_message_event.is_set())
+
+    async def test_piggyback_single_mode_attaches_one_message(self):
+        self.inbox.set_delivery_mode("single")
+        await self.inbox._absorb([
+            {"event": "message", "from": "a", "seq_token": 10,
+             "payload": {"n": 1}},
+            {"event": "message", "from": "a", "seq_token": 11,
+             "payload": {"n": 2}},
+            {"event": "message", "from": "a", "seq_token": 12,
+             "payload": {"n": 3}},
+        ])
+        wrapped = await self.inbox.piggyback({"status": "ok"})
+        self.assertEqual(len(wrapped["_pluto_inbox"]), 1)
+        self.assertEqual(wrapped["_pluto_inbox"][0]["seq_token"], 10)
+        self.assertEqual(wrapped["_pluto_inbox_remaining"], 2)
+        # Only the head was acked; rest stays buffered for later pops.
+        self.assertEqual(self.client.acks, [10])
+        self.assertEqual(len(await self.inbox.peek_only()), 2)
+
+    async def test_piggyback_batch_mode_unchanged(self):
+        # Belt-and-braces: confirm the existing batch path is undisturbed.
+        await self.inbox._absorb([
+            {"event": "message", "from": "a", "seq_token": 1,
+             "payload": {"n": 1}},
+            {"event": "message", "from": "a", "seq_token": 2,
+             "payload": {"n": 2}},
+        ])
+        wrapped = await self.inbox.piggyback({"status": "ok"})
+        self.assertEqual(len(wrapped["_pluto_inbox"]), 2)
+        self.assertNotIn("_pluto_inbox_remaining", wrapped)
+        self.assertEqual(len(await self.inbox.peek_only()), 0)
+
+    async def test_piggyback_single_mode_empty_buffer_no_marker(self):
+        self.inbox.set_delivery_mode("single")
+        wrapped = await self.inbox.piggyback({"status": "ok"})
+        # Empty buffer → unchanged result, no remaining marker.
+        self.assertEqual(wrapped, {"status": "ok"})
+
+    async def test_pluto_pop_tool_returns_single_message(self):
+        from agent_mcp_friend.tools import register_tools
+        from mcp.server.fastmcp import FastMCP
+
+        lock_mgr = LockManager(self.client)
+        mcp = FastMCP(name="pluto-test")
+        register_tools(mcp, self.client, self.inbox, lock_mgr)
+
+        await self.inbox._absorb([
+            {"event": "message", "from": "a", "seq_token": 21,
+             "payload": {"n": 1}},
+            {"event": "message", "from": "a", "seq_token": 22,
+             "payload": {"n": 2}},
+        ])
+        result = await mcp.call_tool("pluto_pop", {})
+        text = json.dumps(result, default=str)
+        self.assertIn("21", text)
+        self.assertIn("remaining", text)
+        # Only one message popped — the second one stays buffered.
+        self.assertEqual(len(await self.inbox.peek_only()), 1)
+
+    async def test_pluto_set_delivery_mode_tool_switches_mode(self):
+        from agent_mcp_friend.tools import register_tools
+        from mcp.server.fastmcp import FastMCP
+
+        lock_mgr = LockManager(self.client)
+        mcp = FastMCP(name="pluto-test")
+        register_tools(mcp, self.client, self.inbox, lock_mgr)
+
+        result = await mcp.call_tool(
+            "pluto_set_delivery_mode", {"mode": "single"},
+        )
+        text = json.dumps(result, default=str)
+        self.assertIn("single", text)
+        self.assertEqual(self.inbox.delivery_mode, "single")
+
+
 class TestMcpInheritedProbe(unittest.TestCase):
     """Tri-state behavior of the PLUTO_MCP_INHERITED env var."""
 

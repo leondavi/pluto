@@ -134,6 +134,57 @@ def register_tools(
         messages = await inbox.drain()
         return {"messages": messages, "count": len(messages)}
 
+    @mcp.tool(
+        name="pluto_pop",
+        description=(
+            "Pop ONE message from the inbox and ack it. Pipeline / "
+            "event-driven counterpart to pluto_recv: pluto_recv drains "
+            "the whole buffer, pluto_pop returns a single message plus a "
+            "'remaining' count so the caller can drive a one-message-per-"
+            "event loop."
+            "\n\nUsage pattern: on each inbox notification (or each "
+            "pluto_inbox_watch wake), call pluto_pop, process the one "
+            "message, then if 'remaining' > 0 call pluto_pop again, "
+            "otherwise wait for the next notification."
+            "\n\nIf the buffer is empty, returns {message: null, "
+            "remaining: 0}. Pass wait_s>0 to block up to that many "
+            "seconds for the next arrival before giving up."
+            "\n\nFor this tool to be the sole consumer of the inbox you "
+            "must first call pluto_set_delivery_mode('single') — "
+            "otherwise unrelated Pluto tool calls will bulk-drain the "
+            "buffer via the usual piggyback path."
+        ),
+    )
+    async def pluto_pop(wait_s: float = 0.0) -> dict:
+        _bind_session()
+        msg, remaining = await inbox.pop_one(wait_s=float(wait_s))
+        return {
+            "message": msg,
+            "remaining": remaining,
+            "empty": msg is None,
+            "delivery_mode": inbox.delivery_mode,
+        }
+
+    @mcp.tool(
+        name="pluto_set_delivery_mode",
+        description=(
+            "Switch how the inbox surfaces messages to this agent. Modes:"
+            "\n  • 'batch'  (default) — pluto_recv and the _pluto_inbox "
+            "piggyback on every Pluto tool result return ALL pending "
+            "messages at once. Right for turn-driven / interactive work."
+            "\n  • 'single' — piggyback attaches at most one message "
+            "(plus _pluto_inbox_remaining) and pluto_pop is the canonical "
+            "consumer. Right for pipeline / event-driven work where each "
+            "message represents a discrete unit to process."
+            "\n\nReturns {delivery_mode: <effective_mode>}; invalid mode "
+            "strings are ignored and the current mode is returned."
+        ),
+    )
+    async def pluto_set_delivery_mode(mode: str) -> dict:
+        _bind_session()
+        effective = inbox.set_delivery_mode(mode)
+        return {"delivery_mode": effective}
+
     _wait_default = int(wait_timeout_s)
 
     @mcp.tool(
@@ -472,7 +523,7 @@ def register_tools(
         _bind_session()
         buffered = await inbox.peek_only()
         inherited = _mcp_inherited()
-        active_watchers = sorted(inbox._active_watchers)
+        watchers = inbox.active_watchers_snapshot()
         out = {
             "agent_id": client.agent_id,
             "host": client.host,
@@ -480,9 +531,13 @@ def register_tools(
             "base_url": client.base_url,
             "connected": bool(client.token),
             "buffered_messages": len(buffered),
+            "delivery_mode": inbox.delivery_mode,
             "mcp_inherited": inherited,
             "watcher_available": inherited is not False,
-            "active_watchers": active_watchers,
+            # Legacy list-shaped field, kept for callers that already
+            # parse it. New callers should read ``watchers`` instead.
+            "active_watchers": watchers["ids"],
+            "watchers": watchers,
             "server_epoch": getattr(client, "server_epoch", None),
         }
         if notifier is not None:
@@ -493,12 +548,12 @@ def register_tools(
         name="pluto_health",
         description=(
             "End-to-end health probe. Reports MCP-adapter state (always 'ok' "
-            "if this tool returns) plus a live HTTP ping to the Pluto server "
-            "and the most recent auto-snapshot info. Use when the agent "
-            "suspects coordination is wedged: if pluto_server != 'ok', the "
-            "server itself is unreachable; if pluto_server == 'ok' but "
-            "agent_registered is false, the session was lost and the user "
-            "should relaunch the MCP friend (optionally with --resume)."
+            "if this tool returns), a live HTTP ping to the Pluto server, "
+            "the background peek-loop liveness, and the most recent "
+            "auto-snapshot info. Diagnosis: pluto_server != 'ok' → server "
+            "unreachable; agent_registered false → session lost (relaunch "
+            "with --resume); peek_loop.unrecoverable → terminal session "
+            "loss (relaunch); peek_loop.stalled → HTTP listener wedged."
         ),
     )
     async def pluto_health() -> dict:
@@ -569,4 +624,27 @@ def register_tools(
             }
         elif server is not None:
             out["auto_snapshot"] = {"enabled": False}
+
+        # Background peek-loop liveness. Lets an agent distinguish
+        # "inbox quiet" (loop alive, ok_count growing) from "delivery
+        # is wedged" (stalled=true or unrecoverable=true).
+        loop_state = inbox.peek_loop_state()
+        out["peek_loop"] = loop_state
+        # Watcher slot occupancy — feeds the role prompt's "is a watcher
+        # already running?" check before spawning a fresh subagent.
+        out["watchers"] = inbox.active_watchers_snapshot()
+        if loop_state.get("unrecoverable"):
+            out["agent_registered"] = False
+            out["recovery_hint"] = (
+                loop_state.get("unrecoverable_reason")
+                or "Peek loop entered unrecoverable state — restart "
+                f"./PlutoMCPFriend.sh --agent-id {client.agent_id} --resume"
+            )
+        elif loop_state.get("stalled"):
+            out.setdefault(
+                "recovery_hint",
+                "Peek loop stalled (no successful peek in >"
+                f"{loop_state.get('stall_threshold_s')}s). The Pluto "
+                "HTTP listener may be wedged; check server health.",
+            )
         return out

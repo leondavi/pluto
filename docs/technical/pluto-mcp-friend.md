@@ -43,7 +43,10 @@ It runs as a long-lived stdio subprocess and exposes Pluto operations
   (`InboxManager`).
 - **Tool-result piggyback** — every Pluto tool's return is wrapped with
   any pending buffered messages under `_pluto_inbox`, and those messages
-  are acked.
+  are acked. The wrap shape is governed by the active **delivery mode**
+  (see §1.1): `"batch"` (default) attaches all buffered messages,
+  `"single"` attaches the head message plus an
+  `_pluto_inbox_remaining` counter.
 - **Lock auto-renewal** — locks acquired with `auto_renew=true` get
   background TTL/2 renewals (`LockManager`).
 - **Snapshots / restore** — `pluto_snapshot_self` / `--restore <.plut>`
@@ -62,13 +65,54 @@ that constraint:
 | Channel | Latency | Reliability | Requires |
 |---|---|---|---|
 | `pluto_recv` at turn start | turn-driven | high | model follows role |
+| `pluto_pop` per inbox event | per-message | high | model in single-mode + watcher / notification wake |
 | `_pluto_inbox` piggyback on any Pluto tool call | turn-driven | high | model uses a Pluto tool that turn |
 | Background watcher subagent calling `pluto_inbox_watch` | chat-speed | medium | subagent inherits the MCP server |
 | `notifications/inboxMessage` (phase 2, flagged) | chat-speed | host-dependent | host surfaces MCP notifications to model |
 
 `pluto_recv` and `_pluto_inbox` are the correctness path. The watcher
 is a chat-speed optimization. Notifications are a future optimization
-behind `PLUTO_MCP_NOTIFICATIONS`.
+behind `PLUTO_MCP_NOTIFICATIONS`. `pluto_pop` is the pipeline /
+event-driven counterpart to `pluto_recv` — see §1.1.
+
+---
+
+## 1.1 Delivery modes — batch vs. single
+
+`InboxManager.delivery_mode` toggles how the buffer is surfaced to the
+agent. Switch at runtime via `pluto_set_delivery_mode(mode)`; observe
+the active value in `pluto_session.delivery_mode`.
+
+| Mode | `pluto_recv` / `drain()` | `piggyback` wrap | Canonical consumer | Best for |
+|---|---|---|---|---|
+| `"batch"` (default) | returns ALL buffered messages, acks the batch | `{_pluto_inbox: [...all msgs...]}` | `pluto_recv` + piggyback | turn-driven / interactive agents |
+| `"single"` | unchanged (still drains all — fallback) | `{_pluto_inbox: [head], _pluto_inbox_remaining: N}` | `pluto_pop` (one at a time) | pipeline / event-driven agents |
+
+**Why a mode flag and not just `pluto_pop`?** Every Pluto tool result
+routes through `piggyback()`. In batch mode, an unrelated `pluto_send`
+or `pluto_lock_*` call would silently bulk-drain the buffer alongside
+the agent's pop loop — breaking the one-message-per-turn invariant.
+Single-mode rewires `piggyback` to attach exactly one message + a
+`remaining` counter, so the one-at-a-time contract holds across the
+whole tool surface.
+
+**`pluto_pop(wait_s=0.0)`** — pop and ack a single message; returns
+`{message, remaining, empty, delivery_mode}`. When the buffer is empty
+and `wait_s > 0`, blocks on `_new_message_event` up to that many
+seconds (event-driven, no polling). The intended loop:
+
+```
+notification / watcher wake
+  → pluto_pop(wait_s=<short>)
+  → process msg
+  → while remaining > 0: pluto_pop() (no wait — head must be there)
+  → yield, wait for next wake
+```
+
+At-least-once semantics match the existing drain path: the message is
+removed from the in-memory buffer before the server-side ack, so a
+crash between pop and ack relies on process restart clearing
+`_seen_seqs` to allow re-absorption on the next peek.
 
 ---
 
@@ -236,10 +280,14 @@ A message arriving at the Pluto server while an agent is idle:
 4. (a) watch_durable    → slice returns the message → tool result lands
        in subagent      → bubbles to parent on Task completion
                           (chat-speed delivery)
-   (b) OR no watcher    → message stays buffered until next pluto_recv
+   (b) OR single-mode   → notification / watcher wake → pluto_pop()
+       agent            → one message per call + remaining counter
+                          (per-message pipeline delivery)
+   (c) OR no watcher    → message stays buffered until next pluto_recv
        active           → or _pluto_inbox piggyback on next Pluto tool
                           (turn-speed delivery)
-5. piggyback() / drain()→ ack(seq_token) → server marks delivered
+5. piggyback() / drain() / pop_one()
+                        → ack(seq_token) → server marks delivered
 ```
 
 If the adapter crashes between steps 3 and 5, Pluto's at-least-once
@@ -260,6 +308,7 @@ the last acked seq.
 | `--restore <path>` | CLI | unset | Apply a `.plut` after register |
 | `PLUTO_MCP_INHERITED` | env | unset | Inheritance probe verdict |
 | `PLUTO_MCP_NOTIFICATIONS` | env | unset | Enables notification seam (no-op today) |
+| `delivery_mode` | `pluto_set_delivery_mode` runtime call | `"batch"` | `"batch"` drains the whole buffer per `pluto_recv` / piggyback; `"single"` surfaces one message per call (head + `_pluto_inbox_remaining`), making `pluto_pop` the canonical consumer |
 
 ---
 

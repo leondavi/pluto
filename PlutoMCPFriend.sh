@@ -94,6 +94,8 @@ Options:
                           watchdog. Keep <=120 to be safe.
   --no-launch             Generate .mcp.json but do not start Claude.
   --no-wizard             Refuse the interactive wizard; require all args.
+  --skip-input            Skip "Press Enter" prompts in the wizard (intro +
+                          confirm). Useful for automated relaunches.
   --restore <path>        After registering, apply a previously saved .plut
                           snapshot via restore_from_snapshot. The agent_id
                           inside the file is authoritative — when --agent-id
@@ -378,6 +380,20 @@ check_pluto_reachable() {
     return 1
 }
 
+auto_start_server() {
+    if [[ ! -x "${SCRIPT_DIR}/PlutoServer.sh" ]]; then
+        err "PlutoServer.sh not found or not executable."
+        return 1
+    fi
+    info "Auto-starting Pluto server (./PlutoServer.sh --daemon) ..."
+    if ! "${SCRIPT_DIR}/PlutoServer.sh" --daemon; then
+        err "Failed to start Pluto server."
+        return 1
+    fi
+    sleep 1
+    return 0
+}
+
 offer_to_start_server() {
     if ! [[ -t 0 ]]; then
         return 1
@@ -577,7 +593,9 @@ wizard_intro() {
   Claude. Pick one at any time after launch (/pluto-…).${NC}
 
 EOF
-    read -rp "  Press Enter to begin (Ctrl-C to abort) ... " _ < /dev/tty
+    if [[ "${1:-}" != "skip" ]]; then
+        read -rp "  Press Enter to begin (Ctrl-C to abort) ... " _ < /dev/tty
+    fi
 }
 
 wizard_step_server() {
@@ -642,6 +660,7 @@ EOF
 wizard_step_confirm() {
     section "Step 4/4 — Ready to launch"
     local agent_id="$1" host="$2" port="$3" role="$4" wait_s="$5"
+    local skip="${6:-}"
 
     local role_display
     if [[ -n "${role}" ]]; then
@@ -661,7 +680,9 @@ wizard_step_confirm() {
     .mcp.json        : ${SCRIPT_DIR}/.mcp.json
 
 EOF
-    read -rp "  Press Enter to launch (Ctrl-C to abort) ... " _ < /dev/tty
+    if [[ "${skip}" != "skip" ]]; then
+        read -rp "  Press Enter to launch (Ctrl-C to abort) ... " _ < /dev/tty
+    fi
     echo ""
 }
 
@@ -706,6 +727,7 @@ main() {
     local no_auto_snapshot="0"
     local auto_snapshot_interval=""
     local clean_snapshots=false
+    local skip_input=false
     local extra_cmd=()
     local past_separator=false
 
@@ -733,6 +755,7 @@ main() {
             --no-auto-snapshot) no_auto_snapshot="1"; shift ;;
             --auto-snapshot-interval) auto_snapshot_interval="$2"; shift 2 ;;
             --clean-snapshots) clean_snapshots=true; shift ;;
+            --skip-input) skip_input=true; shift ;;
             --framework)
                 err "--framework was removed in v0.2.8 — Claude Code only."
                 err "For Cursor/Aider/Copilot use ./PlutoAgentFriend.sh instead."
@@ -844,7 +867,9 @@ main() {
             exit 1
         fi
 
-        wizard_intro
+        local _skip_arg=""
+        $skip_input && _skip_arg="skip"
+        wizard_intro "${_skip_arg}"
 
         if ! wizard_step_server "${host}" "${http_port}"; then
             warn "Continuing without a reachable Pluto server."
@@ -860,7 +885,7 @@ main() {
         # Full summary + confirm before launch.
         if ! $no_launch; then
             wizard_step_confirm "${agent_id}" "${host}" "${http_port}" \
-                "${role}" "${wait_timeout_s}"
+                "${role}" "${wait_timeout_s}" "${_skip_arg}"
         fi
     else
         # Expert mode: brief banner + reachability check, no prompts.
@@ -869,8 +894,13 @@ main() {
         info "Pluto:      ${host}:${http_port}"
         [[ -n "${role}" ]] && info "Role:       ${role}"
         info "Watcher:    ${wait_timeout_s}s block duration"
-        check_pluto_reachable "${host}" "${http_port}" || \
-            warn "Continuing — pluto_* tools will return errors until the server is up."
+        if ! check_pluto_reachable "${host}" "${http_port}"; then
+            if auto_start_server && check_pluto_reachable "${host}" "${http_port}"; then
+                :
+            else
+                warn "Continuing — pluto_* tools will return errors until the server is up."
+            fi
+        fi
     fi
 
     # ── Generate .mcp.json ──────────────────────────────────────────────────

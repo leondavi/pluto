@@ -134,6 +134,57 @@ def register_tools(
         messages = await inbox.drain()
         return {"messages": messages, "count": len(messages)}
 
+    @mcp.tool(
+        name="pluto_pop",
+        description=(
+            "Pop ONE message from the inbox and ack it. Pipeline / "
+            "event-driven counterpart to pluto_recv: pluto_recv drains "
+            "the whole buffer, pluto_pop returns a single message plus a "
+            "'remaining' count so the caller can drive a one-message-per-"
+            "event loop."
+            "\n\nUsage pattern: on each inbox notification (or each "
+            "pluto_inbox_watch wake), call pluto_pop, process the one "
+            "message, then if 'remaining' > 0 call pluto_pop again, "
+            "otherwise wait for the next notification."
+            "\n\nIf the buffer is empty, returns {message: null, "
+            "remaining: 0}. Pass wait_s>0 to block up to that many "
+            "seconds for the next arrival before giving up."
+            "\n\nFor this tool to be the sole consumer of the inbox you "
+            "must first call pluto_set_delivery_mode('single') — "
+            "otherwise unrelated Pluto tool calls will bulk-drain the "
+            "buffer via the usual piggyback path."
+        ),
+    )
+    async def pluto_pop(wait_s: float = 0.0) -> dict:
+        _bind_session()
+        msg, remaining = await inbox.pop_one(wait_s=float(wait_s))
+        return {
+            "message": msg,
+            "remaining": remaining,
+            "empty": msg is None,
+            "delivery_mode": inbox.delivery_mode,
+        }
+
+    @mcp.tool(
+        name="pluto_set_delivery_mode",
+        description=(
+            "Switch how the inbox surfaces messages to this agent. Modes:"
+            "\n  • 'batch'  (default) — pluto_recv and the _pluto_inbox "
+            "piggyback on every Pluto tool result return ALL pending "
+            "messages at once. Right for turn-driven / interactive work."
+            "\n  • 'single' — piggyback attaches at most one message "
+            "(plus _pluto_inbox_remaining) and pluto_pop is the canonical "
+            "consumer. Right for pipeline / event-driven work where each "
+            "message represents a discrete unit to process."
+            "\n\nReturns {delivery_mode: <effective_mode>}; invalid mode "
+            "strings are ignored and the current mode is returned."
+        ),
+    )
+    async def pluto_set_delivery_mode(mode: str) -> dict:
+        _bind_session()
+        effective = inbox.set_delivery_mode(mode)
+        return {"delivery_mode": effective}
+
     _wait_default = int(wait_timeout_s)
 
     @mcp.tool(
@@ -480,6 +531,7 @@ def register_tools(
             "base_url": client.base_url,
             "connected": bool(client.token),
             "buffered_messages": len(buffered),
+            "delivery_mode": inbox.delivery_mode,
             "mcp_inherited": inherited,
             "watcher_available": inherited is not False,
             # Legacy list-shaped field, kept for callers that already

@@ -107,6 +107,14 @@ class InboxManager:
         self._unrecoverable: bool = False
         self._unrecoverable_reason: str | None = None
         self._consecutive_session_lost: int = 0
+        # Delivery mode. "batch" (default) drains the buffer en masse on
+        # every piggyback / drain — the historical behavior used by
+        # turn-driven agents. "single" pops one message at a time so a
+        # pipeline-style agent can drive consumption from push
+        # notifications (one notification → one pluto_pop → process →
+        # next pluto_pop) without surprise bulk drains via piggyback on
+        # unrelated Pluto tool calls.
+        self._delivery_mode: str = "batch"
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -128,6 +136,29 @@ class InboxManager:
         delivery-latency telemetry. Optional — no-op if unset."""
         self._notifier = notifier
 
+    def set_delivery_mode(self, mode: str) -> str:
+        """Switch delivery mode between ``"batch"`` and ``"single"``.
+
+        Returns the value actually set (unchanged if *mode* is invalid).
+
+        * ``"batch"`` (default) — every ``piggyback`` / ``drain`` empties
+          the buffer; every Pluto tool result carries any pending
+          messages under ``_pluto_inbox``.
+        * ``"single"`` — ``piggyback`` attaches at most one message (the
+          head of the queue) plus a ``_pluto_inbox_remaining`` counter,
+          and ``drain`` becomes a thin wrapper over :meth:`pop_one`.
+          Agents drive consumption explicitly via ``pluto_pop``, one
+          message per call.
+        """
+        if mode not in ("batch", "single"):
+            return self._delivery_mode
+        self._delivery_mode = mode
+        return mode
+
+    @property
+    def delivery_mode(self) -> str:
+        return self._delivery_mode
+
     def on_new_message(self, callback) -> None:
         """Register a coroutine ``callback(messages: list[dict])`` invoked
         when fresh actionable messages arrive in the buffer.
@@ -147,25 +178,85 @@ class InboxManager:
         - Otherwise the original result is returned wrapped:
           ``{"result": <original>, "_pluto_inbox": [...]}``.
 
+        In ``"single"`` delivery mode the wrap attaches at most one
+        message (the head of the queue) and exposes a
+        ``_pluto_inbox_remaining`` counter so the agent knows whether to
+        loop on ``pluto_pop``. This preserves the one-at-a-time invariant
+        across unrelated Pluto tool calls — without it, every
+        ``pluto_send`` / ``pluto_lock_*`` etc. would silently bulk-drain
+        the buffer behind the pop loop's back.
+
         Acks fire as soon as messages are placed on the result so even if
         the agent ignores them the server inbox is drained — at-least-once
         delivery is preserved on the wire (peek will resurface them after
         a crash before the ack lands).
         """
+        single = self._delivery_mode == "single"
+        remaining = 0
         async with self._lock:
             if not self._buffered:
                 return result
-            messages = list(self._buffered)
-            self._buffered.clear()
+            if single:
+                messages = [self._buffered.pop(0)]
+                remaining = len(self._buffered)
+                if not self._buffered:
+                    self._new_message_event.clear()
+            else:
+                messages = list(self._buffered)
+                self._buffered.clear()
+                self._new_message_event.clear()
 
         if isinstance(result, dict):
             wrapped = dict(result)
             wrapped["_pluto_inbox"] = messages
         else:
             wrapped = {"result": result, "_pluto_inbox": messages}
+        if single:
+            wrapped["_pluto_inbox_remaining"] = remaining
 
         await self._ack_messages(messages)
         return wrapped
+
+    async def pop_one(self, wait_s: float = 0.0) -> tuple[dict | None, int]:
+        """Pop and ack a single message; return ``(message, remaining)``.
+
+        FIFO over the buffer. If the buffer is empty and *wait_s* is
+        positive, block on ``_new_message_event`` up to *wait_s* seconds
+        for an arrival; otherwise return ``(None, 0)`` immediately.
+
+        Designed for pipeline / event-driven agents that want exactly one
+        message per turn (e.g. the agent wakes on an MCP notification and
+        calls ``pluto_pop`` once per event). For batch consumption keep
+        using :meth:`drain` / :meth:`wait_for_messages`.
+
+        At-least-once guarantees match the existing drain path: a crash
+        between the buffer pop and the server ack relies on process
+        restart clearing ``_seen_seqs`` so the message can be re-absorbed
+        from a subsequent peek.
+        """
+        deadline = time.monotonic() + max(0.0, wait_s)
+        while True:
+            async with self._lock:
+                if self._buffered:
+                    msg = self._buffered.pop(0)
+                    remaining = len(self._buffered)
+                    if not self._buffered:
+                        self._new_message_event.clear()
+                    break
+                # Buffer empty — clear the event under the lock so
+                # _absorb cannot fire it between our check and our wait.
+                self._new_message_event.clear()
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0:
+                return None, 0
+            try:
+                await asyncio.wait_for(
+                    self._new_message_event.wait(), timeout=remaining_s,
+                )
+            except asyncio.TimeoutError:
+                return None, 0
+        await self._ack_messages([msg])
+        return msg, remaining
 
     async def drain(self) -> list[dict]:
         """Return all buffered messages and ack them.  Used by ``pluto_recv``."""

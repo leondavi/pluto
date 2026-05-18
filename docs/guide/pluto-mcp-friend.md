@@ -124,7 +124,9 @@ the adapter injects the session token transparently.
 |------|-------|---------|
 | `pluto_send` | `POST /agents/send` | direct message to one agent |
 | `pluto_broadcast` | `POST /agents/broadcast` | message to every agent |
-| `pluto_recv` | drain in-memory inbox | explicit drain (call at start of turn) |
+| `pluto_recv` | drain in-memory inbox | explicit drain (call at start of turn). Returns ALL pending messages — the batch-mode default |
+| `pluto_pop` | pop ONE message + ack | pipeline / event-driven counterpart to `pluto_recv`: one message per call plus a `remaining` counter. Pair with `pluto_set_delivery_mode("single")` so unrelated tool calls do not bulk-drain via piggyback |
+| `pluto_set_delivery_mode` | switch `"batch"` ↔ `"single"` | toggles how `piggyback` / `pluto_recv` surface messages. `"batch"` (default) returns the whole buffer; `"single"` attaches at most one message + `_pluto_inbox_remaining` |
 | `pluto_wait_for_messages` | event-driven block on inbox | long-poll until a message arrives (or timeout) — pair with a background sub-agent for chat-speed responsiveness |
 | `pluto_publish` | `POST /agents/publish` | publish to a topic |
 | `pluto_subscribe` | `POST /agents/subscribe` | subscribe to a topic |
@@ -183,6 +185,23 @@ the Pluto server. New actionable messages are buffered in memory and
 acked the moment they're handed to the agent. There are **three** delivery
 mechanisms; the role prompt teaches the agent which to use.
 
+The adapter has two **delivery modes** that change the shape of the
+piggyback and `pluto_recv` paths:
+
+* **`"batch"` (default)** — every drain empties the buffer at once. Right
+  for turn-driven / interactive agents that process whatever queued up
+  since the last reply.
+* **`"single"`** — `piggyback` attaches at most one message (plus a
+  `_pluto_inbox_remaining` counter) and `pluto_pop` is the canonical
+  consumer. Right for pipeline / event-driven agents where each message
+  is a discrete unit of work and you want one-message-per-turn reactivity.
+  Switch with `pluto_set_delivery_mode("single")` once near the top of
+  the session.
+
+Without single-mode, calling `pluto_pop` alongside other Pluto tools
+would still work, but every unrelated `pluto_send` / `pluto_lock_*` etc.
+would bulk-drain the buffer via piggyback behind the pop loop's back.
+
 ### 1. Tool-result piggyback (free)
 
 Every Pluto tool result includes a `_pluto_inbox` field if there are
@@ -234,6 +253,39 @@ launcher (default 60 seconds — safe under the watchdog cutoff). Total
 subagent lifetime is bounded by `5 × --wait-timeout-s`. The value
 propagates into the role connection block, the `/pluto-watch` slash
 prompt, and the tool's argument default.
+
+### 4. Single-pop — `pluto_pop` (pipeline / event-driven)
+
+For pipeline-style agents where each message is a discrete unit of work
+(a file produced, a task to dispatch, a graph stage to advance), prefer
+single-pop:
+
+```
+1. Once near session start:
+     pluto_set_delivery_mode("single")
+
+2. Per watcher wake / inbox notification:
+     msg, remaining = pluto_pop(wait_s=<short>)
+     # process msg
+     while remaining > 0:
+         msg, remaining = pluto_pop()
+         # process msg
+     # buffer drained — yield and wait for next wake
+```
+
+`pluto_pop` blocks up to `wait_s` seconds for an arrival when the buffer
+is empty (0 = return immediately). Each pop returns the head of the
+FIFO buffer plus a `remaining` counter so the agent knows whether to
+loop or yield. Single-mode also rewires `piggyback`: any Pluto tool
+result attaches at most one message under `_pluto_inbox` plus
+`_pluto_inbox_remaining`, preserving the one-at-a-time invariant across
+unrelated tool calls.
+
+Trade-off: one extra round-trip per message. Negligible for agent-paced
+traffic; a real cost at firehose rates — stay in batch mode unless
+per-message reactivity is the point.
+
+The active mode is visible in `pluto_session` under `delivery_mode`.
 
 ---
 

@@ -1,6 +1,6 @@
 # Token Efficiency in Pluto Multi-Agent Communication
 
-**Status:** research / proposal — nothing in this document is shipped behavior.
+**Status:** research / proposal. **Shipped in v0.4.0:** A2's push-delivery goal (via the Claude Code session inbox socket — `PLUTO_MCP_PUSH`, see `docs/technical/pluto-mcp-friend.md` §2.6), A3 (protocol digest inline + `pluto://protocol` resource), B1 (compact resource JSON + envelope trim to `event/from/payload/seq_token/request_id/topic/task_id`), B3 (byte-stability tests: config-independent `tools/list`, identity-free shared connection body), and slimmed delivery-mode tool descriptions. Still open: A1 (code-mode), A4 (tool consolidation), B2 (payload caps/offload), C1/C2, watcher/heartbeat retirement.
 **Scope:** the PlutoMCPFriend (MCP stdio) and PlutoAgentFriend (PTY) adapters, the role/protocol prompt library, and the wire formats used between agents. The Erlang server's CPU/memory costs are out of scope except where they shape what reaches a model's context window.
 **Date:** August 2026.
 

@@ -228,15 +228,19 @@ class TestSocketNotifier(unittest.IsolatedAsyncioTestCase):
         # state is restored and the flush rescheduled.
         n = self._notifier()
         # Longer than one _settle() so exactly one failure lands before
-        # the socket "comes back", and the retry fires in the second.
-        n.RETRY_BACKOFF_S = 0.4
+        # the socket "comes back", and the retry fires afterwards.
+        n.RETRY_BACKOFF_S = 0.6
         good_path = n._socket_path
         n._socket_path = os.path.join(self.tmpdir, "missing.sock")
         await n.notify_new_messages([{"from": "p", "payload": {}}])
         await self._settle()  # first flush fails
         self.assertEqual(n.summary()["send_failures"], 1)
         n._socket_path = good_path  # socket comes back
-        await self._settle()  # retry fires without any new arrival
+        # Poll rather than sleep a fixed margin — CI runners are slow.
+        for _ in range(40):
+            if n.summary()["wakeups_sent"]:
+                break
+            await asyncio.sleep(0.1)
         s = n.summary()
         self.assertEqual(s["wakeups_sent"], 1)
         self.assertIn("1 new Pluto message(s)",

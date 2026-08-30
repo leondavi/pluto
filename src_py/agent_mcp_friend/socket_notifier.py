@@ -238,8 +238,9 @@ class SocketNotifier:
             )
             if since_fail is not None and since_fail < self.RETRY_COOLDOWN_S:
                 # Inside the cooldown: keep the wakeup pending and come
-                # back when the cooldown expires — never drop it.
-                self._suppressed += count
+                # back when the cooldown expires — never drop it. Not
+                # counted as suppressed: it's a deferral that will still
+                # be delivered.
                 self._restore_pending(count, senders)
                 self._schedule_flush(self.RETRY_COOLDOWN_S - since_fail)
                 return

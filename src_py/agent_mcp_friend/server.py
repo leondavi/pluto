@@ -148,7 +148,10 @@ class PlutoMCPServer:
             server=self,
             push=self.push,
         )
-        register_resources(self.mcp, self.client, self.inbox, self.lock_mgr)
+        register_resources(
+            self.mcp, self.client, self.inbox, self.lock_mgr,
+            protocol_path=self.protocol_path,
+        )
         self._register_prompts()
 
     def _register_prompts(self) -> None:

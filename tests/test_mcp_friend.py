@@ -380,16 +380,42 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("Agent ID:  coder-42", body)
         self.assertIn("Base URL:  http://localhost:9001", body)
 
-    def test_role_prompt_inlines_protocol_when_referenced(self):
-        # specialist.md references protocol.md → should inline it.
+    def test_role_prompt_inlines_protocol_digest_when_referenced(self):
+        # specialist.md references protocol.md → the ~1K-token digest is
+        # inlined (never the full 13.9KB protocol) with a pointer to the
+        # pluto://protocol resource for the full text.
         body = build_role_prompt_body(
             "specialist",
             host="localhost",
             http_port=9001,
             agent_id="x",
         )
-        self.assertIn("=== BEGIN protocol.md ===", body)
-        self.assertIn("=== END protocol.md ===", body)
+        self.assertIn("=== BEGIN protocol digest ===", body)
+        self.assertIn("=== END protocol digest ===", body)
+        self.assertIn("pluto://protocol", body)
+        self.assertNotIn("=== BEGIN protocol.md ===", body)
+
+    def test_role_prompt_inlines_full_protocol_for_custom_path(self):
+        # A custom --protocol deployment can't trust the default digest —
+        # fall back to inlining the custom protocol verbatim.
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".md", delete=False,
+        ) as f:
+            f.write("# Custom protocol\ncustom-rule-xyz\n")
+            custom = f.name
+        try:
+            body = build_role_prompt_body(
+                "specialist",
+                host="localhost",
+                http_port=9001,
+                agent_id="x",
+                protocol_path=custom,
+            )
+            self.assertIn("=== BEGIN protocol.md ===", body)
+            self.assertIn("custom-rule-xyz", body)
+        finally:
+            os.unlink(custom)
 
     def test_unknown_role_raises(self):
         with self.assertRaises(FileNotFoundError):
@@ -556,18 +582,20 @@ class TestServerCapabilities(unittest.IsolatedAsyncioTestCase):
         resources = await server.mcp.list_resources()
 
         tool_names = {t.name for t in tools}
-        # Pluto operation tools
-        for required in [
-            "pluto_send", "pluto_broadcast", "pluto_recv",
-            "pluto_wait_for_messages",
+        # Strict set equality: a dropped tool AND a silently added one
+        # both fail — the tool surface is a deliberate, reviewed API.
+        self.assertEqual(tool_names, {
+            "pluto_send", "pluto_broadcast", "pluto_recv", "pluto_pop",
+            "pluto_set_delivery_mode", "pluto_wait_for_messages",
+            "pluto_inbox_watch", "pluto_heartbeat",
+            "pluto_publish", "pluto_subscribe",
+            "pluto_list_agents", "pluto_find_agents",
             "pluto_lock_acquire", "pluto_lock_release", "pluto_lock_renew",
             "pluto_lock_info", "pluto_list_locks",
             "pluto_task_assign", "pluto_task_update", "pluto_task_list",
-            "pluto_list_agents", "pluto_find_agents",
-            "pluto_publish", "pluto_subscribe", "pluto_set_status",
-            "pluto_session",
-        ]:
-            self.assertIn(required, tool_names, f"missing tool: {required}")
+            "pluto_set_status", "pluto_snapshot_self",
+            "pluto_restore_from_snapshot", "pluto_session", "pluto_health",
+        })
 
         prompt_names = {p.name for p in prompts}
         self.assertIn("pluto-protocol", prompt_names)
@@ -697,11 +725,15 @@ class TestWatcherDurable(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first_resp.get("timeout"))
 
     async def test_durable_releases_slot_after_return(self):
-        # Run, return, run again — second call must NOT see already_watching.
+        # Run, return, run again — the second call must NOT see
+        # already_watching. Between the calls the slot sits in the
+        # WATCHER_GRACE_S window: still visible in the snapshot (so a
+        # parent checking pluto_session sees the watcher as active), but
+        # reclaimable by the next watch_durable call.
         await self.inbox.watch_durable(
             inbox_id="default", wait_timeout_s=0.1, max_total_s=0.1,
         )
-        self.assertNotIn("default", self.inbox._active_watchers)
+        self.assertIn("default", self.inbox._active_watchers)  # grace window
         again = await self.inbox.watch_durable(
             inbox_id="default", wait_timeout_s=0.1, max_total_s=0.1,
         )
@@ -838,10 +870,10 @@ class TestSinglePopDelivery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.inbox.set_delivery_mode("batch"), "batch")
         self.assertEqual(self.inbox.delivery_mode, "batch")
 
-    async def test_set_delivery_mode_ignores_unknown(self):
+    async def test_set_delivery_mode_rejects_unknown(self):
         self.inbox.set_delivery_mode("single")
-        result = self.inbox.set_delivery_mode("firehose")
-        self.assertEqual(result, "single")
+        with self.assertRaises(ValueError):
+            self.inbox.set_delivery_mode("firehose")
         self.assertEqual(self.inbox.delivery_mode, "single")
 
     async def test_pop_one_returns_head_and_remaining(self):

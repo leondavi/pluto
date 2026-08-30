@@ -90,6 +90,10 @@ class InboxManager:
         self._landed_at: dict[int, float] = {}
         # Optional notifier hook (phase-2). Set via :meth:`set_notifier`.
         self._notifier = None
+        # Optional Claude Code push-wakeup hook. Set via
+        # :meth:`set_push_notifier`. Fired from _absorb on fresh
+        # actionable messages; re-armed by the drain paths.
+        self._push = None
         # Peek-loop liveness telemetry. Monotonic ts is used for age math;
         # wall-clock ts is what pluto_health surfaces to the agent.
         self._last_peek_ok_mono: float | None = None
@@ -135,6 +139,11 @@ class InboxManager:
         """Attach a :class:`Notifier` for phase-2 MCP notifications and
         delivery-latency telemetry. Optional — no-op if unset."""
         self._notifier = notifier
+
+    def set_push_notifier(self, push) -> None:
+        """Attach a :class:`SocketNotifier` that wakes the host Claude
+        Code session when fresh messages land. Optional — no-op if unset."""
+        self._push = push
 
     def set_delivery_mode(self, mode: str) -> str:
         """Switch delivery mode between ``"batch"`` and ``"single"``.
@@ -205,6 +214,8 @@ class InboxManager:
                 messages = list(self._buffered)
                 self._buffered.clear()
                 self._new_message_event.clear()
+        if not remaining:
+            self._push_drained()
 
         if isinstance(result, dict):
             wrapped = dict(result)
@@ -242,6 +253,7 @@ class InboxManager:
                     remaining = len(self._buffered)
                     if not self._buffered:
                         self._new_message_event.clear()
+                        self._push_drained()
                     break
                 # Buffer empty — clear the event under the lock so
                 # _absorb cannot fire it between our check and our wait.
@@ -267,6 +279,7 @@ class InboxManager:
             # (wait_for_messages(drain=False)) re-arm correctly. With the
             # buffer empty again, the next arrival is what should wake them.
             self._new_message_event.clear()
+        self._push_drained()
         if messages:
             await self._ack_messages(messages)
         return messages
@@ -317,6 +330,7 @@ class InboxManager:
                     # (both code paths acquire _lock).
                     self._new_message_event.clear()
             if messages:
+                self._push_drained()
                 await self._ack_messages(messages)
                 return messages
 
@@ -659,6 +673,13 @@ class InboxManager:
                     await self._notifier.inbox_message(fresh)
                 except Exception as exc:
                     logger.debug("notifier.inbox_message failed: %s", exc)
+            # Push wakeup into the host Claude Code session (if attached).
+            # Best-effort: SocketNotifier swallows its own send errors.
+            if self._push is not None:
+                try:
+                    await self._push.notify_new_messages(fresh)
+                except Exception as exc:
+                    logger.debug("push.notify_new_messages failed: %s", exc)
 
         if noise_seqs:
             try:
@@ -696,6 +717,14 @@ class InboxManager:
             self._last_acked_seq = max(self._last_acked_seq, up_to)
         except Exception as exc:
             logger.warning("Pluto ack(up_to=%d) failed: %s", up_to, exc)
+
+    def _push_drained(self) -> None:
+        """Re-arm the push notifier once the agent has emptied the buffer."""
+        if self._push is not None:
+            try:
+                self._push.notify_drained()
+            except Exception as exc:
+                logger.debug("push.notify_drained failed: %s", exc)
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         try:

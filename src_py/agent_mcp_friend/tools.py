@@ -61,6 +61,7 @@ def register_tools(
     wait_timeout_s: int = 300,
     notifier: Optional[Notifier] = None,
     server: Optional[Any] = None,
+    push: Optional[Any] = None,
 ) -> None:
     """Register every Pluto tool on *mcp*.
 
@@ -542,6 +543,8 @@ def register_tools(
         }
         if notifier is not None:
             out["notifications"] = notifier.summary()
+        if push is not None:
+            out["push"] = push.summary()
         return out
 
     @mcp.tool(
@@ -630,6 +633,8 @@ def register_tools(
         # is wedged" (stalled=true or unrecoverable=true).
         loop_state = inbox.peek_loop_state()
         out["peek_loop"] = loop_state
+        if push is not None:
+            out["push"] = push.summary()
         # Watcher slot occupancy — feeds the role prompt's "is a watcher
         # already running?" check before spawning a fresh subagent.
         out["watchers"] = inbox.active_watchers_snapshot()

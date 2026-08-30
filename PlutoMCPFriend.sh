@@ -466,7 +466,21 @@ if no_auto_snapshot == "1":
     args += ["--no-auto-snapshot"]
 if auto_interval:
     args += ["--auto-snapshot-interval", auto_interval]
-servers["pluto"] = {"command": py_bin, "args": args}
+servers["pluto"] = {
+    "command": py_bin,
+    "args": args,
+    # Belt-and-braces for push wakeups: stdio MCP children normally
+    # inherit the host session's environment, but if a Claude Code build
+    # sanitizes it, ${VAR} expansion here re-injects the inbox-socket
+    # endpoint. Trade-off: a host that merges this env block WITHOUT
+    # expanding ${} shadows a genuinely inherited value with the literal
+    # (which from_env treats as unset) — push falls back to disabled
+    # rather than broken there.
+    "env": {
+        "CLAUDE_CODE_MESSAGING_SOCKET": "${CLAUDE_CODE_MESSAGING_SOCKET}",
+        "CLAUDE_CODE_MESSAGING_TOKEN": "${CLAUDE_CODE_MESSAGING_TOKEN}",
+    },
+}
 existing["mcpServers"] = servers
 with open(target, "w") as f:
     json.dump(existing, f, indent=2)

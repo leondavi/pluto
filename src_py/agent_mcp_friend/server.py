@@ -33,6 +33,7 @@ from agent_mcp_friend.prompts import (
     role_prompt_specs,
 )
 from agent_mcp_friend.resources import register_resources
+from agent_mcp_friend.socket_notifier import SocketNotifier
 from agent_mcp_friend.tools import register_tools
 from pluto_client import PlutoHttpClient
 from utils.snapshot_helper import (
@@ -113,6 +114,18 @@ class PlutoMCPServer:
         self.inbox.set_notifier(self.notifier)
         self.inbox.on_new_message(self._notify_inbox_message)
 
+        # Claude Code push wakeups: write a metadata-only user message to
+        # the host session's inbox socket when actionable messages land,
+        # so an idle session wakes without watcher/heartbeat model turns.
+        # Auto-enabled when $CLAUDE_CODE_MESSAGING_SOCKET is present;
+        # gated by the tri-state PLUTO_MCP_PUSH env var. Inert elsewhere.
+        self.push = SocketNotifier.from_env(agent_id)
+        self.inbox.set_push_notifier(self.push)
+        logger.info(
+            "push wakeups: available=%s socket=%s",
+            self.push.available, os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET"),
+        )
+
         self.mcp = FastMCP(
             name="pluto",
             instructions=(
@@ -133,6 +146,7 @@ class PlutoMCPServer:
             wait_timeout_s=self.wait_timeout_s,
             notifier=self.notifier,
             server=self,
+            push=self.push,
         )
         register_resources(self.mcp, self.client, self.inbox, self.lock_mgr)
         self._register_prompts()
@@ -286,7 +300,10 @@ class PlutoMCPServer:
         finally:
             if self.autosnap is not None:
                 await asyncio.to_thread(self.autosnap.stop, True)
+            # Stop the inbox first so no late absorb can schedule a fresh
+            # push flush (or wake the host session) after aclose().
             await self.inbox.stop()
+            await self.push.aclose()
             await self.lock_mgr.shutdown()
             if self.client.token:
                 try:

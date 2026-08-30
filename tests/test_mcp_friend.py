@@ -9,6 +9,7 @@ via the in-process MCP client.
 import asyncio
 import json
 import os
+import re
 import sys
 import unittest
 from typing import Any
@@ -1212,6 +1213,62 @@ class TestPromptsPhase2(unittest.TestCase):
         )
         self.assertIn("PLUTO_MCP_INHERITED", body)
         self.assertIn("watcher_available", body)
+
+
+class TestProtocolDigestDrift(unittest.TestCase):
+    """Role prompts now inline ``library/protocol-digest.md`` instead of
+    the full ``library/protocol.md``. Both files are hand-maintained, so
+    nothing but this test stops the digest from silently going stale and
+    misinforming every agent in the fleet.
+    """
+
+    @staticmethod
+    def _read(path):
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def setUp(self):
+        from agent_mcp_friend.prompts import (
+            default_protocol_digest_path,
+            default_protocol_path,
+        )
+
+        self.protocol_path = default_protocol_path()
+        self.digest_path = default_protocol_digest_path()
+        for p in (self.protocol_path, self.digest_path):
+            if not os.path.isfile(p):
+                self.skipTest(f"{p} not present in this checkout")
+        self.protocol = self._read(self.protocol_path)
+        self.digest = self._read(self.digest_path)
+
+    def _protocol_message_types(self):
+        """Every type declared by a '### 4.N `type`' heading in §4."""
+        types = set()
+        for heading in re.findall(r"^###\s+4\.\d+\s+(.*)$", self.protocol,
+                                  re.MULTILINE):
+            types.update(re.findall(r"`([a-z_]+)`", heading))
+        return types
+
+    def test_every_protocol_message_type_is_in_the_digest(self):
+        types = self._protocol_message_types()
+        # Guard the guard: if the heading format changes, fail loudly
+        # rather than vacuously passing on an empty set.
+        self.assertGreaterEqual(len(types), 10, "parsed too few message types")
+        missing = sorted(t for t in types if f"`{t}`" not in self.digest)
+        self.assertEqual(
+            missing, [],
+            f"protocol-digest.md is stale — missing message type(s): "
+            f"{missing}. Update {self.digest_path}.",
+        )
+
+    def test_digest_points_at_the_full_protocol_resource(self):
+        # The whole point of the digest is that it is not self-sufficient.
+        self.assertIn("pluto://protocol", self.digest)
+
+    def test_digest_is_materially_smaller_than_the_protocol(self):
+        # If the digest ever approaches the full text, the token saving
+        # that motivated the split is gone.
+        self.assertLess(len(self.digest), len(self.protocol) * 0.6)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,10 @@ This directory contains in-depth documentation for every way you can interact wi
 | [PlutoServer.sh](pluto-server.md) | Building, starting, and managing the Erlang server process | → [guide](pluto-server.md) |
 | [TCP / Python library](tcp-connection.md) | Custom agents in any language; raw protocol details | → [guide](tcp-connection.md) |
 
+See also [Claude Code integration](claude-code-integration.md) — how Pluto
+composes with Claude Code's native MCP, subagents, push wakeups, and agent
+teams.
+
 ## Recommended Flow
 
 ```

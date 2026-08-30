@@ -78,20 +78,33 @@ def register_tools(
         _bind_session()
         return await asyncio.to_thread(fn, *args, **kwargs)
 
-    async def _finish(result: Any) -> Any:
-        """Terminal wrapper for tool results: piggyback pending inbox
-        messages, then attach any lock-loss events the agent hasn't seen
-        yet as ``_pluto_lock_lost`` — a lock whose auto-renew failed is
-        gone, and the agent must stop writing to that resource."""
-        result = await inbox.piggyback(result)
+    def _attach_lost(result: Any) -> Any:
+        """Attach any lock-loss events the agent hasn't seen yet as
+        ``_pluto_lock_lost`` — a lock whose auto-renew failed is gone,
+        and the agent must stop writing to that resource.
+
+        ``take_lost()`` is drain-once, so this MUST run on every tool the
+        agent might call in a loop. The inbox tools (``pluto_recv``,
+        ``pluto_pop``, ``pluto_wait_for_messages``, ``pluto_heartbeat``)
+        deliberately call this *instead of* :func:`_finish`: they own the
+        drain themselves, so piggybacking on top of them would pull an
+        extra message off the buffer (and in single mode break the
+        one-message-per-pop invariant outright).
+        """
         lost = lock_mgr.take_lost()
-        if lost:
-            if isinstance(result, dict):
-                result = dict(result)
-            else:
-                result = {"result": result}
-            result["_pluto_lock_lost"] = lost
+        if not lost:
+            return result
+        if isinstance(result, dict):
+            result = dict(result)
+        else:
+            result = {"result": result}
+        result["_pluto_lock_lost"] = lost
         return result
+
+    async def _finish(result: Any) -> Any:
+        """Terminal wrapper for non-inbox tool results: piggyback pending
+        inbox messages, then attach lock-loss events."""
+        return _attach_lost(await inbox.piggyback(result))
 
     def _bind_session() -> None:
         """Capture the live MCP ServerSession so background paths (the
@@ -153,7 +166,7 @@ def register_tools(
     async def pluto_recv() -> dict:
         _bind_session()
         messages = await inbox.drain()
-        return {"messages": messages, "count": len(messages)}
+        return _attach_lost({"messages": messages, "count": len(messages)})
 
     @mcp.tool(
         name="pluto_pop",
@@ -167,12 +180,12 @@ def register_tools(
     async def pluto_pop(wait_s: float = 0.0) -> dict:
         _bind_session()
         msg, remaining = await inbox.pop_one(wait_s=float(wait_s))
-        return {
+        return _attach_lost({
             "message": msg,
             "remaining": remaining,
             "empty": msg is None,
             "delivery_mode": inbox.delivery_mode,
-        }
+        })
 
     @mcp.tool(
         name="pluto_set_delivery_mode",
@@ -214,7 +227,7 @@ def register_tools(
         _bind_session()
         effective = _wait_default if timeout_s is None else int(timeout_s)
         messages = await inbox.wait_for_messages(timeout_s=float(effective))
-        return {"messages": messages, "count": len(messages)}
+        return _attach_lost({"messages": messages, "count": len(messages)})
 
     @mcp.tool(
         name="pluto_inbox_watch",
@@ -269,14 +282,14 @@ def register_tools(
     )
     async def pluto_heartbeat() -> dict:
         _bind_session()
-        return {
+        return _attach_lost({
             "ok": True,
             "ts": time.time(),
             "agent_id": client.agent_id,
             "connected": bool(client.token),
             "mcp_inherited": _mcp_inherited(),
             "notifications_enabled": notifier.enabled if notifier else False,
-        }
+        })
 
     @mcp.tool(
         name="pluto_publish",
@@ -645,10 +658,15 @@ def register_tools(
         out["watchers"] = inbox.active_watchers_snapshot()
         if loop_state.get("unrecoverable"):
             out["agent_registered"] = False
-            out["recovery_hint"] = (
+            # setdefault, not assignment: an epoch mismatch is the *cause*
+            # of the 401s that trip the unrecoverable threshold, so its
+            # "server was restarted/cleaned" hint is the more actionable
+            # of the two and must not be clobbered here.
+            out.setdefault(
+                "recovery_hint",
                 loop_state.get("unrecoverable_reason")
                 or "Peek loop entered unrecoverable state — restart "
-                f"./PlutoMCPFriend.sh --agent-id {client.agent_id} --resume"
+                f"./PlutoMCPFriend.sh --agent-id {client.agent_id} --resume",
             )
         elif loop_state.get("stalled"):
             out.setdefault(

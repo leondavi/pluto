@@ -246,6 +246,31 @@ class TestSocketNotifier(unittest.IsolatedAsyncioTestCase):
         self.assertIn("1 new Pluto message(s)",
                       json.loads(self.received[-1])["message"]["content"])
 
+    async def test_drain_during_send_does_not_arm_rewake_suppression(self):
+        """Hardening: if a drain lands while the wakeup send is in flight,
+        the agent already has the messages, so the send must not arm
+        _awaiting_drain — that would suppress the next real wakeup for up
+        to MIN_REWAKE_S. (The usual path is notify_drained() cancelling
+        the flush task; this covers the window where it doesn't.)"""
+        n = self._notifier()
+        real_send = n._send
+
+        async def send_then_drain(text):
+            await real_send(text)
+            n.notify_drained()
+
+        n._send = send_then_drain
+        await n.notify_new_messages([{"from": "p", "payload": {}}])
+        await self._settle()
+        self.assertEqual(n.summary()["wakeups_sent"], 1)
+        self.assertFalse(n._awaiting_drain)
+        # Next arrival gets its own wakeup rather than being suppressed.
+        n._send = real_send
+        await n.notify_new_messages([{"from": "p", "payload": {}}])
+        await self._settle()
+        self.assertEqual(n.summary()["wakeups_sent"], 2)
+        self.assertEqual(n.summary()["suppressed"], 0)
+
     async def test_min_rewake_elapsed_allows_second_wakeup(self):
         n = self._notifier()
         n.MIN_REWAKE_S = 0.0

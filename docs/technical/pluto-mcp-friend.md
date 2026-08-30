@@ -266,6 +266,66 @@ us whether the host is consuming them.
 failures bump `send_failures` and are debug-logged but never propagate
 to the delivery path.
 
+### 2.6 Push wakeups — `PLUTO_MCP_PUSH` / Claude Code inbox socket (v0.4.0)
+
+Claude Code (>= 2.1.224 on macOS/Linux) binds a per-session Unix domain
+socket and exports its endpoint to child processes as
+`CLAUDE_CODE_MESSAGING_SOCKET` / `CLAUDE_CODE_MESSAGING_TOKEN`. Writing
+a message frame to that socket delivers a user-role message into the
+session: an **idle session starts a new turn** with it; a busy session
+receives it between tool calls (a running tool is never interrupted).
+
+`SocketNotifier` (`socket_notifier.py`) exploits this to wake the host
+agent the moment actionable messages land in `InboxManager` — replacing
+the watcher-subagent + `pluto_heartbeat` polling pattern (each turn of
+which costs model tokens) with a zero-model-turn push. The wakeup text
+is metadata only (count + senders, never payloads); the woken agent
+drains via `pluto_recv` / `pluto_pop` as usual.
+
+**Wire format** (discovered from the Claude Code 2.1.236 CLI's own
+uds-messaging startup log example; undocumented surface — re-verify on
+host major upgrades). Newline-delimited JSON over `SOCK_STREAM`:
+
+```
+{"type":"auth","token":"<CLAUDE_CODE_MESSAGING_TOKEN>"}
+{"type":"user","message":{"role":"user","content":"[pluto] 3 new Pluto message(s) waiting from reviewer-1. Call pluto_recv to read them."}}
+```
+
+The auth line is optional on macOS/Linux, required on native Windows;
+we always send it when a token is present because token-verified
+own-child messages bypass the receiver's approval gates. The entire
+format lives in `SocketNotifier._encode_frames` — one function to edit
+if the host schema ever changes. The endpoint is consumed **verbatim**
+from the env var; the socket directory layout (`/tmp/cc-socks/<pid>.sock`
+observed on macOS) is treated as opaque and never constructed.
+
+**Gating.** `PLUTO_MCP_PUSH` is a tri-state like `PLUTO_MCP_INHERITED`:
+unset → auto-on when the socket env var is present; truthy → forced on
+(error-logged if the socket env is absent); falsy → off. Non-Claude
+hosts see no behavior change. Native Windows (named pipe) is not
+implemented — `unavailable_reason: windows_named_pipe_unsupported`.
+As belt-and-braces, `PlutoMCPFriend.sh` writes `${VAR}` pass-throughs
+for both env vars into `.mcp.json`'s `env` block; unexpanded `${...}`
+literals are treated as unset.
+
+**Debounce / suppression.** Arrivals within `DEBOUNCE_S` (2 s) coalesce
+into one wakeup and one connection. After a wakeup, further arrivals
+are suppressed until a drain path empties the buffer
+(`notify_drained()` re-arms) or `MIN_REWAKE_S` (30 s) elapses — this
+also stays clear of the host's identical-repeat and burst filters.
+
+**Failure handling.** Sends are best-effort and never propagate to
+delivery. After 3 consecutive connect/send failures the notifier goes
+`degraded` and retries at most once per 300 s; one success fully
+re-arms. State is surfaced in `pluto_session` / `pluto_health` under
+`push`: `{available, degraded, socket, wakeups_sent, suppressed,
+send_failures, last_error, last_wakeup_at}`.
+
+**Runtime detection** is env-var presence plus a successful connect —
+never version sniffing. The long-poll path remains the correctness
+channel; push is an opportunistic wakeup on top, exactly like the
+phase-2 notifications above.
+
 ---
 
 ## 3. End-to-end delivery sequence
@@ -308,6 +368,7 @@ the last acked seq.
 | `--restore <path>` | CLI | unset | Apply a `.plut` after register |
 | `PLUTO_MCP_INHERITED` | env | unset | Inheritance probe verdict |
 | `PLUTO_MCP_NOTIFICATIONS` | env | unset | Enables notification seam (no-op today) |
+| `PLUTO_MCP_PUSH` | env | unset (auto) | Claude Code inbox-socket wakeups: auto-on when `CLAUDE_CODE_MESSAGING_SOCKET` is present; truthy forces on, falsy disables (§2.6) |
 | `delivery_mode` | `pluto_set_delivery_mode` runtime call | `"batch"` | `"batch"` drains the whole buffer per `pluto_recv` / piggyback; `"single"` surfaces one message per call (head + `_pluto_inbox_remaining`), making `pluto_pop` the canonical consumer |
 
 ---
@@ -321,6 +382,7 @@ the last acked seq.
 | `src_py/agent_mcp_friend/tools.py` | All `pluto_*` MCP tools, inheritance probe |
 | `src_py/agent_mcp_friend/inbox.py` | `InboxManager`, durable watcher, dedupe |
 | `src_py/agent_mcp_friend/lock_manager.py` | Lock auto-renewal |
+| `src_py/agent_mcp_friend/socket_notifier.py` | Claude Code push wakeups (§2.6) |
 | `src_py/agent_mcp_friend/prompts.py` | Role + connection prompt assembly |
 | `src_py/agent_mcp_friend/resources.py` | `pluto://inbox`, `pluto://locks` resources |
 
@@ -332,7 +394,8 @@ the last acked seq.
 |---|---|---|---|
 | 1 | Server-owned durable watcher, dedupe, adaptive iterations, error backoff, heartbeat, inheritance probe | — | shipped v0.2.9 |
 | 2 | `notifications/resources/updated` + structured `notifications/message` for inboxMessage + watcherError; drain-latency telemetry; payload conventions (drop `from_role`, `spec_contract` once, `conv_seq` per-message); end-of-turn-only watcher respawn | `PLUTO_MCP_NOTIFICATIONS` | shipped |
-| 3 | Optional tuning (longer `wait_timeout_s`, relaxed heartbeat) once phase 2 telemetry shows host consumption | — | not started |
+| 3 | Push wakeups via the Claude Code session inbox socket (§2.6) — zero-model-turn wake replacing watcher polling on Claude hosts | `PLUTO_MCP_PUSH` | shipped v0.4.0 |
+| 4 | Retire watcher choreography on push-capable hosts: longer `wait_timeout_s`, deprecate `pluto_heartbeat`, demote watcher prose in the connection block | — | not started |
 
 The phase ordering is deliberate: correctness path first, optimization
 on top. Notifications are not a replacement for the long-poll loop;

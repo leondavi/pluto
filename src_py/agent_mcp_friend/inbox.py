@@ -69,6 +69,14 @@ class InboxManager:
         self._buffered: list[dict] = []
         self._seen_seqs: set[int] = set()
         self._last_acked_seq: int = 0
+        # Highest seq ever observed from peek (noise or actionable).
+        # Combined with the buffer head this defines the safe ack cursor:
+        # everything at-or-below it has either been delivered to the
+        # agent or classified noise.
+        self._max_seen_seq: int = 0
+        # Set when an ack attempt failed; the peek loop retries on the
+        # next successful cycle so a transient ack failure heals itself.
+        self._ack_retry_needed: bool = False
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
@@ -233,7 +241,8 @@ class InboxManager:
         if single:
             wrapped["_pluto_inbox_remaining"] = remaining
 
-        await self._ack_messages(messages)
+        self._record_drain_latency(messages)
+        await self._maybe_ack()
         return wrapped
 
     async def pop_one(self, wait_s: float = 0.0) -> tuple[dict | None, int]:
@@ -275,7 +284,8 @@ class InboxManager:
                 )
             except asyncio.TimeoutError:
                 return None, 0
-        await self._ack_messages([msg])
+        self._record_drain_latency([msg])
+        await self._maybe_ack()
         return msg, remaining
 
     async def drain(self) -> list[dict]:
@@ -289,7 +299,8 @@ class InboxManager:
             self._new_message_event.clear()
         self._push_drained()
         if messages:
-            await self._ack_messages(messages)
+            self._record_drain_latency(messages)
+            await self._maybe_ack()
         return messages
 
     async def wait_for_messages(
@@ -339,7 +350,8 @@ class InboxManager:
                     self._new_message_event.clear()
             if messages:
                 self._push_drained()
-                await self._ack_messages(messages)
+                self._record_drain_latency(messages)
+                await self._maybe_ack()
                 return messages
 
             remaining = deadline - time.monotonic()
@@ -625,6 +637,9 @@ class InboxManager:
                 self._consecutive_session_lost = 0
                 if msgs:
                     await self._absorb(msgs)
+                elif self._ack_retry_needed:
+                    # Heal a previously failed ack with zero new traffic.
+                    await self._maybe_ack()
                 await self._sleep_or_stop(self.PEEK_INTERVAL_S)
             else:
                 # Emit a single stall warning per stall window so logs stay
@@ -654,14 +669,15 @@ class InboxManager:
         from peek.
         """
         actionable: list[dict] = []
-        noise_seqs: list[int] = []
+        saw_noise = False
         for m in msgs:
             seq = m.get("seq_token")
             if seq is None:
                 continue
             seq_int = int(seq)
+            self._max_seen_seq = max(self._max_seen_seq, seq_int)
             if _is_noise(m):
-                noise_seqs.append(seq_int)
+                saw_noise = True
                 continue
             if seq_int in self._seen_seqs:
                 continue
@@ -695,11 +711,12 @@ class InboxManager:
                 except Exception as exc:
                     logger.debug("push.notify_new_messages failed: %s", exc)
 
-        if noise_seqs:
-            try:
-                await asyncio.to_thread(self._client.ack, max(noise_seqs))
-            except Exception as exc:
-                logger.debug("Noise-ack failed: %s", exc)
+        if saw_noise:
+            # Settle noise via the safe cursor — never ack past the
+            # lowest undelivered buffered seq (a bare max(noise_seqs)
+            # would range-delete still-buffered actionable messages on
+            # the server if a noise seq landed above them).
+            await self._maybe_ack()
 
         if fresh:
             for cb in self._on_new_message:
@@ -708,29 +725,59 @@ class InboxManager:
                 except Exception as exc:
                     logger.debug("on_new_message callback failed: %s", exc)
 
-    async def _ack_messages(self, messages: list[dict]) -> None:
-        seqs = [int(m["seq_token"]) for m in messages if "seq_token" in m]
-        if not seqs:
+    def _record_drain_latency(self, messages: list[dict]) -> None:
+        """Drain-latency telemetry: time from _absorb landing a message
+        to the drain path handing it to the agent. Reported to the
+        notifier (which may be a no-op stub)."""
+        if self._notifier is None or not self._landed_at:
             return
-        up_to = max(seqs)
-        # Drain-latency telemetry: time from _absorb landing the message to
-        # the drain path firing the ack. Reported to the notifier (which
-        # may be a no-op stub).
-        if self._notifier is not None and self._landed_at:
-            now = time.monotonic()
-            for seq in seqs:
-                landed = self._landed_at.pop(seq, None)
-                if landed is not None:
-                    self._notifier.record_drain_latency_ms((now - landed) * 1000.0)
-            # Compact: discard any landing timestamps we'll never settle.
-            stale = [s for s in self._landed_at if s <= up_to]
-            for s in stale:
-                self._landed_at.pop(s, None)
+        now = time.monotonic()
+        for m in messages:
+            seq = m.get("seq_token")
+            if seq is None:
+                continue
+            landed = self._landed_at.pop(int(seq), None)
+            if landed is not None:
+                self._notifier.record_drain_latency_ms((now - landed) * 1000.0)
+
+    def _safe_ack_cursor_locked(self) -> int:
+        """Highest seq where everything at-or-below has left the
+        server-visible obligation: delivered to the agent or classified
+        noise. The buffer is seq-ordered (peek returns ascending), so
+        with messages still buffered the cursor stops just below the
+        undelivered head; with an empty buffer everything seen so far is
+        settled. Callers must hold ``self._lock``."""
+        if self._buffered:
+            return int(self._buffered[0]["seq_token"]) - 1
+        return self._max_seen_seq
+
+    async def _maybe_ack(self) -> None:
+        """Advance the server-side ack cursor if it is safe to do so.
+
+        Idempotent and failure-tolerant: on ack failure the cursor
+        simply doesn't advance — the messages stay in the server inbox,
+        ``_seen_seqs`` keeps deduping their re-peeks, and the peek loop
+        retries on its next successful cycle.
+        """
+        async with self._lock:
+            cursor = self._safe_ack_cursor_locked()
+        if cursor <= self._last_acked_seq:
+            return
         try:
-            await asyncio.to_thread(self._client.ack, up_to)
-            self._last_acked_seq = max(self._last_acked_seq, up_to)
+            await asyncio.to_thread(self._client.ack, cursor)
         except Exception as exc:
-            logger.warning("Pluto ack(up_to=%d) failed: %s", up_to, exc)
+            self._ack_retry_needed = True
+            logger.warning(
+                "Pluto ack(up_to=%d) failed (will retry): %s", cursor, exc,
+            )
+            return
+        self._ack_retry_needed = False
+        self._last_acked_seq = max(self._last_acked_seq, cursor)
+        # Dedupe/telemetry state below the cursor can never be needed
+        # again — prune so neither grows for the life of the process.
+        self._seen_seqs = {s for s in self._seen_seqs if s > cursor}
+        for s in [s for s in self._landed_at if s <= cursor]:
+            self._landed_at.pop(s, None)
 
     def _push_drained(self) -> None:
         """Re-arm the push notifier once the agent has emptied the buffer."""

@@ -134,6 +134,14 @@ class InboxManager:
                 await asyncio.wait_for(self._task, timeout=2.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 self._task.cancel()
+        # Cancel pending watcher-grace evictions so no tasks outlive the
+        # manager and leak warnings at event-loop teardown.
+        for t in self._watcher_evict_tasks.values():
+            if not t.done():
+                t.cancel()
+        self._watcher_evict_tasks.clear()
+        self._active_watchers.clear()
+        self._watcher_started_at.clear()
 
     def set_notifier(self, notifier) -> None:
         """Attach a :class:`Notifier` for phase-2 MCP notifications and
@@ -375,22 +383,28 @@ class InboxManager:
         another loop.
         """
         key = inbox_id or "default"
-        if key in self._active_watchers:
+        evict = self._watcher_evict_tasks.get(key)
+        in_grace = evict is not None and not evict.done()
+        if key in self._active_watchers and not in_grace:
+            # A loop is genuinely live. Grace-window entries (slice
+            # returned, eviction pending) are NOT live — bouncing those
+            # would lock out the re-entering looper for the whole grace
+            # period and make already_watching a lie.
             return {
                 "already_watching": True,
                 "watcher_id": key,
                 "messages": [],
                 "count": 0,
             }
+        # Claim the slot, or reclaim it from the grace window (cancel the
+        # pending eviction — this call's loop owns the slot now).
+        if in_grace:
+            evict.cancel()
+            self._watcher_evict_tasks.pop(key, None)
         self._active_watchers.add(key)
         # Wall clock so age survives across slices and is meaningful to
         # the agent inspecting pluto_session / pluto_health.
         self._watcher_started_at.setdefault(key, time.time())
-        # If a previous slice scheduled an eviction, cancel it — this is
-        # the same caller re-entering inside the grace window.
-        old_evict = self._watcher_evict_tasks.pop(key, None)
-        if old_evict is not None and not old_evict.done():
-            old_evict.cancel()
         # Floor at 0.01 s to prevent a degenerate zero-slice from spinning.
         # Production callers use seconds-scale slices; the low floor is a
         # safety net for tests and pathological configurations.

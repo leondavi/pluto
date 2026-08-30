@@ -697,11 +697,15 @@ class TestWatcherDurable(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first_resp.get("timeout"))
 
     async def test_durable_releases_slot_after_return(self):
-        # Run, return, run again — second call must NOT see already_watching.
+        # Run, return, run again — the second call must NOT see
+        # already_watching. Between the calls the slot sits in the
+        # WATCHER_GRACE_S window: still visible in the snapshot (so a
+        # parent checking pluto_session sees the watcher as active), but
+        # reclaimable by the next watch_durable call.
         await self.inbox.watch_durable(
             inbox_id="default", wait_timeout_s=0.1, max_total_s=0.1,
         )
-        self.assertNotIn("default", self.inbox._active_watchers)
+        self.assertIn("default", self.inbox._active_watchers)  # grace window
         again = await self.inbox.watch_durable(
             inbox_id="default", wait_timeout_s=0.1, max_total_s=0.1,
         )

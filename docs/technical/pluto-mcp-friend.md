@@ -354,8 +354,17 @@ A message arriving at the Pluto server while an agent is idle:
        active           → or _pluto_inbox piggyback on next Pluto tool
                           (turn-speed delivery)
 5. piggyback() / drain() / pop_one()
-                        → ack(seq_token) → server marks delivered
+                        → safe-cursor ack → server marks delivered
 ```
+
+Delivered envelopes are trimmed to `event`, `from`, `payload`,
+`seq_token` (+ `request_id`/`topic`/`task_id` where present) — `msg_id`
+and `seq` duplicate `seq_token` and are dropped at the presentation
+edge; the internal buffer keeps full messages. Acks advance a single
+safe cursor: just below the lowest undelivered buffered seq, or the
+highest seen seq once the buffer is empty — so a server-side range ack
+can never destroy an undelivered message, and a failed ack simply
+retries on a later cycle.
 
 If the adapter crashes between steps 3 and 5, Pluto's at-least-once
 delivery resurfaces the message on the next session's peek, keyed off

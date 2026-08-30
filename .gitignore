@@ -19,3 +19,6 @@ nohup.out
 # Demo trace JSONs (reproducible from the demos themselves; large)
 docs/demos/fractal_collaboration/trace.json
 docs/demos/haiku_vs_sonnet/trace.json
+
+# Claude Code per-user local settings (permission allowlist, machine paths)
+.claude/settings.local.json

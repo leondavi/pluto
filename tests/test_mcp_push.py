@@ -228,19 +228,48 @@ class TestSocketNotifier(unittest.IsolatedAsyncioTestCase):
         # state is restored and the flush rescheduled.
         n = self._notifier()
         # Longer than one _settle() so exactly one failure lands before
-        # the socket "comes back", and the retry fires in the second.
-        n.RETRY_BACKOFF_S = 0.4
+        # the socket "comes back", and the retry fires afterwards.
+        n.RETRY_BACKOFF_S = 0.6
         good_path = n._socket_path
         n._socket_path = os.path.join(self.tmpdir, "missing.sock")
         await n.notify_new_messages([{"from": "p", "payload": {}}])
         await self._settle()  # first flush fails
         self.assertEqual(n.summary()["send_failures"], 1)
         n._socket_path = good_path  # socket comes back
-        await self._settle()  # retry fires without any new arrival
+        # Poll rather than sleep a fixed margin — CI runners are slow.
+        for _ in range(40):
+            if n.summary()["wakeups_sent"]:
+                break
+            await asyncio.sleep(0.1)
         s = n.summary()
         self.assertEqual(s["wakeups_sent"], 1)
         self.assertIn("1 new Pluto message(s)",
                       json.loads(self.received[-1])["message"]["content"])
+
+    async def test_drain_during_send_does_not_arm_rewake_suppression(self):
+        """Hardening: if a drain lands while the wakeup send is in flight,
+        the agent already has the messages, so the send must not arm
+        _awaiting_drain — that would suppress the next real wakeup for up
+        to MIN_REWAKE_S. (The usual path is notify_drained() cancelling
+        the flush task; this covers the window where it doesn't.)"""
+        n = self._notifier()
+        real_send = n._send
+
+        async def send_then_drain(text):
+            await real_send(text)
+            n.notify_drained()
+
+        n._send = send_then_drain
+        await n.notify_new_messages([{"from": "p", "payload": {}}])
+        await self._settle()
+        self.assertEqual(n.summary()["wakeups_sent"], 1)
+        self.assertFalse(n._awaiting_drain)
+        # Next arrival gets its own wakeup rather than being suppressed.
+        n._send = real_send
+        await n.notify_new_messages([{"from": "p", "payload": {}}])
+        await self._settle()
+        self.assertEqual(n.summary()["wakeups_sent"], 2)
+        self.assertEqual(n.summary()["suppressed"], 0)
 
     async def test_min_rewake_elapsed_allows_second_wakeup(self):
         n = self._notifier()

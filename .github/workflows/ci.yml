@@ -2,9 +2,9 @@ name: Pluto CI
 
 on:
   push:
-    branches: [master, 'dev/**']
+    branches: [master, 'dev/**', 'v*']
   pull_request:
-    branches: [master]
+    branches: [master, 'v*']
 
 jobs:
   erlang-tests:
@@ -29,6 +29,26 @@ jobs:
       - name: Run EUnit tests
         working-directory: src_erl
         run: rebar3 eunit
+
+  python-tests:
+    name: Python Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt pytest
+
+      # tests/conftest.py gates the live-server modules and demo_* demos
+      # behind PLUTO_LIVE_TESTS=1, so the whole tree is safe to run here.
+      # This covers the MCP adapter suite plus test_agent_friend.py.
+      - name: Run the Python test suite
+        run: python -m pytest tests/ -v
 
   python-lint:
     name: Python Lint

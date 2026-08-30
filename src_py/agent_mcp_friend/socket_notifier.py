@@ -94,6 +94,12 @@ class SocketNotifier:
         self._flush_task: Optional[asyncio.Task] = None
         # True from a sent wakeup until notify_drained() re-arms us.
         self._awaiting_drain = False
+        # Bumped by every notify_drained(). _flush_after_debounce samples
+        # it before awaiting _send and re-checks after: if the agent
+        # drained while the send was in flight, the wakeup it just
+        # received is already satisfied, so arming _awaiting_drain would
+        # suppress the *next* one for up to MIN_REWAKE_S.
+        self._drain_gen = 0
         self._last_wakeup_mono: Optional[float] = None
         # Telemetry / failure handling.
         self._wakeups_sent = 0
@@ -176,6 +182,7 @@ class SocketNotifier:
         the agent has consumed the buffer — re-arms the next wakeup and
         drops any pending flush (the agent already has the messages)."""
         self._awaiting_drain = False
+        self._drain_gen += 1
         self._pending_count = 0
         self._pending_senders = []
         if self._flush_task is not None and not self._flush_task.done():
@@ -238,8 +245,9 @@ class SocketNotifier:
             )
             if since_fail is not None and since_fail < self.RETRY_COOLDOWN_S:
                 # Inside the cooldown: keep the wakeup pending and come
-                # back when the cooldown expires — never drop it.
-                self._suppressed += count
+                # back when the cooldown expires — never drop it. Not
+                # counted as suppressed: it's a deferral that will still
+                # be delivered.
                 self._restore_pending(count, senders)
                 self._schedule_flush(self.RETRY_COOLDOWN_S - since_fail)
                 return
@@ -248,6 +256,7 @@ class SocketNotifier:
             f"{' from ' + ', '.join(senders) if senders else ''}."
             " Call pluto_recv to read them."
         )
+        drain_gen = self._drain_gen
         try:
             await self._send(text)
         except asyncio.CancelledError:
@@ -277,7 +286,11 @@ class SocketNotifier:
         self._consecutive_failures = 0
         self._degraded = False
         self._wakeups_sent += 1
-        self._awaiting_drain = True
+        # Only arm the re-wake suppressor if nobody drained while the
+        # send was in flight — otherwise the agent already has the
+        # messages and the next arrival deserves its own wakeup.
+        if self._drain_gen == drain_gen:
+            self._awaiting_drain = True
         self._last_wakeup_mono = time.monotonic()
         self._last_wakeup_wall = time.time()
 

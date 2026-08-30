@@ -71,7 +71,40 @@ def register_tools(
     """
 
     async def _run(fn, *args, **kwargs) -> Any:
+        # Every tool's first HTTP hop routes through here, so binding the
+        # MCP session at this choke point (plus the explicit calls in the
+        # network-free inbox tools) guarantees notifications work no
+        # matter which tool the agent happens to call first.
+        _bind_session()
         return await asyncio.to_thread(fn, *args, **kwargs)
+
+    def _attach_lost(result: Any) -> Any:
+        """Attach any lock-loss events the agent hasn't seen yet as
+        ``_pluto_lock_lost`` — a lock whose auto-renew failed is gone,
+        and the agent must stop writing to that resource.
+
+        ``take_lost()`` is drain-once, so this MUST run on every tool the
+        agent might call in a loop. The inbox tools (``pluto_recv``,
+        ``pluto_pop``, ``pluto_wait_for_messages``, ``pluto_heartbeat``)
+        deliberately call this *instead of* :func:`_finish`: they own the
+        drain themselves, so piggybacking on top of them would pull an
+        extra message off the buffer (and in single mode break the
+        one-message-per-pop invariant outright).
+        """
+        lost = lock_mgr.take_lost()
+        if not lost:
+            return result
+        if isinstance(result, dict):
+            result = dict(result)
+        else:
+            result = {"result": result}
+        result["_pluto_lock_lost"] = lost
+        return result
+
+    async def _finish(result: Any) -> Any:
+        """Terminal wrapper for non-inbox tool results: piggyback pending
+        inbox messages, then attach lock-loss events."""
+        return _attach_lost(await inbox.piggyback(result))
 
     def _bind_session() -> None:
         """Capture the live MCP ServerSession so background paths (the
@@ -104,7 +137,7 @@ def register_tools(
     )
     async def pluto_send(to: str, payload: dict) -> dict:
         resp = await _run(client.send, to, payload)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_broadcast",
@@ -116,7 +149,7 @@ def register_tools(
     )
     async def pluto_broadcast(payload: dict) -> dict:
         resp = await _run(client.broadcast, payload)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_recv",
@@ -133,101 +166,79 @@ def register_tools(
     async def pluto_recv() -> dict:
         _bind_session()
         messages = await inbox.drain()
-        return {"messages": messages, "count": len(messages)}
+        return _attach_lost({"messages": messages, "count": len(messages)})
 
     @mcp.tool(
         name="pluto_pop",
         description=(
-            "Pop ONE message from the inbox and ack it. Pipeline / "
-            "event-driven counterpart to pluto_recv: pluto_recv drains "
-            "the whole buffer, pluto_pop returns a single message plus a "
-            "'remaining' count so the caller can drive a one-message-per-"
-            "event loop."
-            "\n\nUsage pattern: on each inbox notification (or each "
-            "pluto_inbox_watch wake), call pluto_pop, process the one "
-            "message, then if 'remaining' > 0 call pluto_pop again, "
-            "otherwise wait for the next notification."
-            "\n\nIf the buffer is empty, returns {message: null, "
-            "remaining: 0}. Pass wait_s>0 to block up to that many "
-            "seconds for the next arrival before giving up."
-            "\n\nFor this tool to be the sole consumer of the inbox you "
-            "must first call pluto_set_delivery_mode('single') — "
-            "otherwise unrelated Pluto tool calls will bulk-drain the "
-            "buffer via the usual piggyback path."
+            "Pop and ack ONE inbox message; returns {message, remaining, "
+            "empty, delivery_mode}. Pair with delivery mode 'single' so "
+            "unrelated tool calls don't bulk-drain the buffer. wait_s>0 "
+            "blocks up to that many seconds for the next arrival."
         ),
     )
     async def pluto_pop(wait_s: float = 0.0) -> dict:
         _bind_session()
         msg, remaining = await inbox.pop_one(wait_s=float(wait_s))
-        return {
+        return _attach_lost({
             "message": msg,
             "remaining": remaining,
             "empty": msg is None,
             "delivery_mode": inbox.delivery_mode,
-        }
+        })
 
     @mcp.tool(
         name="pluto_set_delivery_mode",
         description=(
-            "Switch how the inbox surfaces messages to this agent. Modes:"
-            "\n  • 'batch'  (default) — pluto_recv and the _pluto_inbox "
-            "piggyback on every Pluto tool result return ALL pending "
-            "messages at once. Right for turn-driven / interactive work."
-            "\n  • 'single' — piggyback attaches at most one message "
-            "(plus _pluto_inbox_remaining) and pluto_pop is the canonical "
-            "consumer. Right for pipeline / event-driven work where each "
-            "message represents a discrete unit to process."
-            "\n\nReturns {delivery_mode: <effective_mode>}; invalid mode "
-            "strings are ignored and the current mode is returned."
+            "Set inbox delivery mode: 'batch' (default; drains everything "
+            "per pluto_recv/piggyback — turn-driven work) or 'single' "
+            "(one message per pluto_pop/piggyback — pipeline work). "
+            "Invalid modes return {status: 'error', reason: 'invalid_mode'}."
         ),
     )
     async def pluto_set_delivery_mode(mode: str) -> dict:
         _bind_session()
-        effective = inbox.set_delivery_mode(mode)
-        return {"delivery_mode": effective}
+        try:
+            effective = inbox.set_delivery_mode(mode)
+        except ValueError:
+            return {
+                "status": "error",
+                "reason": "invalid_mode",
+                "valid_modes": ["batch", "single"],
+                "delivery_mode": inbox.delivery_mode,
+            }
+        return {"status": "ok", "delivery_mode": effective}
 
     _wait_default = int(wait_timeout_s)
 
+    # NOTE: descriptions and schemas must stay config-independent —
+    # interpolating _wait_default (in the text OR as a signature default)
+    # makes tools/list vary per deployment, breaking prompt-prefix
+    # caching across agents. TestCacheStability pins this.
     @mcp.tool(
         name="pluto_wait_for_messages",
         description=(
-            f"Block until at least one Pluto message arrives, or until "
-            f"timeout_s seconds elapse (default {_wait_default}). Returns "
-            f"the drained-and-acked messages, or an empty list on timeout."
-            f"\n\nRecommended usage in Claude Code: spawn a background Task "
-            f"with run_in_background=true and the prompt "
-            f"'Call pluto_wait_for_messages({_wait_default}) and return its "
-            f"result'. The main agent stays responsive to the user; when "
-            f"the Task completes, its result (the messages) appears in the "
-            f"next turn — process them, then spawn another Task to keep "
-            f"watching."
+            "Block until at least one Pluto message arrives or timeout_s "
+            "elapses (default: the launcher's --wait-timeout-s). Returns "
+            "the drained-and-acked messages; [] on timeout."
         ),
     )
-    async def pluto_wait_for_messages(timeout_s: int = _wait_default) -> dict:
+    async def pluto_wait_for_messages(timeout_s: Optional[int] = None) -> dict:
         _bind_session()
-        messages = await inbox.wait_for_messages(timeout_s=float(timeout_s))
-        return {"messages": messages, "count": len(messages)}
+        effective = _wait_default if timeout_s is None else int(timeout_s)
+        messages = await inbox.wait_for_messages(timeout_s=float(effective))
+        return _attach_lost({"messages": messages, "count": len(messages)})
 
     @mcp.tool(
         name="pluto_inbox_watch",
         description=(
-            "Single-slice inbox watcher. Blocks for up to wait_timeout_s "
-            "seconds (default = server wait timeout) waiting for fresh "
-            "messages, then returns. By default the tool call returns "
-            "inside one slice so the wrapping subagent's tool-call "
-            "stream stays visible to Claude Code's 600 s watchdog; pass "
-            "max_total_s > wait_timeout_s only on clients without that "
-            "watchdog."
-            "\n\nIdempotent dedupe: a second concurrent call for the "
-            "same inbox_id returns {already_watching: true} without "
-            "stacking a second loop — the existing waiter keeps running."
-            "\n\nMode: drain=true (default) pops messages off the buffer "
-            "and acks them server-side; drain=false returns a "
-            "non-consuming snapshot of what's currently buffered, leaving "
-            "the messages in place for the parent's pluto_recv to drain. "
-            "Watcher subagents on Claude Code (where the subagent inherits "
-            "the parent's MCP server) MUST pass drain=false, otherwise "
-            "they steal the parent's inbox."
+            "Single-slice inbox watcher: blocks up to wait_timeout_s "
+            "(default: the launcher's --wait-timeout-s) for fresh "
+            "messages, then returns. A concurrent call for the same "
+            "inbox_id returns {already_watching: true} instead of "
+            "stacking a loop. Watcher subagents sharing the parent's MCP "
+            "server MUST pass drain=false (non-consuming snapshot) — "
+            "drain=true pops and acks the parent's inbox."
         ),
     )
     async def pluto_inbox_watch(
@@ -256,7 +267,7 @@ def register_tools(
         # pluto_recv owns the actual drain.
         if not drain:
             return resp
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_heartbeat",
@@ -271,14 +282,14 @@ def register_tools(
     )
     async def pluto_heartbeat() -> dict:
         _bind_session()
-        return {
+        return _attach_lost({
             "ok": True,
             "ts": time.time(),
             "agent_id": client.agent_id,
             "connected": bool(client.token),
             "mcp_inherited": _mcp_inherited(),
             "notifications_enabled": notifier.enabled if notifier else False,
-        }
+        })
 
     @mcp.tool(
         name="pluto_publish",
@@ -292,7 +303,7 @@ def register_tools(
             "/agents/publish",
             {"token": client.token, "topic": topic, "payload": payload},
         )
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_subscribe",
@@ -300,7 +311,7 @@ def register_tools(
     )
     async def pluto_subscribe(topic: str) -> dict:
         resp = await _run(client.subscribe, topic)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     # ── Agent discovery ───────────────────────────────────────────────────
 
@@ -313,7 +324,7 @@ def register_tools(
     )
     async def pluto_list_agents() -> dict:
         agents = await _run(client.list_agents_detailed)
-        return await inbox.piggyback({"agents": agents})
+        return await _finish({"agents": agents})
 
     @mcp.tool(
         name="pluto_find_agents",
@@ -325,7 +336,7 @@ def register_tools(
     async def pluto_find_agents(filter: Optional[dict] = None) -> dict:
         body = {"filter": filter or {}}
         resp = await _run(client._post, "/agents/find", body)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     # ── Locks ─────────────────────────────────────────────────────────────
 
@@ -355,7 +366,7 @@ def register_tools(
             and resp.get("lock_ref")
         ):
             await lock_mgr.register(resp["lock_ref"], resource, ttl_ms)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_lock_release",
@@ -364,7 +375,7 @@ def register_tools(
     async def pluto_lock_release(lock_ref: str) -> dict:
         await lock_mgr.unregister(lock_ref)
         resp = await _run(client.release, lock_ref)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_lock_renew",
@@ -375,7 +386,7 @@ def register_tools(
     )
     async def pluto_lock_renew(lock_ref: str, ttl_ms: int = 30000) -> dict:
         resp = await _run(client.renew, lock_ref, ttl_ms)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_lock_info",
@@ -386,7 +397,7 @@ def register_tools(
     )
     async def pluto_lock_info(resource: str) -> dict:
         resp = await _run(client.resource_info, resource)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_list_locks",
@@ -394,7 +405,7 @@ def register_tools(
     )
     async def pluto_list_locks() -> dict:
         locks = await _run(client.list_locks)
-        return await inbox.piggyback({"locks": locks})
+        return await _finish({"locks": locks})
 
     # ── Tasks ─────────────────────────────────────────────────────────────
 
@@ -411,7 +422,7 @@ def register_tools(
         payload: Optional[dict] = None,
     ) -> dict:
         resp = await _run(client.task_assign, assignee, description, payload or {})
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_task_update",
@@ -427,7 +438,7 @@ def register_tools(
         result: Optional[dict] = None,
     ) -> dict:
         resp = await _run(client.task_update, task_id, status, result or {})
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_task_list",
@@ -438,7 +449,7 @@ def register_tools(
         status: Optional[str] = None,
     ) -> dict:
         tasks = await _run(client.task_list, assignee, status)
-        return await inbox.piggyback({"tasks": tasks})
+        return await _finish({"tasks": tasks})
 
     # ── Status / introspection ────────────────────────────────────────────
 
@@ -452,7 +463,7 @@ def register_tools(
     )
     async def pluto_set_status(custom_status: str) -> dict:
         resp = await _run(client.set_status, custom_status)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_snapshot_self",
@@ -483,7 +494,7 @@ def register_tools(
         else:
             snap = await _run(client.snapshot_self)
             resp = {"status": "ok", **snap}
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_restore_from_snapshot",
@@ -506,7 +517,7 @@ def register_tools(
         if not isinstance(plut, dict):
             return {"status": "error", "reason": "missing plut or plut_path"}
         resp = await _run(client.restore_from_snapshot, plut)
-        return await inbox.piggyback(resp)
+        return await _finish(resp)
 
     @mcp.tool(
         name="pluto_session",
@@ -635,15 +646,27 @@ def register_tools(
         out["peek_loop"] = loop_state
         if push is not None:
             out["push"] = push.summary()
+        # Held vs lost auto-renewed locks. lost_total > 0 means an
+        # auto-renew failed at some point — the affected lock_refs were
+        # (or will be) delivered via _pluto_lock_lost on tool results.
+        out["locks"] = {
+            "held": lock_mgr.held_locks(),
+            **lock_mgr.lost_summary(),
+        }
         # Watcher slot occupancy — feeds the role prompt's "is a watcher
         # already running?" check before spawning a fresh subagent.
         out["watchers"] = inbox.active_watchers_snapshot()
         if loop_state.get("unrecoverable"):
             out["agent_registered"] = False
-            out["recovery_hint"] = (
+            # setdefault, not assignment: an epoch mismatch is the *cause*
+            # of the 401s that trip the unrecoverable threshold, so its
+            # "server was restarted/cleaned" hint is the more actionable
+            # of the two and must not be clobbered here.
+            out.setdefault(
+                "recovery_hint",
                 loop_state.get("unrecoverable_reason")
                 or "Peek loop entered unrecoverable state — restart "
-                f"./PlutoMCPFriend.sh --agent-id {client.agent_id} --resume"
+                f"./PlutoMCPFriend.sh --agent-id {client.agent_id} --resume",
             )
         elif loop_state.get("stalled"):
             out.setdefault(

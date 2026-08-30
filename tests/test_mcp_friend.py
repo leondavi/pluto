@@ -556,18 +556,20 @@ class TestServerCapabilities(unittest.IsolatedAsyncioTestCase):
         resources = await server.mcp.list_resources()
 
         tool_names = {t.name for t in tools}
-        # Pluto operation tools
-        for required in [
-            "pluto_send", "pluto_broadcast", "pluto_recv",
-            "pluto_wait_for_messages",
+        # Strict set equality: a dropped tool AND a silently added one
+        # both fail — the tool surface is a deliberate, reviewed API.
+        self.assertEqual(tool_names, {
+            "pluto_send", "pluto_broadcast", "pluto_recv", "pluto_pop",
+            "pluto_set_delivery_mode", "pluto_wait_for_messages",
+            "pluto_inbox_watch", "pluto_heartbeat",
+            "pluto_publish", "pluto_subscribe",
+            "pluto_list_agents", "pluto_find_agents",
             "pluto_lock_acquire", "pluto_lock_release", "pluto_lock_renew",
             "pluto_lock_info", "pluto_list_locks",
             "pluto_task_assign", "pluto_task_update", "pluto_task_list",
-            "pluto_list_agents", "pluto_find_agents",
-            "pluto_publish", "pluto_subscribe", "pluto_set_status",
-            "pluto_session",
-        ]:
-            self.assertIn(required, tool_names, f"missing tool: {required}")
+            "pluto_set_status", "pluto_snapshot_self",
+            "pluto_restore_from_snapshot", "pluto_session", "pluto_health",
+        })
 
         prompt_names = {p.name for p in prompts}
         self.assertIn("pluto-protocol", prompt_names)
@@ -842,10 +844,10 @@ class TestSinglePopDelivery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.inbox.set_delivery_mode("batch"), "batch")
         self.assertEqual(self.inbox.delivery_mode, "batch")
 
-    async def test_set_delivery_mode_ignores_unknown(self):
+    async def test_set_delivery_mode_rejects_unknown(self):
         self.inbox.set_delivery_mode("single")
-        result = self.inbox.set_delivery_mode("firehose")
-        self.assertEqual(result, "single")
+        with self.assertRaises(ValueError):
+            self.inbox.set_delivery_mode("firehose")
         self.assertEqual(self.inbox.delivery_mode, "single")
 
     async def test_pop_one_returns_head_and_remaining(self):

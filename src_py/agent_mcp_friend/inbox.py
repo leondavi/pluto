@@ -164,7 +164,9 @@ class InboxManager:
     def set_delivery_mode(self, mode: str) -> str:
         """Switch delivery mode between ``"batch"`` and ``"single"``.
 
-        Returns the value actually set (unchanged if *mode* is invalid).
+        Returns the value set. Raises :class:`ValueError` on anything
+        else — a silently ignored typo ("singel") would leave the agent
+        believing it changed modes when it didn't.
 
         * ``"batch"`` (default) — every ``piggyback`` / ``drain`` empties
           the buffer; every Pluto tool result carries any pending
@@ -176,7 +178,7 @@ class InboxManager:
           message per call.
         """
         if mode not in ("batch", "single"):
-            return self._delivery_mode
+            raise ValueError(f"invalid delivery mode {mode!r}")
         self._delivery_mode = mode
         return mode
 

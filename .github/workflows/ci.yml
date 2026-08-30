@@ -45,7 +45,7 @@ jobs:
         run: pip install -r requirements.txt pytest
 
       - name: Run PlutoMCPFriend tests
-        run: python -m pytest tests/test_mcp_friend.py tests/test_mcp_push.py -v
+        run: python -m pytest tests/test_mcp_*.py -v
 
   python-lint:
     name: Python Lint

@@ -29,6 +29,22 @@ _NOISE_PAYLOAD_EVENTS = {"delivery_ack", "status_update", "heartbeat"}
 _ACTIONABLE_EVENTS = {"message", "broadcast", "task_assigned", "topic_message"}
 
 
+# Envelope fields the agent actually needs. Server messages also carry
+# msg_id and seq (duplicates of seq_token for identity/ordering) — those
+# are trimmed at the presentation edge to save tokens. The internal
+# buffer keeps full messages (ack accounting reads them).
+_ENVELOPE_KEEP = ("event", "from", "payload", "seq_token", "request_id",
+                  "topic", "task_id")
+
+
+def _slim(msg: dict) -> dict:
+    return {k: msg[k] for k in _ENVELOPE_KEEP if k in msg}
+
+
+def _slim_all(messages: list[dict]) -> list[dict]:
+    return [_slim(m) for m in messages]
+
+
 def _is_noise(msg: dict) -> bool:
     if msg.get("event") not in _ACTIONABLE_EVENTS:
         return True
@@ -237,9 +253,9 @@ class InboxManager:
 
         if isinstance(result, dict):
             wrapped = dict(result)
-            wrapped["_pluto_inbox"] = messages
+            wrapped["_pluto_inbox"] = _slim_all(messages)
         else:
-            wrapped = {"result": result, "_pluto_inbox": messages}
+            wrapped = {"result": result, "_pluto_inbox": _slim_all(messages)}
         if single:
             wrapped["_pluto_inbox_remaining"] = remaining
 
@@ -288,7 +304,7 @@ class InboxManager:
                 return None, 0
         self._record_drain_latency([msg])
         await self._maybe_ack()
-        return msg, remaining
+        return _slim(msg), remaining
 
     async def drain(self) -> list[dict]:
         """Return all buffered messages and ack them.  Used by ``pluto_recv``."""
@@ -303,7 +319,7 @@ class InboxManager:
         if messages:
             self._record_drain_latency(messages)
             await self._maybe_ack()
-        return messages
+        return _slim_all(messages)
 
     async def wait_for_messages(
         self,
@@ -344,7 +360,7 @@ class InboxManager:
                     else:
                         # Peek-mode: snapshot without popping. Leave the
                         # event set — only the actual drain path clears it.
-                        return list(self._buffered)
+                        return _slim_all(self._buffered)
                 elif drain:
                     # Buffer empty — clear the event under the lock so
                     # _absorb can't fire it between our check and our wait
@@ -354,7 +370,7 @@ class InboxManager:
                 self._push_drained()
                 self._record_drain_latency(messages)
                 await self._maybe_ack()
-                return messages
+                return _slim_all(messages)
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -554,7 +570,7 @@ class InboxManager:
         resource reads.
         """
         async with self._lock:
-            return list(self._buffered)
+            return _slim_all(self._buffered)
 
     # ── Internals ─────────────────────────────────────────────────────────
 

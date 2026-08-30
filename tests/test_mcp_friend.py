@@ -380,16 +380,42 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("Agent ID:  coder-42", body)
         self.assertIn("Base URL:  http://localhost:9001", body)
 
-    def test_role_prompt_inlines_protocol_when_referenced(self):
-        # specialist.md references protocol.md → should inline it.
+    def test_role_prompt_inlines_protocol_digest_when_referenced(self):
+        # specialist.md references protocol.md → the ~1K-token digest is
+        # inlined (never the full 13.9KB protocol) with a pointer to the
+        # pluto://protocol resource for the full text.
         body = build_role_prompt_body(
             "specialist",
             host="localhost",
             http_port=9001,
             agent_id="x",
         )
-        self.assertIn("=== BEGIN protocol.md ===", body)
-        self.assertIn("=== END protocol.md ===", body)
+        self.assertIn("=== BEGIN protocol digest ===", body)
+        self.assertIn("=== END protocol digest ===", body)
+        self.assertIn("pluto://protocol", body)
+        self.assertNotIn("=== BEGIN protocol.md ===", body)
+
+    def test_role_prompt_inlines_full_protocol_for_custom_path(self):
+        # A custom --protocol deployment can't trust the default digest —
+        # fall back to inlining the custom protocol verbatim.
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".md", delete=False,
+        ) as f:
+            f.write("# Custom protocol\ncustom-rule-xyz\n")
+            custom = f.name
+        try:
+            body = build_role_prompt_body(
+                "specialist",
+                host="localhost",
+                http_port=9001,
+                agent_id="x",
+                protocol_path=custom,
+            )
+            self.assertIn("=== BEGIN protocol.md ===", body)
+            self.assertIn("custom-rule-xyz", body)
+        finally:
+            os.unlink(custom)
 
     def test_unknown_role_raises(self):
         with self.assertRaises(FileNotFoundError):

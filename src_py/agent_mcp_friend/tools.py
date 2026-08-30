@@ -158,22 +158,10 @@ def register_tools(
     @mcp.tool(
         name="pluto_pop",
         description=(
-            "Pop ONE message from the inbox and ack it. Pipeline / "
-            "event-driven counterpart to pluto_recv: pluto_recv drains "
-            "the whole buffer, pluto_pop returns a single message plus a "
-            "'remaining' count so the caller can drive a one-message-per-"
-            "event loop."
-            "\n\nUsage pattern: on each inbox notification (or each "
-            "pluto_inbox_watch wake), call pluto_pop, process the one "
-            "message, then if 'remaining' > 0 call pluto_pop again, "
-            "otherwise wait for the next notification."
-            "\n\nIf the buffer is empty, returns {message: null, "
-            "remaining: 0}. Pass wait_s>0 to block up to that many "
-            "seconds for the next arrival before giving up."
-            "\n\nFor this tool to be the sole consumer of the inbox you "
-            "must first call pluto_set_delivery_mode('single') — "
-            "otherwise unrelated Pluto tool calls will bulk-drain the "
-            "buffer via the usual piggyback path."
+            "Pop and ack ONE inbox message; returns {message, remaining, "
+            "empty, delivery_mode}. Pair with delivery mode 'single' so "
+            "unrelated tool calls don't bulk-drain the buffer. wait_s>0 "
+            "blocks up to that many seconds for the next arrival."
         ),
     )
     async def pluto_pop(wait_s: float = 0.0) -> dict:
@@ -189,16 +177,10 @@ def register_tools(
     @mcp.tool(
         name="pluto_set_delivery_mode",
         description=(
-            "Switch how the inbox surfaces messages to this agent. Modes:"
-            "\n  • 'batch'  (default) — pluto_recv and the _pluto_inbox "
-            "piggyback on every Pluto tool result return ALL pending "
-            "messages at once. Right for turn-driven / interactive work."
-            "\n  • 'single' — piggyback attaches at most one message "
-            "(plus _pluto_inbox_remaining) and pluto_pop is the canonical "
-            "consumer. Right for pipeline / event-driven work where each "
-            "message represents a discrete unit to process."
-            "\n\nReturns {delivery_mode: <effective_mode>}; invalid mode "
-            "strings are ignored and the current mode is returned."
+            "Set inbox delivery mode: 'batch' (default; drains everything "
+            "per pluto_recv/piggyback — turn-driven work) or 'single' "
+            "(one message per pluto_pop/piggyback — pipeline work). "
+            "Invalid modes return {status: 'error', reason: 'invalid_mode'}."
         ),
     )
     async def pluto_set_delivery_mode(mode: str) -> dict:
@@ -216,46 +198,34 @@ def register_tools(
 
     _wait_default = int(wait_timeout_s)
 
+    # NOTE: descriptions and schemas must stay config-independent —
+    # interpolating _wait_default (in the text OR as a signature default)
+    # makes tools/list vary per deployment, breaking prompt-prefix
+    # caching across agents. TestCacheStability pins this.
     @mcp.tool(
         name="pluto_wait_for_messages",
         description=(
-            f"Block until at least one Pluto message arrives, or until "
-            f"timeout_s seconds elapse (default {_wait_default}). Returns "
-            f"the drained-and-acked messages, or an empty list on timeout."
-            f"\n\nRecommended usage in Claude Code: spawn a background Task "
-            f"with run_in_background=true and the prompt "
-            f"'Call pluto_wait_for_messages({_wait_default}) and return its "
-            f"result'. The main agent stays responsive to the user; when "
-            f"the Task completes, its result (the messages) appears in the "
-            f"next turn — process them, then spawn another Task to keep "
-            f"watching."
+            "Block until at least one Pluto message arrives or timeout_s "
+            "elapses (default: the launcher's --wait-timeout-s). Returns "
+            "the drained-and-acked messages; [] on timeout."
         ),
     )
-    async def pluto_wait_for_messages(timeout_s: int = _wait_default) -> dict:
+    async def pluto_wait_for_messages(timeout_s: Optional[int] = None) -> dict:
         _bind_session()
-        messages = await inbox.wait_for_messages(timeout_s=float(timeout_s))
+        effective = _wait_default if timeout_s is None else int(timeout_s)
+        messages = await inbox.wait_for_messages(timeout_s=float(effective))
         return {"messages": messages, "count": len(messages)}
 
     @mcp.tool(
         name="pluto_inbox_watch",
         description=(
-            "Single-slice inbox watcher. Blocks for up to wait_timeout_s "
-            "seconds (default = server wait timeout) waiting for fresh "
-            "messages, then returns. By default the tool call returns "
-            "inside one slice so the wrapping subagent's tool-call "
-            "stream stays visible to Claude Code's 600 s watchdog; pass "
-            "max_total_s > wait_timeout_s only on clients without that "
-            "watchdog."
-            "\n\nIdempotent dedupe: a second concurrent call for the "
-            "same inbox_id returns {already_watching: true} without "
-            "stacking a second loop — the existing waiter keeps running."
-            "\n\nMode: drain=true (default) pops messages off the buffer "
-            "and acks them server-side; drain=false returns a "
-            "non-consuming snapshot of what's currently buffered, leaving "
-            "the messages in place for the parent's pluto_recv to drain. "
-            "Watcher subagents on Claude Code (where the subagent inherits "
-            "the parent's MCP server) MUST pass drain=false, otherwise "
-            "they steal the parent's inbox."
+            "Single-slice inbox watcher: blocks up to wait_timeout_s "
+            "(default: the launcher's --wait-timeout-s) for fresh "
+            "messages, then returns. A concurrent call for the same "
+            "inbox_id returns {already_watching: true} instead of "
+            "stacking a loop. Watcher subagents sharing the parent's MCP "
+            "server MUST pass drain=false (non-consuming snapshot) — "
+            "drain=true pops and acks the parent's inbox."
         ),
     )
     async def pluto_inbox_watch(

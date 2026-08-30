@@ -33,6 +33,10 @@ def default_protocol_path() -> str:
     return project_path("library", "protocol.md")
 
 
+def default_protocol_digest_path() -> str:
+    return project_path("library", "protocol-digest.md")
+
+
 def default_guide_path() -> str:
     return project_path("agent_friend_guide.md")
 
@@ -75,7 +79,19 @@ def build_connection_block(
     *iterations* sets how many short-poll cycles the watcher subagent
     runs before exiting and letting the parent respawn it. Total
     subagent lifetime ≈ ``iterations * wait_timeout_s`` seconds.
+
+    Internally split into the per-agent identity header and the shared
+    body so the shared prose stays byte-identical across agents of the
+    same deployment (prompt-prefix cache friendliness); the public
+    output is unchanged.
     """
+    return _identity_header(host, http_port, agent_id) + _shared_connection_body(
+        wait_timeout_s=wait_timeout_s, iterations=iterations,
+    )
+
+
+def _identity_header(host: str, http_port: int, agent_id: str) -> str:
+    """The only part of the connection block that varies per agent."""
     return (
         f"---\n\n"
         f"**Live Pluto server connection** (injected by PlutoMCPFriend — "
@@ -84,6 +100,17 @@ def build_connection_block(
         f"  HTTP port: {http_port}   (REST API base for /agents/* and /locks/*)\n"
         f"  Base URL:  http://{host}:{http_port}\n"
         f"  Agent ID:  {agent_id}\n\n"
+    )
+
+
+def _shared_connection_body(
+    wait_timeout_s: int = 300,
+    iterations: int = 15,
+) -> str:
+    """Everything after the identity header. MUST NOT contain agent
+    identity (agent_id/host/port) — byte-stability across agents is
+    tested (TestCacheStability)."""
+    return (
         f"You are wrapped by **PlutoMCPFriend** running inside Claude Code.\n"
         f"The server has registered you and exposes Pluto operations as MCP\n"
         f"tools (``pluto_send``, ``pluto_lock_acquire``, etc.). Prefer those\n"
@@ -326,20 +353,44 @@ def build_role_prompt_body(
 
     protocol_block = ""
     proto = protocol_path or default_protocol_path()
+    digest = default_protocol_digest_path()
     if "protocol.md" in role_content and os.path.isfile(proto):
+        # Token economy: inline only the ~1K-token digest and point at
+        # the pluto://protocol resource for the full text (13.9KB —
+        # inlining it into every role body dominated per-agent prompt
+        # cost). The digest tracks the DEFAULT protocol, so custom
+        # --protocol deployments keep the full-inline behavior.
+        use_digest = (
+            protocol_path is None or protocol_path == default_protocol_path()
+        ) and os.path.isfile(digest)
         try:
-            protocol_text = _read_file(proto)
-            protocol_block = (
-                "\n\n---\n\n"
-                "Your role above references `protocol.md`. The full shared "
-                "coordination protocol is inlined below for convenience "
-                f"(source: {proto}). Treat this as authoritative — do NOT "
-                "attempt to re-read the file from disk; your CWD may not "
-                "contain it.\n\n"
-                "=== BEGIN protocol.md ===\n\n"
-                f"{protocol_text}\n\n"
-                "=== END protocol.md ==="
-            )
+            if use_digest:
+                protocol_block = (
+                    "\n\n---\n\n"
+                    "Your role above references `protocol.md`. A digest of "
+                    "the shared coordination protocol is inlined below; the "
+                    "full text is available as the MCP resource "
+                    "`pluto://protocol` (or the `/pluto-protocol` prompt) — "
+                    "fetch it when you need exact message schemas. Do NOT "
+                    "attempt to read protocol.md from disk; your CWD may "
+                    "not contain it.\n\n"
+                    "=== BEGIN protocol digest ===\n\n"
+                    f"{_read_file(digest)}\n\n"
+                    "=== END protocol digest ==="
+                )
+            else:
+                protocol_text = _read_file(proto)
+                protocol_block = (
+                    "\n\n---\n\n"
+                    "Your role above references `protocol.md`. The full shared "
+                    "coordination protocol is inlined below for convenience "
+                    f"(source: {proto}). Treat this as authoritative — do NOT "
+                    "attempt to re-read the file from disk; your CWD may not "
+                    "contain it.\n\n"
+                    "=== BEGIN protocol.md ===\n\n"
+                    f"{protocol_text}\n\n"
+                    "=== END protocol.md ==="
+                )
         except OSError:
             pass
 

@@ -2,9 +2,9 @@ name: Pluto CI
 
 on:
   push:
-    branches: [master, 'dev/**']
+    branches: [master, 'dev/**', 'v*']
   pull_request:
-    branches: [master]
+    branches: [master, 'v*']
 
 jobs:
   erlang-tests:
@@ -29,6 +29,23 @@ jobs:
       - name: Run EUnit tests
         working-directory: src_erl
         run: rebar3 eunit
+
+  mcp-adapter-tests:
+    name: MCP Adapter Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt pytest
+
+      - name: Run PlutoMCPFriend tests
+        run: python -m pytest tests/test_mcp_friend.py tests/test_mcp_push.py -v
 
   python-lint:
     name: Python Lint

@@ -1,0 +1,944 @@
+#!/usr/bin/env bash
+# ===========================================================================
+# PlutoGeminiFriend.sh — Guided launcher for the Pluto MCP adapter (Gemini CLI).
+#
+# Registers an MCP server adapter with the Gemini CLI that exposes Pluto
+# operations (send / lock / task / ...) as native tool calls. No PTY, no
+# curl, no copy-pasted tokens.
+#
+# This is the Gemini counterpart to PlutoMCPFriend.sh (Claude Code). The
+# two differ in how the role reaches the model: Claude Code takes it on
+# --append-system-prompt, while the Gemini CLI has no equivalent flag, so
+# the role is appended to the workspace's GEMINI.md instead. MCP server
+# registration goes through `gemini mcp add` / .gemini-mcp.json.
+#
+# STATUS: experimental. The .gemini-mcp.json generation, `gemini mcp add`
+# call, and GEMINI.md role injection have not been exercised end-to-end
+# against a live Gemini session. For a supported path use
+# PlutoMCPFriend.sh (Claude Code) or PlutoAgentFriend.sh (any TUI agent
+# via PTY injection).
+#
+# Run with no arguments for the interactive setup wizard:
+#
+#   ./PlutoGeminiFriend.sh
+#
+# Or pass everything explicitly (expert mode):
+#
+#   ./PlutoGeminiFriend.sh --agent-id coder-1 --role specialist
+#
+# See ./PlutoGeminiFriend.sh --help for the full option list.
+# ===========================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY_ENTRY="${SCRIPT_DIR}/src_py/agent_mcp_friend/pluto_mcp_friend.py"
+CONFIG_FILE="${SCRIPT_DIR}/config/pluto_config.json"
+REQUIREMENTS="${SCRIPT_DIR}/requirements.txt"
+ROLES_DIR="${SCRIPT_DIR}/library/roles"
+VENV_DIR="/tmp/pluto/.venv"
+DEFAULT_HOST="127.0.0.1"
+DEFAULT_HTTP_PORT="9201"
+DEFAULT_TCP_PORT="9200"
+DEFAULT_WAIT_TIMEOUT_S="60"
+PLUTO_VERSION="$(head -1 "${SCRIPT_DIR}/VERSION.md" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')"
+
+# ── Colours ──────────────────────────────────────────────────────────────────
+# Defined as real ANSI escape bytes (not the \033 literal) so heredocs that
+# substitute these vars produce sequences the terminal actually interprets,
+# even when rendered via plain `cat`.
+RED=$(printf '\033[0;31m')
+GREEN=$(printf '\033[0;32m')
+YELLOW=$(printf '\033[0;33m')
+CYAN=$(printf '\033[0;36m')
+BOLD=$(printf '\033[1m')
+DIM=$(printf '\033[2m')
+NC=$(printf '\033[0m')
+
+info()    { echo -e "${CYAN}[pluto-mcp]${NC} $*"; }
+ok()      { echo -e "${GREEN}[pluto-mcp]${NC} $*"; }
+warn()    { echo -e "${YELLOW}[pluto-mcp]${NC} $*"; }
+err()     { echo -e "${RED}[pluto-mcp]${NC} $*" >&2; }
+section() { echo ""; echo -e "${BOLD}${CYAN}▶  $*${NC}"; }
+
+# Supported agent CLI. Hard-coded to gemini — Cursor / Aider don't have
+# stable equivalents to gemini's --mcp-config / --append-system-prompt
+# pair, which the role auto-injection path depends on.
+SUPPORTED_CLI="gemini"
+
+# ── Help text ────────────────────────────────────────────────────────────────
+
+show_help() {
+    cat <<EOF
+PlutoGeminiFriend ${PLUTO_VERSION} — Pluto coordination over MCP for Gemini CLI.
+
+Usage:
+  $(basename "$0")                                        # guided wizard
+  $(basename "$0") --agent-id <name> [options]           # expert mode
+  $(basename "$0") --help
+
+What it does:
+  Registers a Pluto MCP server with Gemini CLI so that Pluto operations
+  (sending messages, acquiring locks, assigning tasks) become native tool
+  calls instead of curl commands. The adapter holds your session token,
+  auto-renews lock TTLs, and surfaces inbox messages on every tool result.
+
+  Only Gemini CLI is supported by this script.
+
+Options:
+  --agent-id <name>       Agent identity in the Pluto network. Skipping this
+                          flag in an interactive terminal launches the wizard.
+  --role <name|path>      Apply a role from library/roles/<name>.md by injecting
+                          it directly into the workspace's GEMINI.md file.
+  --host <ip>             Pluto server host (default: from config / ${DEFAULT_HOST}).
+  --http-port <port>      Pluto HTTP port (default: from config / ${DEFAULT_HTTP_PORT}).
+  --ttl-ms <ms>           Session TTL in ms (default: 600000).
+  --wait-timeout-s <sec>  pluto_wait_for_messages per-call block duration
+                          (default: ${DEFAULT_WAIT_TIMEOUT_S}). The watcher subagent loops short
+                          calls of this length so it produces output
+                          regularly and never trips Gemini CLI's stream
+                          watchdog. Keep <=120 to be safe.
+  --no-launch             Generate .gemini-mcp.json but do not start Gemini.
+  --no-wizard             Refuse the interactive wizard; require all args.
+  --skip-input            Skip "Press Enter" prompts in the wizard (intro +
+                          confirm). Useful for automated relaunches.
+  --restore <path>        After registering, apply a previously saved .plut
+                          snapshot via restore_from_snapshot. The agent_id
+                          inside the file is authoritative — when --agent-id
+                          is omitted it is auto-derived from the snapshot;
+                          when both are given they must match.
+  --resume                Shorthand: look up the latest .plut for --agent-id
+                          under --snapshot-dir (default /tmp/pluto/snapshots).
+                          Warns and starts fresh if nothing is found.
+                          NOTE: after the Gemini session opens, re-pick the
+                          same Pluto role from the slash menu (e.g.
+                          /pluto-role-<name>) — snapshots restore identity
+                          and locks but not the in-prompt role definition.
+  --snapshot-dir <dir>    Directory used for --resume + auto-snapshot
+                          (default: /tmp/pluto/snapshots).
+  --no-auto-snapshot      Disable the background snapshot loop.
+  --auto-snapshot-interval <s>
+                          Auto-snapshot every N seconds (default: 7200 = 2h).
+  --clean-snapshots       Delete every .plut + recovery.md in --snapshot-dir,
+                          then exit. With --agent-id, only that agent's files.
+  --log-level <lvl>       DEBUG | INFO | WARNING | ERROR (default: WARNING).
+  --version               Print version and exit.
+  --help                  Show this help.
+  -- <cmd...>             Pass everything after -- to gemini verbatim.
+
+Examples:
+  $(basename "$0")                                                  # wizard
+  $(basename "$0") --agent-id coder-1 --role specialist
+  $(basename "$0") --agent-id reviewer-1 --wait-timeout-s 90         # tune watcher cycle
+  $(basename "$0") --agent-id worker-1 --no-launch                   # config only
+  $(basename "$0") --role orchestrator \\
+                  --restore /tmp/pluto/snapshots/cells-orch.plut    # resume identity
+EOF
+}
+
+# ── Banner ───────────────────────────────────────────────────────────────────
+
+show_banner() {
+    cat <<BANNER
+
+    ╔═══════════════════════════════════════════════════╗
+    ║                                                   ║
+    ║   ★  PlutoGeminiFriend  ${PLUTO_VERSION}                       ║
+    ║      Pluto Coordination via MCP Tools             ║
+    ║                                                   ║
+    ╚═══════════════════════════════════════════════════╝
+BANNER
+}
+
+show_what_it_is() {
+    cat <<EOF
+
+  ${BOLD}What is PlutoGeminiFriend?${NC}
+  ${DIM}─────────────────────────${NC}
+  An MCP (Model Context Protocol) adapter for the Pluto coordination
+  server. It exposes Pluto operations as native tool calls inside
+  ${BOLD}Gemini CLI${NC}:
+
+    ${CYAN}pluto_send${NC}            send a message to another agent
+    ${CYAN}pluto_broadcast${NC}       broadcast to every connected agent
+    ${CYAN}pluto_recv${NC}            drain pending inbox messages
+    ${CYAN}pluto_lock_acquire${NC}    grab a write/read lock (auto-renewed)
+    ${CYAN}pluto_lock_release${NC}    release the lock + cancel renewal
+    ${CYAN}pluto_task_assign${NC}     assign a task to another agent
+    ${CYAN}pluto_task_update${NC}     update task status (in_progress, completed, ...)
+    ${CYAN}pluto_list_agents${NC}     discover connected peers
+    ${DIM}... and 8 more.  See: docs/guide/pluto-mcp-friend.md${NC}
+
+  Inbound messages are auto-attached to any tool result under
+  ${CYAN}_pluto_inbox${NC}, so the agent picks them up as a free side-effect of
+  doing Pluto-related work.
+
+EOF
+}
+
+show_disclaimer() {
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  DISCLAIMER                                                      ║${NC}"
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "  Pluto is provided ${BOLD}as-is${NC} for research and development purposes only,"
+    echo -e "  with no warranty of any kind. You — the user — are responsible for"
+    echo -e "  any harm, data loss, or unintended actions taken by AI agents you"
+    echo -e "  coordinate via Pluto. Use only in environments you control."
+    echo ""
+}
+
+# ── venv bootstrap ──────────────────────────────────────────────────────────
+
+# Verify ${VENV_DIR} is a real isolated venv with working pip.
+# Returns 0 if valid, 1 otherwise.
+#
+# Several signals must all agree because partial / corrupt venvs are
+# surprisingly common on macOS:
+#
+#   • bin/python exists and is executable
+#   • pyvenv.cfg is present (created by `python3 -m venv`)
+#   • sys.prefix != sys.base_prefix (Python is *actually* isolated, not
+#     a stray symlink to the host Homebrew Python — that latter case
+#     causes pip install to hit the PEP 668 "externally-managed-
+#     environment" wall as if the venv weren't there)
+#   • pip is importable as a module (``python -m pip --version``)
+is_valid_venv() {
+    local py="${VENV_DIR}/bin/python"
+    [[ -x "${py}" ]] || return 1
+    [[ -f "${VENV_DIR}/pyvenv.cfg" ]] || return 1
+    "${py}" -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)' \
+        >/dev/null 2>&1 || return 1
+    "${py}" -m pip --version >/dev/null 2>&1 || return 1
+    return 0
+}
+
+ensure_venv() {
+    local py="${VENV_DIR}/bin/python"
+
+    # If the venv directory exists but is not a valid isolated venv,
+    # nuke it. Any partial / corrupt state — bin/python missing, pip
+    # module missing, sys.prefix == base_prefix (i.e. not isolated),
+    # missing pyvenv.cfg — is treated the same way: rebuild from
+    # scratch. Cheaper and far more reliable than trying to repair.
+    if [[ -e "${VENV_DIR}" ]] && ! is_valid_venv; then
+        warn "Existing venv at ${VENV_DIR} is invalid or partial. Recreating ..."
+        rm -rf "${VENV_DIR}"
+    fi
+
+    if [[ ! -e "${VENV_DIR}" ]]; then
+        info "Creating Python venv at ${VENV_DIR} ..."
+        mkdir -p "$(dirname "${VENV_DIR}")"
+        if ! python3 -m venv "${VENV_DIR}"; then
+            err "Failed to create venv at ${VENV_DIR}."
+            err "Diagnose with:  python3 -m venv /tmp/pluto-venv-test"
+            err "On macOS Homebrew, try: brew reinstall python@3"
+            exit 1
+        fi
+        if ! is_valid_venv; then
+            err "Created venv at ${VENV_DIR} is not properly isolated."
+            err "  pyvenv.cfg present? $([ -f "${VENV_DIR}/pyvenv.cfg" ] && echo yes || echo NO)"
+            err "  python isolated?    $("${py}" -c 'import sys; print(sys.prefix != sys.base_prefix)' 2>/dev/null || echo unknown)"
+            err "  pip module present? $("${py}" -m pip --version 2>&1 | head -1)"
+            err ""
+            err "Your host python3 may be misconfigured. Try:"
+            err "  brew reinstall python@3   # macOS Homebrew"
+            err "  apt install python3-venv  # Debian / Ubuntu"
+            exit 1
+        fi
+    fi
+
+    local marker="${VENV_DIR}/.requirements-installed"
+    if [[ -f "${marker}" ]] && [[ ! "${REQUIREMENTS}" -nt "${marker}" ]]; then
+        return 0  # already installed, nothing to do
+    fi
+
+    info "Installing Pluto Python dependencies (mcp SDK) ..."
+    # Always use ``python -m pip``; never ``bin/pip``. Some Python builds
+    # skip creating the pip console script even in valid venvs.
+    "${py}" -m pip install -q --upgrade pip >/dev/null 2>&1 || true
+
+    local pip_log
+    pip_log=$(mktemp -t pluto-pip.XXXXXX)
+    if ! "${py}" -m pip install -r "${REQUIREMENTS}" >"${pip_log}" 2>&1; then
+        # PEP 668 inside a freshly-created venv means our isolation check
+        # passed but pip is still seeing the host's EXTERNALLY_MANAGED
+        # marker — symptom of a deeply broken Python install. Surface
+        # the actual pip output so the user can see what went wrong.
+        if grep -q "externally-managed-environment" "${pip_log}"; then
+            err "pip install hit PEP 668 even inside the venv at ${VENV_DIR}."
+            err "This means your host python3 isn't producing real isolated"
+            err "venvs. The venv has been left in place for inspection:"
+            err "  ${VENV_DIR}/pyvenv.cfg"
+            err "  ${py} -c 'import sys; print(sys.prefix, sys.base_prefix)'"
+            err ""
+            err "Likely fixes:"
+            err "  • macOS Homebrew:  brew reinstall python@3"
+            err "  • Debian/Ubuntu:   apt install python3-venv"
+            err "  • Multiple Pythons in PATH: hash -r and re-run, or"
+            err "    point to a known-good python3 explicitly."
+        else
+            err "pip install -r ${REQUIREMENTS} failed:"
+            tail -20 "${pip_log}" | sed 's/^/    /' >&2
+        fi
+        rm -f "${pip_log}"
+        exit 1
+    fi
+    rm -f "${pip_log}"
+    date > "${marker}"
+}
+
+# ── Pluto server health ─────────────────────────────────────────────────────
+
+read_config_value() {
+    local key="$1"
+    local default="$2"
+    [[ -f "${CONFIG_FILE}" ]] || { echo "${default}"; return; }
+    "${VENV_DIR}/bin/python" - "${CONFIG_FILE}" "${key}" "${default}" <<'PYEOF'
+import json, sys
+path, key, default = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(path) as f:
+        data = json.load(f)
+    server = data.get("pluto_server") or {}
+    print(server.get(key) or default)
+except Exception:
+    print(default)
+PYEOF
+}
+
+server_health() {
+    local host="$1" port="$2"
+    if curl -fsS --max-time 2 "http://${host}:${port}/health" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+server_version() {
+    local host="$1" port="$2"
+    server_health "$host" "$port" | "${VENV_DIR}/bin/python" -c \
+        'import json,sys
+try:
+  print(json.load(sys.stdin).get("version","?"))
+except Exception:
+  print("?")' 2>/dev/null || echo "?"
+}
+
+# True if *any* TCP listener responds on the given host:port within timeout.
+# Used to distinguish "no server at all" from "server bound to a different
+# HTTP port than what the config file says" (typical after editing the
+# config without restarting the daemon).
+tcp_port_reachable() {
+    local host="$1" port="$2"
+    "${VENV_DIR}/bin/python" - "$host" "$port" <<'PYEOF' 2>/dev/null
+import socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+try:
+    with socket.create_connection((host, port), timeout=2):
+        sys.exit(0)
+except OSError:
+    sys.exit(1)
+PYEOF
+}
+
+# Print server status; return 0 if reachable, 1 otherwise.
+check_pluto_reachable() {
+    local host="$1" port="$2"
+    info "Checking Pluto server at ${BOLD}${host}:${port}${NC} ..."
+    if server_health "$host" "$port" >/dev/null 2>&1; then
+        local v
+        v=$(server_version "$host" "$port")
+        ok "Pluto v${v} is ${GREEN}ONLINE${NC}"
+        return 0
+    fi
+    warn "Pluto server is ${YELLOW}OFFLINE${NC} at ${host}:${port}"
+
+    # Disambiguate: is the daemon up but bound to different HTTP port?
+    # Probe the TCP control port and a few common HTTP defaults; if any
+    # of them respond we tell the user the daemon is alive on the wrong
+    # port (the typical cause: config bumped from 9201 -> 9202 without
+    # restarting the daemon).
+    local tcp_port
+    tcp_port=$(read_config_value host_tcp_port "${DEFAULT_TCP_PORT}")
+    local found=""
+    if tcp_port_reachable "$host" "$tcp_port"; then
+        found="${tcp_port} (TCP control port)"
+    fi
+    local p
+    for p in 9201 9202; do
+        [[ "$p" == "$port" ]] && continue
+        if tcp_port_reachable "$host" "$p"; then
+            found="${found:+${found}, }${p}"
+        fi
+    done
+    if [[ -n "${found}" ]]; then
+        echo ""
+        echo -e "  ${YELLOW}A Pluto process appears to be running, just not on${NC}"
+        echo -e "  ${YELLOW}HTTP port ${port}.${NC} Live ports: ${BOLD}${found}${NC}"
+        echo ""
+        echo -e "  Likely cause: ${CYAN}config/pluto_config.json${NC} was changed"
+        echo -e "  after the daemon started. Restart it so it picks up the new"
+        echo -e "  HTTP port:"
+        echo ""
+        echo -e "    ${CYAN}./PlutoServer.sh --kill && ./PlutoServer.sh --daemon${NC}"
+        echo ""
+    fi
+    return 1
+}
+
+auto_start_server() {
+    if [[ ! -x "${SCRIPT_DIR}/PlutoServer.sh" ]]; then
+        err "PlutoServer.sh not found or not executable."
+        return 1
+    fi
+    info "Auto-starting Pluto server (./PlutoServer.sh --daemon) ..."
+    if ! "${SCRIPT_DIR}/PlutoServer.sh" --daemon; then
+        err "Failed to start Pluto server."
+        return 1
+    fi
+    sleep 1
+    return 0
+}
+
+offer_to_start_server() {
+    if ! [[ -t 0 ]]; then
+        return 1
+    fi
+    echo ""
+    echo -e "  Pluto is not running. The MCP adapter cannot register without it."
+    echo ""
+    read -rp "  Start Pluto server in the background now? [Y/n] " ans
+    ans="${ans:-y}"
+    # Portable lowercase: bash 3.2 (macOS default) doesn't support ${var,,}.
+    ans=$(printf '%s' "${ans}" | tr '[:upper:]' '[:lower:]')
+    case "${ans}" in
+        y|yes)
+            if [[ ! -x "${SCRIPT_DIR}/PlutoServer.sh" ]]; then
+                err "PlutoServer.sh not found or not executable."
+                return 1
+            fi
+            info "Running ./PlutoServer.sh --daemon ..."
+            if ! "${SCRIPT_DIR}/PlutoServer.sh" --daemon; then
+                err "Failed to start Pluto server."
+                return 1
+            fi
+            sleep 1
+            return 0
+            ;;
+        *)
+            warn "Continuing without Pluto. The agent will start, but pluto_* tools will return errors until the server is up."
+            return 0
+            ;;
+    esac
+}
+
+
+
+# ── Role discovery ──────────────────────────────────────────────────────────
+
+list_available_roles() {
+    [[ -d "${ROLES_DIR}" ]] || return 0
+    for f in "${ROLES_DIR}"/*.md; do
+        [[ -f "$f" ]] || continue
+        local name
+        name="$(basename "$f" .md)"
+        case "$name" in
+            README|_*) continue ;;
+        esac
+        echo "$name"
+    done
+}
+
+# ── Gemini detection ────────────────────────────────────────────────────────
+
+gemini_path() {
+    command -v "${SUPPORTED_CLI}" 2>/dev/null
+}
+
+build_role_system_prompt() {
+    local agent_id="$1" host="$2" port="$3" role="$4" wait_s="$5"
+    "${VENV_DIR}/bin/python" - "$agent_id" "$host" "$port" "$role" \
+        "$wait_s" "${SCRIPT_DIR}" <<'PYEOF'
+import sys, os
+agent_id, host, port, role, wait_s, project_root = sys.argv[1:]
+sys.path.insert(0, os.path.join(project_root, "src_py"))
+from agent_mcp_friend.prompts import build_role_prompt_body
+print(build_role_prompt_body(
+    role, host=host, http_port=int(port), agent_id=agent_id,
+    wait_timeout_s=int(wait_s),
+))
+PYEOF
+}
+
+print_post_launch_tips() {
+    local agent_id="$1" host="$2" port="$3" wait_s="$4"
+
+    cat <<EOF
+
+  ${BOLD}${GREEN}Setup complete.${NC}  Launching ${BOLD}gemini${NC} ...
+
+  ${BOLD}═══ Pluto Skills API — what's available inside Gemini ═══${NC}
+
+  ${BOLD}Slash commands${NC} ${DIM}(type /pluto- to autocomplete from the slash menu)${NC}
+
+    ${CYAN}Quick actions${NC} ${DIM}— one-keystroke shortcuts; no need to type a request${NC}
+      ${DIM}/pluto-check${NC}        drain inbox now and summarize what arrived
+      ${DIM}/pluto-watch${NC}        start a chat-speed inbox watcher (background Task)
+      ${DIM}/pluto-status${NC}       my id, connected peers, inbox depth, locks I hold
+
+    ${CYAN}Roles${NC} ${DIM}— adopt a behavioural role; switch any time${NC}
+EOF
+
+    # Dynamically list every role file as a slash command.
+    local roles=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && roles+=("$line")
+    done < <(list_available_roles)
+
+    local r
+    for r in "${roles[@]}"; do
+        printf "      ${DIM}/pluto-role-%s${NC}\n" "$r"
+    done
+
+    cat <<EOF
+
+    ${CYAN}Reference${NC} ${DIM}— inline a doc on the next turn${NC}
+      ${DIM}/pluto-protocol${NC}     shared coordination protocol (library/protocol.md)
+      ${DIM}/pluto-guide${NC}        agent skill guide (agent_friend_guide.md)
+
+  ${BOLD}Resources${NC} ${DIM}(@-mention for an on-demand snapshot)${NC}
+      ${DIM}@pluto://inbox${NC}      pending messages addressed to you (read-only; pluto_recv to drain)
+      ${DIM}@pluto://locks${NC}      locks currently held by you (auto-renewed in the background)
+      ${DIM}@pluto://agents${NC}     every agent connected to the server
+      ${DIM}@pluto://server${NC}     server health / version
+
+  ${BOLD}Tools${NC} ${DIM}(the agent calls these on its own; you don't run them manually)${NC}
+      ${CYAN}pluto_send${NC} / ${CYAN}pluto_broadcast${NC} / ${CYAN}pluto_recv${NC} / ${CYAN}pluto_wait_for_messages${NC}
+      ${CYAN}pluto_lock_acquire${NC} / ${CYAN}pluto_lock_release${NC} / ${CYAN}pluto_lock_renew${NC} / ${CYAN}pluto_lock_info${NC}
+      ${CYAN}pluto_task_assign${NC} / ${CYAN}pluto_task_update${NC} / ${CYAN}pluto_task_list${NC}
+      ${CYAN}pluto_list_agents${NC} / ${CYAN}pluto_find_agents${NC} / ${CYAN}pluto_set_status${NC}
+      ${CYAN}pluto_publish${NC} / ${CYAN}pluto_subscribe${NC} / ${CYAN}pluto_list_locks${NC} / ${CYAN}pluto_session${NC}
+
+  ${DIM}Watcher block duration: ${wait_s}s (--wait-timeout-s).${NC}
+  ${DIM}Tip: the role injected into GEMINI.md explains the watcher loop.${NC}
+
+  ${BOLD}═══ Quick smoke test (run from another terminal) ═══${NC}
+    curl -X POST http://${host}:${port}/messages/send \\
+      -H 'Content-Type: application/json' \\
+      -d '{"to":"${agent_id}","payload":{"type":"hello","text":"Welcome!"}}'
+
+  ${DIM}Stop the Pluto server later:  ./PlutoServer.sh --kill${NC}
+
+EOF
+}
+
+# ── Wizard steps ────────────────────────────────────────────────────────────
+
+wizard_intro() {
+    show_banner
+    show_what_it_is
+    show_disclaimer
+    if [[ "${SCRIPT_DIR}" != "${PWD}" ]]; then
+        info "Pluto install dir: ${BOLD}${SCRIPT_DIR}${NC}"
+        echo ""
+    fi
+    cat <<EOF
+  ${BOLD}This wizard will:${NC}
+    1. Verify the Pluto server is running (and offer to start it if not)
+    2. Ask for an agent ID for this session
+    3. Verify the Gemini CLI is installed
+    4. Generate .gemini-mcp.json and launch the Gemini CLI
+
+  ${DIM}Roles, protocol, guide, and quick actions are slash commands inside
+  Gemini. Pick one at any time after launch (/pluto-…).${NC}
+
+EOF
+    if [[ "${1:-}" != "skip" ]]; then
+        read -rp "  Press Enter to begin (Ctrl-C to abort) ... " _ < /dev/tty
+    fi
+}
+
+wizard_step_server() {
+    section "Step 1/4 — Pluto server"
+    local host="$1" port="$2"
+    if check_pluto_reachable "$host" "$port"; then
+        return 0
+    fi
+    offer_to_start_server || true
+    if check_pluto_reachable "$host" "$port"; then
+        return 0
+    fi
+    return 1
+}
+
+wizard_step_agent_id() {
+    {
+        section "Step 2/4 — Agent ID"
+        cat <<EOF
+
+  Pick a unique identifier for this agent. Other agents will use this
+  name when sending you messages. Examples: ${CYAN}coder-1${NC}, ${CYAN}reviewer-2${NC},
+  ${CYAN}orchestrator${NC}.
+
+EOF
+    } >&2
+    local id=""
+    while [[ -z "$id" ]]; do
+        # `read -rp` writes the prompt to stderr already.
+        read -rp "  Agent ID: " id < /dev/tty
+        if [[ -z "$id" ]]; then
+            warn "Agent ID cannot be empty." >&2
+        fi
+    done
+    echo "$id"
+}
+
+wizard_step_check_gemini() {
+    section "Step 3/4 — Gemini CLI"
+    local path
+    path=$(gemini_path)
+    if [[ -n "${path}" ]]; then
+        ok "Found ${SUPPORTED_CLI} at ${BOLD}${path}${NC}"
+        return 0
+    fi
+    {
+        warn "${SUPPORTED_CLI} not found in PATH."
+        echo ""
+        cat <<EOF
+  ${DIM}PlutoGeminiFriend only supports Gemini CLI. Install it and
+  re-run, or pass --no-launch to generate .gemini-mcp.json without
+  launching anything (you can wire it into Gemini later by hand).${NC}
+
+  ${DIM}For Cursor / Aider / Copilot, use ./PlutoAgentFriend.sh instead —
+  the PTY-based wrapper works with any agent CLI.${NC}
+EOF
+    } >&2
+    return 1
+}
+
+wizard_step_confirm() {
+    section "Step 4/4 — Ready to launch"
+    local agent_id="$1" host="$2" port="$3" role="$4" wait_s="$5"
+    local skip="${6:-}"
+
+    local role_display
+    if [[ -n "${role}" ]]; then
+        role_display="${CYAN}${role}${NC}  (auto-applied on first turn)"
+    else
+        role_display="${DIM}(none — pick after launch via /pluto-role-<name>)${NC}"
+    fi
+
+    cat <<EOF
+
+  ${BOLD}Summary:${NC}
+    Agent ID         : ${CYAN}${agent_id}${NC}
+    Pluto            : ${host}:${port}
+    Agent CLI        : ${SUPPORTED_CLI}
+    Role             : ${role_display}
+    Watcher block    : ${wait_s}s  (--wait-timeout-s)
+    .gemini-mcp.json : ${SCRIPT_DIR}/.gemini-mcp.json
+
+EOF
+    if [[ "${skip}" != "skip" ]]; then
+        read -rp "  Press Enter to launch (Ctrl-C to abort) ... " _ < /dev/tty
+    fi
+    echo ""
+}
+
+# ── Launch ──────────────────────────────────────────────────────────────────
+
+launch_gemini() {
+    local role="$1" agent_id="$2" host="$3" port="$4" wait_s="$5"
+    shift 5
+    local extra=("$@")
+
+    print_post_launch_tips "${agent_id}" "${host}" "${port}" "${wait_s}"
+
+    local cmd=("${SUPPORTED_CLI}")
+    if [[ -n "${role}" ]]; then
+        local sys_prompt
+        sys_prompt=$(build_role_system_prompt \
+            "${agent_id}" "${host}" "${port}" "${role}" "${wait_s}")
+        
+        info "Injecting role ${role} into ./GEMINI.md"
+        echo "" >> ./GEMINI.md
+        echo "<!-- Pluto Role Injection -->" >> ./GEMINI.md
+        echo "$sys_prompt" >> ./GEMINI.md
+    fi
+    # bash 3.2-safe empty-array expansion (macOS default bash).
+    if (( ${#extra[@]} > 0 )); then
+        cmd+=("${extra[@]}")
+    fi
+    exec "${cmd[@]}"
+}
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+main() {
+    local agent_id=""
+    local role=""
+    local host=""
+    local http_port=""
+    local ttl_ms="600000"
+    local wait_timeout_s="${DEFAULT_WAIT_TIMEOUT_S}"
+    local log_level="WARNING"
+    local no_launch=false
+    local no_wizard=false
+    local restore_path=""
+    local resume=false
+    local snapshot_dir=""
+    local no_auto_snapshot="0"
+    local auto_snapshot_interval=""
+    local clean_snapshots=false
+    local skip_input=false
+    local extra_cmd=()
+    local past_separator=false
+
+    while [[ $# -gt 0 ]]; do
+        if $past_separator; then
+            extra_cmd+=("$1")
+            shift
+            continue
+        fi
+        case "$1" in
+            --help|-h) show_help; exit 0 ;;
+            --version) echo "PlutoGeminiFriend ${PLUTO_VERSION}"; exit 0 ;;
+            --agent-id) agent_id="$2"; shift 2 ;;
+            --role) role="$2"; shift 2 ;;
+            --host) host="$2"; shift 2 ;;
+            --http-port) http_port="$2"; shift 2 ;;
+            --ttl-ms) ttl_ms="$2"; shift 2 ;;
+            --wait-timeout-s) wait_timeout_s="$2"; shift 2 ;;
+            --log-level) log_level="$2"; shift 2 ;;
+            --no-launch) no_launch=true; shift ;;
+            --no-wizard) no_wizard=true; shift ;;
+            --restore) restore_path="$2"; shift 2 ;;
+            --resume) resume=true; shift ;;
+            --snapshot-dir) snapshot_dir="$2"; shift 2 ;;
+            --no-auto-snapshot) no_auto_snapshot="1"; shift ;;
+            --auto-snapshot-interval) auto_snapshot_interval="$2"; shift 2 ;;
+            --clean-snapshots) clean_snapshots=true; shift ;;
+            --skip-input) skip_input=true; shift ;;
+            --framework)
+                err "--framework was removed in v0.2.8 — Gemini CLI only."
+                err "For Cursor/Aider/Copilot use ./PlutoAgentFriend.sh instead."
+                exit 1
+                ;;
+            --) past_separator=true; shift ;;
+            *)  err "Unknown option: $1"; show_help; exit 1 ;;
+        esac
+    done
+
+    # Validate wait timeout is a positive integer.
+    if ! [[ "${wait_timeout_s}" =~ ^[0-9]+$ ]] || (( wait_timeout_s < 1 )); then
+        err "--wait-timeout-s must be a positive integer (seconds)."
+        exit 1
+    fi
+
+    # ── --clean-snapshots: one-shot purge, then exit ────────────────────────
+    if $clean_snapshots; then
+        ensure_venv
+        local cs_args=()
+        cs_args+=("--clean-snapshots")
+        [[ -n "${agent_id}" ]] && cs_args+=("--agent-id" "${agent_id}")
+        [[ -n "${snapshot_dir}" ]] && cs_args+=("--snapshot-dir" "${snapshot_dir}")
+        exec "${VENV_DIR}/bin/python" "${PY_ENTRY}" "${cs_args[@]}"
+    fi
+
+    # ── --resume: resolve to a .plut path under the default dir ─────────────
+    if $resume && [[ -z "${restore_path}" ]]; then
+        local resume_dir="${snapshot_dir:-/tmp/pluto/snapshots}"
+        if [[ -n "${agent_id}" ]]; then
+            local candidate="${resume_dir}/${agent_id}.plut"
+            if [[ -f "${candidate}" ]]; then
+                restore_path="${candidate}"
+                info "--resume: using ${restore_path}"
+            else
+                warn "--resume: no snapshot at ${candidate}; starting fresh."
+            fi
+        else
+            local found=()
+            if [[ -d "${resume_dir}" ]]; then
+                while IFS= read -r f; do
+                    found+=("$f")
+                done < <(find "${resume_dir}" -maxdepth 1 -type f -name '*.plut' 2>/dev/null)
+            fi
+            if (( ${#found[@]} == 1 )); then
+                restore_path="${found[0]}"
+                info "--resume: using ${restore_path}"
+            elif (( ${#found[@]} == 0 )); then
+                warn "--resume: no .plut files in ${resume_dir}; starting fresh."
+            else
+                warn "--resume: multiple snapshots in ${resume_dir}; pass --agent-id to disambiguate. Starting fresh."
+            fi
+        fi
+        if [[ -n "${restore_path}" ]]; then
+            echo
+            info "${BOLD}After Gemini starts:${NC} re-select your Pluto role"
+            info "from the slash menu (e.g. /pluto-role-${role:-<your-role>}) —"
+            info "snapshots restore identity, locks and attributes but the role"
+            info "prompt is reattached per session by the MCP friend."
+            echo
+        fi
+    fi
+
+    # ── --restore validation + agent_id auto-detect ─────────────────────────
+    # If --restore was given, the .plut file is authoritative for agent_id —
+    # using a different name silently lands all snapshot locks in lost_locks.
+    # When --agent-id wasn't passed, derive it from the file. When both were
+    # passed and disagree, abort with a clear error rather than continuing.
+    if [[ -n "${restore_path}" ]]; then
+        if [[ ! -f "${restore_path}" ]]; then
+            err "--restore: file not found: ${restore_path}"
+            exit 1
+        fi
+        local plut_id
+        plut_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('agent_id',''))" "${restore_path}" 2>/dev/null || echo "")
+        if [[ -z "${plut_id}" ]]; then
+            err "--restore: ${restore_path} has no agent_id field — not a valid .plut snapshot."
+            exit 1
+        fi
+        if [[ -z "${agent_id}" ]]; then
+            agent_id="${plut_id}"
+            info "Using agent_id from snapshot: ${agent_id}"
+        elif [[ "${agent_id}" != "${plut_id}" ]]; then
+            err "--agent-id ${agent_id} does not match snapshot agent_id ${plut_id}."
+            err "Use --agent-id ${plut_id} (or omit --agent-id to auto-detect from the .plut)."
+            exit 1
+        fi
+    fi
+
+    ensure_venv
+
+    # Resolve host/port from config when not given.
+    [[ -n "${host}" ]] || host=$(read_config_value "host_ip" "${DEFAULT_HOST}")
+    [[ -n "${http_port}" ]] || http_port=$(read_config_value "host_http_port" "${DEFAULT_HTTP_PORT}")
+
+    # ── Wizard mode trigger ─────────────────────────────────────────────────
+    # Wizard runs when --agent-id is missing AND stdin is a tty AND
+    # --no-wizard wasn't passed. Otherwise fail-fast in non-interactive
+    # environments.
+    if [[ -z "${agent_id}" ]]; then
+        if $no_wizard; then
+            err "--agent-id is required (--no-wizard prevents the interactive prompt)."
+            show_help
+            exit 1
+        fi
+        if [[ ! -t 0 ]]; then
+            err "--agent-id is required when stdin is not a terminal."
+            show_help
+            exit 1
+        fi
+
+        local _skip_arg=""
+        $skip_input && _skip_arg="skip"
+        wizard_intro "${_skip_arg}"
+
+        if ! wizard_step_server "${host}" "${http_port}"; then
+            warn "Continuing without a reachable Pluto server."
+        fi
+
+        agent_id=$(wizard_step_agent_id)
+
+        if ! $no_launch && ! wizard_step_check_gemini; then
+            err "Cannot launch — falling back to --no-launch (config-only mode)."
+            no_launch=true
+        fi
+
+        # Full summary + confirm before launch.
+        if ! $no_launch; then
+            wizard_step_confirm "${agent_id}" "${host}" "${http_port}" \
+                "${role}" "${wait_timeout_s}" "${_skip_arg}"
+        fi
+    else
+        # Expert mode: brief banner + reachability check, no prompts.
+        show_banner
+        info "Agent ID:   ${BOLD}${agent_id}${NC}"
+        info "Pluto:      ${host}:${http_port}"
+        [[ -n "${role}" ]] && info "Role:       ${role}"
+        info "Watcher:    ${wait_timeout_s}s block duration"
+        if ! check_pluto_reachable "${host}" "${http_port}"; then
+            if auto_start_server && check_pluto_reachable "${host}" "${http_port}"; then
+                :
+            else
+                warn "Continuing — pluto_* tools will return errors until the server is up."
+            fi
+        fi
+    fi
+
+    # ── Add MCP server ──────────────────────────────────────────────────
+    info "Adding Pluto MCP server to gemini..."
+    local mcp_args=(
+        "${PY_ENTRY}"
+        "--agent-id" "${agent_id}"
+        "--host" "${host}"
+        "--http-port" "${http_port}"
+        "--ttl-ms" "${ttl_ms}"
+        "--wait-timeout-s" "${wait_timeout_s}"
+        "--log-level" "${log_level}"
+    )
+    if [[ -n "${restore_path}" ]]; then
+        mcp_args+=("--restore" "${restore_path}")
+    fi
+    if [[ -n "${snapshot_dir}" ]]; then
+        mcp_args+=("--snapshot-dir" "${snapshot_dir}")
+    fi
+    if [[ "${no_auto_snapshot}" == "1" ]]; then
+        mcp_args+=("--no-auto-snapshot")
+    fi
+    if [[ -n "${auto_snapshot_interval}" ]]; then
+        mcp_args+=("--auto-snapshot-interval" "${auto_snapshot_interval}")
+    fi
+
+    if ! gemini mcp add pluto "${VENV_DIR}/bin/python" "${mcp_args[@]}"; then
+        err "Failed to add Pluto MCP server."
+        exit 1
+    fi
+    ok "Pluto MCP server added."
+
+    # ── Recovery note ───────────────────────────────────────────────────────
+    # The MCP friend runs as a stdio child of the Gemini CLI — when its parent
+    # exits, the adapter dies with it, and Gemini is the only thing that can
+    # respawn it. So unlike PlutoAgentFriend (which auto-reregisters on
+    # server_epoch mismatch), an MCP friend that outlives its server cannot
+    # heal itself. Tell the user up-front what to do when that happens.
+    cat <<EOF
+
+  ${YELLOW}If Pluto is restarted or '--clean'-ed during this session:${NC}
+    ${DIM}- The agent will see${NC} ${BOLD}pluto_health → server_restarted: true${NC}${DIM}.${NC}
+    ${DIM}- This MCP friend does${NC} ${BOLD}not${NC} ${DIM}auto-reregister (it's a stdio child of${NC}
+    ${DIM}  the Gemini CLI; only Gemini can respawn it).${NC}
+    ${DIM}- To recover:${NC} run ${CYAN}/mcp${NC} ${DIM}in the Gemini CLI, or relaunch with${NC}
+      ${CYAN}./PlutoGeminiFriend.sh --agent-id ${agent_id} --resume${NC}
+      ${DIM}(then re-pick your /pluto-role-* from the slash menu).${NC}
+
+EOF
+
+    if $no_launch; then
+        cat <<EOF
+
+  ${BOLD}Wire this config into the Gemini CLI:${NC}
+    ${CYAN}gemini --mcp-config ${mcp_json}${NC}
+
+EOF
+        exit 0
+    fi
+
+    # If we got here in expert mode, we still need to verify Gemini is in PATH.
+    if [[ -z "$(gemini_path)" ]]; then
+        err "${SUPPORTED_CLI} not found in PATH."
+        err "Install the Gemini CLI, or re-run with --no-launch."
+        exit 1
+    fi
+
+    # bash 3.2-safe empty-array expansion (macOS default bash).
+    if (( ${#extra_cmd[@]} > 0 )); then
+        launch_gemini "${role}" "${agent_id}" "${host}" "${http_port}" \
+            "${wait_timeout_s}" "${extra_cmd[@]}"
+    else
+        launch_gemini "${role}" "${agent_id}" "${host}" "${http_port}" \
+            "${wait_timeout_s}"
+    fi
+}
+
+main "$@"

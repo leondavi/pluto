@@ -472,8 +472,10 @@ servers["pluto"] = {
     # Belt-and-braces for push wakeups: stdio MCP children normally
     # inherit the host session's environment, but if a Claude Code build
     # sanitizes it, ${VAR} expansion here re-injects the inbox-socket
-    # endpoint (expanded by Claude Code at server spawn time; harmless
-    # empty strings on hosts without the feature).
+    # endpoint. Trade-off: a host that merges this env block WITHOUT
+    # expanding ${} shadows a genuinely inherited value with the literal
+    # (which from_env treats as unset) — push falls back to disabled
+    # rather than broken there.
     "env": {
         "CLAUDE_CODE_MESSAGING_SOCKET": "${CLAUDE_CODE_MESSAGING_SOCKET}",
         "CLAUDE_CODE_MESSAGING_TOKEN": "${CLAUDE_CODE_MESSAGING_TOKEN}",

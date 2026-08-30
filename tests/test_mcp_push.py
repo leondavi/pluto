@@ -223,6 +223,36 @@ class TestSocketNotifier(unittest.IsolatedAsyncioTestCase):
         await self._settle()
         self.assertEqual(self.connections, 0)
 
+    async def test_failed_wakeup_retries_and_delivers(self):
+        # A transient send failure must not strand the wakeup: pending
+        # state is restored and the flush rescheduled.
+        n = self._notifier()
+        # Longer than one _settle() so exactly one failure lands before
+        # the socket "comes back", and the retry fires in the second.
+        n.RETRY_BACKOFF_S = 0.4
+        good_path = n._socket_path
+        n._socket_path = os.path.join(self.tmpdir, "missing.sock")
+        await n.notify_new_messages([{"from": "p", "payload": {}}])
+        await self._settle()  # first flush fails
+        self.assertEqual(n.summary()["send_failures"], 1)
+        n._socket_path = good_path  # socket comes back
+        await self._settle()  # retry fires without any new arrival
+        s = n.summary()
+        self.assertEqual(s["wakeups_sent"], 1)
+        self.assertIn("1 new Pluto message(s)",
+                      json.loads(self.received[-1])["message"]["content"])
+
+    async def test_min_rewake_elapsed_allows_second_wakeup(self):
+        n = self._notifier()
+        n.MIN_REWAKE_S = 0.0
+        await n.notify_new_messages([{"from": "p", "payload": {}}])
+        await self._settle()
+        self.assertEqual(n.summary()["wakeups_sent"], 1)
+        # Still awaiting drain, but MIN_REWAKE_S has elapsed → re-wake.
+        await n.notify_new_messages([{"from": "p", "payload": {}}])
+        await self._settle()
+        self.assertEqual(n.summary()["wakeups_sent"], 2)
+
 
 class TestInboxPushIntegration(unittest.IsolatedAsyncioTestCase):
     """InboxManager fires the push notifier on absorb and re-arms on drain."""
@@ -276,6 +306,19 @@ class TestInboxPushIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_piggyback_batch_rearms_push(self):
         await self.inbox._absorb([self._msg(1)])
         await self.inbox.piggyback({"status": "ok"})
+        self.assertEqual(self.push.drained, 1)
+
+    async def test_piggyback_single_mode_rearms_only_when_empty(self):
+        self.inbox.set_delivery_mode("single")
+        await self.inbox._absorb([self._msg(1), self._msg(2)])
+        await self.inbox.piggyback({"status": "ok"})  # pops head, 1 left
+        self.assertEqual(self.push.drained, 0)
+        await self.inbox.piggyback({"status": "ok"})  # pops last
+        self.assertEqual(self.push.drained, 1)
+
+    async def test_wait_for_messages_drain_rearms_push(self):
+        await self.inbox._absorb([self._msg(1)])
+        await self.inbox.wait_for_messages(timeout_s=0.1, drain=True)
         self.assertEqual(self.push.drained, 1)
 
 

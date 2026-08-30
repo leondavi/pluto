@@ -314,12 +314,19 @@ are suppressed until a drain path empties the buffer
 (`notify_drained()` re-arms) or `MIN_REWAKE_S` (30 s) elapses — this
 also stays clear of the host's identical-repeat and burst filters.
 
-**Failure handling.** Sends are best-effort and never propagate to
-delivery. After 3 consecutive connect/send failures the notifier goes
-`degraded` and retries at most once per 300 s; one success fully
-re-arms. State is surfaced in `pluto_session` / `pluto_health` under
-`push`: `{available, degraded, socket, wakeups_sent, suppressed,
-send_failures, last_error, last_wakeup_at}`.
+**Failure handling.** Send errors never propagate to delivery, and a
+failed wakeup is never dropped: its pending state is restored and the
+flush rescheduled (5 s backoff; after 3 consecutive failures the
+notifier goes `degraded` and retries once per 300 s until a success
+fully re-arms it). State is surfaced in `pluto_session` /
+`pluto_health` under `push`: `{available, degraded, socket,
+wakeups_sent, suppressed, send_failures, last_error, last_wakeup_at}`.
+
+**Known limitation.** Suppression re-arms on drain or on the next
+arrival after `MIN_REWAKE_S` — there is no free-running timer. If the
+agent partially drains (single mode, `remaining > 0`) and then idles
+with no further arrivals, leftover buffered messages are not
+re-announced; they surface on the next tool call's piggyback.
 
 **Runtime detection** is env-var presence plus a successful connect —
 never version sniffing. The long-poll path remains the correctness

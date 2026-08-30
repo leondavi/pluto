@@ -69,6 +69,10 @@ class SocketNotifier:
     # retry at most once per RETRY_COOLDOWN_S. A success fully re-arms.
     DISABLE_AFTER_FAILURES = 3
     RETRY_COOLDOWN_S = 300.0
+    # Retry delay after a non-degraded send failure. A failed wakeup is
+    # never dropped — pending state is restored and rescheduled so a
+    # transient failure can't strand buffered messages wake-less.
+    RETRY_BACKOFF_S = 5.0
 
     def __init__(
         self,
@@ -124,7 +128,10 @@ class SocketNotifier:
         reason = None
         if socket_path is None:
             reason = f"{_SOCKET_ENV} not set (not a Claude Code >=2.1.224 host?)"
-            if os.environ.get(_PUSH_ENV):
+            forced_on = (os.environ.get(_PUSH_ENV) or "").strip().lower() in (
+                "1", "true", "yes", "on",
+            )
+            if forced_on:
                 logger.error(
                     "%s requested but %s is absent — push wakeups unavailable",
                     _PUSH_ENV, _SOCKET_ENV,
@@ -176,6 +183,9 @@ class SocketNotifier:
             self._flush_task = None
 
     async def aclose(self) -> None:
+        # Disable first so late absorbs during teardown can't schedule a
+        # fresh flush after the cancel below.
+        self._enabled = False
         if self._flush_task is not None and not self._flush_task.done():
             self._flush_task.cancel()
             try:
@@ -199,9 +209,20 @@ class SocketNotifier:
 
     # ── Internals ─────────────────────────────────────────────────────────
 
-    async def _flush_after_debounce(self) -> None:
+    def _restore_pending(self, count: int, senders: list[str]) -> None:
+        self._pending_count += count
+        for s in senders:
+            if s not in self._pending_senders:
+                self._pending_senders.append(s)
+
+    def _schedule_flush(self, delay: float) -> None:
+        self._flush_task = asyncio.create_task(
+            self._flush_after_debounce(delay), name="pluto-push-flush",
+        )
+
+    async def _flush_after_debounce(self, delay: Optional[float] = None) -> None:
         try:
-            await asyncio.sleep(self.DEBOUNCE_S)
+            await asyncio.sleep(self.DEBOUNCE_S if delay is None else delay)
         except asyncio.CancelledError:
             raise
         count = self._pending_count
@@ -216,10 +237,14 @@ class SocketNotifier:
                 if self._last_failure_mono is not None else None
             )
             if since_fail is not None and since_fail < self.RETRY_COOLDOWN_S:
+                # Inside the cooldown: keep the wakeup pending and come
+                # back when the cooldown expires — never drop it.
                 self._suppressed += count
+                self._restore_pending(count, senders)
+                self._schedule_flush(self.RETRY_COOLDOWN_S - since_fail)
                 return
         text = (
-            f"[pluto] {count} new Pluto message(s) waiting"
+            f"[pluto:{self._agent_id}] {count} new Pluto message(s) waiting"
             f"{' from ' + ', '.join(senders) if senders else ''}."
             " Call pluto_recv to read them."
         )
@@ -240,6 +265,14 @@ class SocketNotifier:
                         self._consecutive_failures, exc, self.RETRY_COOLDOWN_S,
                     )
                 self._degraded = True
+            # A failed wakeup is retried, not dropped: restore pending
+            # state and reschedule so a transient failure can't strand
+            # buffered messages with no wake ever arriving.
+            self._restore_pending(count, senders)
+            self._schedule_flush(
+                self.RETRY_COOLDOWN_S if self._degraded
+                else self.RETRY_BACKOFF_S
+            )
             return
         self._consecutive_failures = 0
         self._degraded = False
@@ -279,7 +312,7 @@ class SocketNotifier:
         return frames
 
     async def _send(self, text: str) -> None:
-        reader, writer = await asyncio.wait_for(
+        _reader, writer = await asyncio.wait_for(
             asyncio.open_unix_connection(self._socket_path),
             timeout=self.CONNECT_TIMEOUT_S,
         )

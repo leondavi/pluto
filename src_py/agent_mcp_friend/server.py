@@ -300,8 +300,10 @@ class PlutoMCPServer:
         finally:
             if self.autosnap is not None:
                 await asyncio.to_thread(self.autosnap.stop, True)
-            await self.push.aclose()
+            # Stop the inbox first so no late absorb can schedule a fresh
+            # push flush (or wake the host session) after aclose().
             await self.inbox.stop()
+            await self.push.aclose()
             await self.lock_mgr.shutdown()
             if self.client.token:
                 try:

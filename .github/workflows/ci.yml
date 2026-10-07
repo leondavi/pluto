@@ -63,4 +63,4 @@ jobs:
 
       - name: Check syntax
         working-directory: src_py
-        run: python -m py_compile pluto_client.py && python -m py_compile pluto_client_def.py
+        run: python -m compileall -q pluto_client.py pluto_client_def.py pluto_sdk

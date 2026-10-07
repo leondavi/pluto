@@ -2,7 +2,8 @@
 
 `PlutoClient.sh` is the command-line interface for interacting with a running Pluto
 server. It automatically creates a Python virtual environment on first run, then
-delegates to `src_py/pluto_client.py`.
+delegates to `src_py/pluto_client.py`, a thin entry point over the
+`src_py/pluto_sdk/` package (the CLI itself lives in `pluto_sdk/cli.py`).
 
 ---
 

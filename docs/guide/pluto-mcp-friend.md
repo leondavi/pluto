@@ -74,16 +74,23 @@ and unique, e.g. `specialist-1`, `orchestrator`, `reviewer-frontend`.
 ./PlutoMCPFriend.sh --agent-id specialist-1 --role specialist
 ```
 
-**Name conflicts → Pluto auto-suffixes.** If the name you requested is
-already taken by an active session, the Pluto server registers you under
-an auto-generated suffixed variant (e.g. `specialist-1` → `specialist-1-2`)
-rather than refusing the registration. The launcher logs the actual
-registered ID, and Pluto returns it in the registration response. **Always
-use the returned `agent_id`, not the one you requested**, for subsequent
-operations — `pluto_session` will show you the canonical name. This means
-two `./PlutoMCPFriend.sh --agent-id specialist-1 ...` invocations against
-the same Pluto server will both succeed; the second one ends up under a
-different ID.
+**Name conflicts are refused by default (v0.5.0).** If a live agent
+already holds the name, the server would register you under a suffixed
+variant (e.g. `specialist-1` → `specialist-1-x7k2pq`). Peers keep
+messaging `specialist-1`, so every message lands in the *other* session
+and yours is never woken. To prevent that, the launcher checks the
+server's live agents first:
+
+- **Expert mode** (`--agent-id` given) exits with an error. Pick another
+  name, close the stale session holding it, or pass `--allow-rename` to
+  accept the suffix knowingly.
+- **Wizard** warns and asks again. Typing the same name twice proceeds.
+
+If a rename still happens (for example, a race between two launches),
+the adapter makes it loud. It logs an error, reports
+`requested_agent_id` and `renamed_by_server: true` in `pluto_session`
+and `pluto_health`, and attaches a one-time `_pluto_identity` notice to
+the first tool result so the model introduces itself under the real id.
 
 ### Activating a role inside Claude — invoke the MCP slash command
 
@@ -535,17 +542,38 @@ The role is also reachable mid-session via the slash menu
 | `--ttl-ms <ms>` | `600000` | session TTL |
 | `--wait-timeout-s <sec>` | `60` | `pluto_wait_for_messages` per-call block duration (the watcher subagent loops short calls of this length to dodge Claude Code's 600 s stream watchdog). Keep ≤ 120. Embedded into the role connection block, the `/pluto-watch` slash prompt, and the tool's argument default. |
 | `--log-level <lvl>` | `WARNING` | adapter stderr verbosity |
-| `--no-launch` | off | write `.mcp.json`, don't start Claude |
+| `--no-launch` | off | write the project `.mcp.json`, don't start Claude |
 | `--no-wizard` | off | refuse the interactive wizard; require all args |
+| `--allow-rename` | off | launch even if `--agent-id` is already connected (you get a suffixed id) |
 | `--version` |  | print version |
 | `--help` |  | show this help |
 | `-- <cmd...>` |  | extra args forwarded verbatim to `claude` |
 
 ---
 
-## .mcp.json layout
+## MCP config location
 
-`PlutoMCPFriend.sh` writes (or merges into) `<repo>/.mcp.json`:
+A normal launch writes a **private per-agent config** and passes it to
+Claude with `--mcp-config`:
+
+```
+${PLUTO_STATE_DIR:-/tmp/pluto}/mcp/<agent-id>.mcp.json
+```
+
+Before v0.5.0 the launcher wrote the repo's project-scoped `.mcp.json`.
+Claude Code loads that file for *every* session started in the repo, so
+each extra `claude` window spawned its own adapter under the same agent
+id. The server renamed those to `<id>-<suffix>`, they showed up as ghost
+agents, and messages could reach the wrong window. On launch, the
+launcher now removes a `pluto` entry an older version left in the
+project `.mcp.json`. It only touches an entry that points at this repo's
+adapter, and keeps any other servers in the file.
+
+`--no-launch` still writes the project `.mcp.json`, because you asked for
+a file to wire up by hand. The launcher warns that every session in the
+repo will then join Pluto as that agent.
+
+The file layout:
 
 ```json
 {
@@ -565,8 +593,8 @@ The role is also reachable mid-session via the slash menu
 }
 ```
 
-Other `mcpServers` entries you have configured are preserved — only the
-`pluto` key is overwritten. The file is gitignored (per-user).
+Other `mcpServers` entries in the target file are preserved; only the
+`pluto` key is overwritten. The project `.mcp.json` is gitignored.
 
 To run the adapter from a custom MCP client:
 
@@ -659,6 +687,23 @@ deleted the venv, the next launch recreates it.
 Verify Claude was launched with `--mcp-config <path>/.mcp.json` (the
 launcher does this automatically). Run `claude --mcp-config <path>` and
 look at Claude's MCP startup log for errors from the `pluto` server.
+
+**Messages sent to my agent never wake this session.**
+Run `pluto_session`. If `renamed_by_server` is true, the server gave this
+session a suffixed id because another live agent holds the name you asked
+for, and peers' messages go there. Close the other session (often a stale
+Claude window in the same repo) and relaunch, or tell peers the real id.
+
+**Broadcasts never arrive.**
+Servers before v0.5.0 dropped broadcasts and topic messages for HTTP
+agents, which includes every MCP adapter. Upgrade and restart the server.
+
+**Team task events.** The server announces every task assignment and
+update to every agent. By default the adapter only surfaces assignments
+addressed to this agent and updates on tasks this agent assigned with
+`pluto_task_assign`; the rest are settled silently so they don't cost a
+model turn each. Set `PLUTO_MCP_TASK_EVENTS=all` in the adapter's
+environment to receive every task event.
 
 **Inbox never delivers.**
 Check `pluto://inbox` resource by reading it directly from Claude Code.

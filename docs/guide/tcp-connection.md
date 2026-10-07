@@ -139,7 +139,10 @@ port:8080                         # Network port
 
 ## Python Client Library
 
-The library at `src_py/pluto_client.py` wraps the TCP protocol.
+The `pluto_sdk` package in `src_py/` wraps the protocol: `tcp_client.py`
+holds `PlutoClient` (TCP) and `http_client.py` holds `PlutoHttpClient`
+(HTTP). Import both from `pluto_client`, which re-exports the package API
+and stays the stable import path.
 
 ### Basic Usage
 

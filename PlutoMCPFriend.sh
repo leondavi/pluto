@@ -92,8 +92,14 @@ Options:
                           calls of this length so it produces output
                           regularly and never trips Claude Code's stream
                           watchdog. Keep <=120 to be safe.
-  --no-launch             Generate .mcp.json but do not start Claude.
+  --no-launch             Write the project .mcp.json but do not start Claude.
+                          (A normal launch uses a private per-agent config
+                          under ${PLUTO_STATE_DIR:-/tmp/pluto}/mcp instead.)
   --no-wizard             Refuse the interactive wizard; require all args.
+  --allow-rename          Launch even if --agent-id is already connected to
+                          the server (you get "<id>-<suffix>" and messages
+                          sent to <id> go to the other session). Default:
+                          refuse, since that silently breaks delivery.
   --skip-input            Skip "Press Enter" prompts in the wizard (intro +
                           confirm). Useful for automated relaunches.
   --restore <path>        After registering, apply a previously saved .plut
@@ -308,6 +314,40 @@ server_health() {
     return 1
 }
 
+# Print the ids of agents currently connected to the server, one per line.
+# Empty output when the server is unreachable.
+live_agent_ids() {
+    local host="$1" port="$2"
+    curl -fsS --max-time 2 "http://${host}:${port}/agents" 2>/dev/null \
+        | "${VENV_DIR}/bin/python" -c 'import json,sys
+try:
+    for a in json.load(sys.stdin).get("agents", []):
+        print(a)
+except Exception:
+    pass' 2>/dev/null
+}
+
+# True if a *live* agent already holds this id. The server would then
+# register us under "<id>-<suffix>" and every message addressed to <id>
+# would land in the other session's inbox — the #1 cause of "my Claude
+# never gets woken up".
+agent_id_taken() {
+    local host="$1" port="$2" id="$3"
+    live_agent_ids "$host" "$port" | grep -qxF -- "$id"
+}
+
+explain_taken_id() {
+    local id="$1"
+    warn "Agent ID ${BOLD}${id}${NC} is already connected to this Pluto server."
+    cat >&2 <<TAKEN_EOF
+  ${DIM}If you launch anyway, the server registers this session as
+  ${id}-<suffix>, and messages other agents send to '${id}' will
+  reach the OTHER session, not this one. If that other session is a
+  stale Claude window of yours, close it (or run /mcp there) first.${NC}
+
+TAKEN_EOF
+}
+
 server_version() {
     local host="$1" port="$2"
     server_health "$host" "$port" | "${VENV_DIR}/bin/python" -c \
@@ -426,15 +466,71 @@ offer_to_start_server() {
     esac
 }
 
-# ── .mcp.json generation ────────────────────────────────────────────────────
+# ── MCP config generation ───────────────────────────────────────────────────
+#
+# Where the config goes matters. A `pluto` entry in the repo's project-
+# scoped .mcp.json is picked up by EVERY `claude` started in this repo,
+# not just the one this script launches: each such session spawns an
+# adapter that registers under the same agent ID, the server renames all
+# but the first to "<id>-<suffix>", and messages to <id> reach whichever
+# session registered first. So a launch writes a private per-agent file
+# and passes it with --mcp-config; only --no-launch (an explicit request
+# for a config to wire up by hand) writes the project .mcp.json.
+
+MCP_STATE_DIR="${PLUTO_STATE_DIR:-/tmp/pluto}/mcp"
+
+# Path of the MCP config for this agent. $2 = "project" for --no-launch.
+mcp_config_path() {
+    local agent_id="$1" scope="$2"
+    if [[ "${scope}" == "project" ]]; then
+        echo "${SCRIPT_DIR}/.mcp.json"
+        return
+    fi
+    local safe_id
+    safe_id=$(printf '%s' "${agent_id}" | tr -c 'A-Za-z0-9._-' '_')
+    echo "${MCP_STATE_DIR}/${safe_id}.mcp.json"
+}
+
+# Drop a `pluto` entry that an older version of this launcher left in the
+# project .mcp.json (identified by pointing at this repo's adapter entry
+# point), so plain `claude` sessions in the repo stop joining Pluto as
+# that agent. Other servers in the file are left untouched; the file is
+# removed only if nothing else remains in it.
+remove_stale_project_entry() {
+    local target="${SCRIPT_DIR}/.mcp.json"
+    [[ -f "${target}" ]] || return 0
+    "${VENV_DIR}/bin/python" - "${target}" "${PY_ENTRY}" <<'PYEOF'
+import json, os, sys
+target, entry = sys.argv[1:]
+try:
+    with open(target) as f:
+        data = json.load(f) or {}
+except Exception:
+    sys.exit(0)  # not ours to repair
+servers = data.get("mcpServers") or {}
+pluto = servers.get("pluto") or {}
+if entry not in (pluto.get("args") or []):
+    sys.exit(0)
+del servers["pluto"]
+if not servers and set(data) <= {"mcpServers"}:
+    os.remove(target)
+else:
+    data["mcpServers"] = servers
+    with open(target, "w") as f:
+        json.dump(data, f, indent=2)
+print(target)
+PYEOF
+}
 
 write_mcp_json() {
+    local target="$1"
+    shift
     local agent_id="$1" host="$2" port="$3" ttl="$4" log_level="$5" wait_s="$6"
     local restore_path="${7:-}"
     local snapshot_dir="${8:-}"
     local no_auto_snapshot="${9:-}"
     local auto_interval="${10:-}"
-    local target="${SCRIPT_DIR}/.mcp.json"
+    mkdir -p "$(dirname "${target}")"
     "${VENV_DIR}/bin/python" - "$target" "$agent_id" "$host" "$port" "$ttl" \
         "$log_level" "$wait_s" "${VENV_DIR}/bin/python" "${PY_ENTRY}" \
         "$restore_path" "$snapshot_dir" "$no_auto_snapshot" "$auto_interval" <<'PYEOF'
@@ -442,6 +538,7 @@ import json, os, sys
 (target, agent_id, host, port, ttl, log_level, wait_s, py_bin,
  entry, restore_path, snapshot_dir, no_auto_snapshot, auto_interval) = sys.argv[1:]
 existing = {}
+# Merge into an existing file so other servers configured there survive.
 if os.path.isfile(target):
     try:
         with open(target) as f:
@@ -626,6 +723,7 @@ wizard_step_server() {
 }
 
 wizard_step_agent_id() {
+    local host="$1" port="$2"
     {
         section "Step 2/4 — Agent ID"
         cat <<EOF
@@ -636,12 +734,19 @@ wizard_step_agent_id() {
 
 EOF
     } >&2
-    local id=""
+    local id="" last_taken=""
     while [[ -z "$id" ]]; do
         # `read -rp` writes the prompt to stderr already.
         read -rp "  Agent ID: " id < /dev/tty
         if [[ -z "$id" ]]; then
             warn "Agent ID cannot be empty." >&2
+            continue
+        fi
+        if [[ "$id" != "$last_taken" ]] && agent_id_taken "$host" "$port" "$id"; then
+            explain_taken_id "$id"
+            echo "  ${DIM}Pick another name, or type the same name again to proceed anyway.${NC}" >&2
+            last_taken="$id"
+            id=""
         fi
     done
     echo "$id"
@@ -691,7 +796,7 @@ wizard_step_confirm() {
     Agent CLI        : ${SUPPORTED_CLI}
     Role             : ${role_display}
     Watcher block    : ${wait_s}s  (--wait-timeout-s)
-    .mcp.json        : ${SCRIPT_DIR}/.mcp.json
+    MCP config       : $(mcp_config_path "${agent_id}" launch)
 
 EOF
     if [[ "${skip}" != "skip" ]]; then
@@ -709,7 +814,8 @@ launch_claude() {
 
     print_post_launch_tips "${agent_id}" "${host}" "${port}" "${wait_s}"
 
-    local cmd=("${SUPPORTED_CLI}" "--mcp-config" "${SCRIPT_DIR}/.mcp.json")
+    local cmd=("${SUPPORTED_CLI}" "--mcp-config" \
+        "$(mcp_config_path "${agent_id}" launch)")
     if [[ -n "${role}" ]]; then
         local sys_prompt
         sys_prompt=$(build_role_system_prompt \
@@ -735,6 +841,7 @@ main() {
     local log_level="WARNING"
     local no_launch=false
     local no_wizard=false
+    local allow_rename=false
     local restore_path=""
     local resume=false
     local snapshot_dir=""
@@ -763,6 +870,7 @@ main() {
             --log-level) log_level="$2"; shift 2 ;;
             --no-launch) no_launch=true; shift ;;
             --no-wizard) no_wizard=true; shift ;;
+            --allow-rename) allow_rename=true; shift ;;
             --restore) restore_path="$2"; shift 2 ;;
             --resume) resume=true; shift ;;
             --snapshot-dir) snapshot_dir="$2"; shift 2 ;;
@@ -889,7 +997,7 @@ main() {
             warn "Continuing without a reachable Pluto server."
         fi
 
-        agent_id=$(wizard_step_agent_id)
+        agent_id=$(wizard_step_agent_id "${host}" "${http_port}")
 
         if ! $no_launch && ! wizard_step_check_claude; then
             err "Cannot launch — falling back to --no-launch (config-only mode)."
@@ -915,11 +1023,30 @@ main() {
                 warn "Continuing — pluto_* tools will return errors until the server is up."
             fi
         fi
+        if agent_id_taken "${host}" "${http_port}" "${agent_id}"; then
+            explain_taken_id "${agent_id}"
+            if ! $allow_rename; then
+                err "Refusing to launch with a taken agent ID. Pick another --agent-id,"
+                err "or pass --allow-rename to accept a server-assigned suffix."
+                exit 1
+            fi
+            warn "--allow-rename given: continuing; check pluto_session for the real id."
+        fi
     fi
 
-    # ── Generate .mcp.json ──────────────────────────────────────────────────
-    local mcp_json
-    mcp_json=$(write_mcp_json "${agent_id}" "${host}" "${http_port}" \
+    # ── Generate the MCP config ─────────────────────────────────────────────
+    local mcp_json scope=launch
+    $no_launch && scope=project
+    if [[ "${scope}" == "launch" ]]; then
+        local cleaned
+        cleaned=$(remove_stale_project_entry)
+        if [[ -n "${cleaned}" ]]; then
+            info "Removed the old 'pluto' entry from ${cleaned}"
+            info "(it made every claude session in this repo join Pluto as one agent)."
+        fi
+    fi
+    mcp_json=$(write_mcp_json "$(mcp_config_path "${agent_id}" "${scope}")" \
+        "${agent_id}" "${host}" "${http_port}" \
         "${ttl_ms}" "${log_level}" "${wait_timeout_s}" "${restore_path}" \
         "${snapshot_dir}" "${no_auto_snapshot}" "${auto_snapshot_interval}")
     ok "Wrote MCP config:  ${mcp_json}"
@@ -947,6 +1074,11 @@ EOF
 
   ${BOLD}Wire this config into Claude Code:${NC}
     ${CYAN}claude --mcp-config ${mcp_json}${NC}
+
+  ${YELLOW}Note:${NC} ${DIM}this is the repo's project .mcp.json, so ANY claude session
+  started in this repo will also join Pluto as '${agent_id}' (the second
+  one gets a renamed id and misses messages). Launch through this script
+  instead to keep the config private to one session.${NC}
 
 EOF
         exit 0

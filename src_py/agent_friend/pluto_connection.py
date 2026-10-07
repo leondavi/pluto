@@ -49,6 +49,10 @@ class PlutoConnection:
         self._messages: list[dict] = []
         self._seen_seqs: set[int] = set()
         self._last_acked_seq: int = 0
+        # Highest seq that is settled locally: injected into the agent or
+        # classified noise. The server ack trails it, clamped below any
+        # message still buffered (see _safe_ack_cursor).
+        self._settled_hwm: int = 0
         self._lock = threading.Lock()
 
     # ── Connection lifecycle ──────────────────────────────────────────────
@@ -146,7 +150,88 @@ class PlutoConnection:
         if isinstance(payload, dict):
             if payload.get("event") in cls._NOISE_PAYLOAD_EVENTS:
                 return True
+            # The server's periodic "keep pinging" broadcast targets TCP
+            # sessions; pre-v0.5.0 servers could leak it to HTTP agents.
+            if (top_event == "broadcast" and msg.get("from") == "pluto"
+                    and payload.get("type") == "heartbeat_reminder"):
+                return True
         return False
+
+    def _should_skip(self, msg: dict) -> bool:
+        """Noise, or a task assignment broadcast addressed to another agent.
+
+        The server announces every assignment to every agent; typing other
+        agents' assignments into this agent's terminal only distracts it.
+        Status updates (``task_updated``) are kept: an orchestrator running
+        under the wrapper needs them, and the wrapper cannot tell which
+        tasks its agent assigned.
+        """
+        if self._is_noise(msg):
+            return True
+        payload = msg.get("payload")
+        return (
+            msg.get("event") == "broadcast"
+            and isinstance(payload, dict)
+            and payload.get("event") == "task_assigned"
+            and payload.get("assignee") != self.agent_id
+        )
+
+    def _safe_ack_cursor(self, candidate: int) -> int:
+        """Clamp an ack cursor below every still-buffered message.
+
+        ``ack(up_to)`` deletes EVERY queued message with seq <= up_to on
+        the server. Acking past a message that is buffered here but not yet
+        injected would drop it server-side, so a failed injection or a
+        wrapper restart would lose it. Caller must hold ``self._lock``.
+        """
+        pending = [int(m["seq_token"]) for m in self._messages if "seq_token" in m]
+        if pending:
+            candidate = min(candidate, min(pending) - 1)
+        return candidate
+
+    def _ack_up_to(self, up_to: int) -> None:
+        """Ack through *up_to* and advance the peek cursor.
+
+        Best effort: on failure the cursor stays put and the next ingest
+        or delivery retries, since both recompute from ``_settled_hwm``.
+        """
+        if up_to <= self._last_acked_seq or self._client is None:
+            return
+        try:
+            self._client.ack(up_to)
+            self._last_acked_seq = up_to
+        except Exception as exc:
+            logger.warning("Pluto ack(up_to=%d) failed: %s — will retry", up_to, exc)
+
+    def _ingest(self, msgs: list[dict]) -> None:
+        """Buffer fresh actionable messages from one peek and settle noise.
+
+        Noise is acked only up to the safe cursor; anything above it is
+        re-peeked and re-classified next cycle, which is harmless.
+        """
+        actionable = [m for m in msgs if not self._should_skip(m)]
+        noise_seqs = [
+            int(m["seq_token"]) for m in msgs
+            if self._should_skip(m) and "seq_token" in m
+        ]
+        fresh = []
+        with self._lock:
+            for m in actionable:
+                seq = m.get("seq_token")
+                if seq is None or int(seq) in self._seen_seqs:
+                    continue
+                self._seen_seqs.add(int(seq))
+                fresh.append(m)
+            self._messages.extend(fresh)
+            if noise_seqs:
+                self._settled_hwm = max(self._settled_hwm, max(noise_seqs))
+            up_to = self._safe_ack_cursor(self._settled_hwm)
+        self._ack_up_to(up_to)
+        if self.verbose and (actionable or noise_seqs):
+            logger.debug(
+                "Pluto peek: %d actionable (+%d fresh), %d noise (acked to %d)",
+                len(actionable), len(fresh), len(noise_seqs), up_to,
+            )
 
     @staticmethod
     def _is_session_lost(exc: BaseException) -> bool:
@@ -186,7 +271,9 @@ class PlutoConnection:
             self._client = None
             ok = self.connect()
             if ok:
+                # Fresh session, fresh seq space: reset every cursor.
                 self._last_acked_seq = 0
+                self._settled_hwm = 0
                 self._seen_seqs.clear()
                 logger.warning(
                     "Pluto re-registered; new token %s",
@@ -234,33 +321,7 @@ class PlutoConnection:
             try:
                 msgs = self._client.peek(since_token=self._last_acked_seq)
                 if msgs:
-                    actionable = [m for m in msgs if not self._is_noise(m)]
-                    noise_seqs = [
-                        int(m["seq_token"]) for m in msgs
-                        if self._is_noise(m) and "seq_token" in m
-                    ]
-                    with self._lock:
-                        fresh = []
-                        for m in actionable:
-                            seq = m.get("seq_token")
-                            if seq is None or seq in self._seen_seqs:
-                                continue
-                            self._seen_seqs.add(int(seq))
-                            fresh.append(m)
-                        if fresh:
-                            self._messages.extend(fresh)
-                    if noise_seqs:
-                        try:
-                            self._client.ack(max(noise_seqs))
-                        except Exception:
-                            pass
-                    if self.verbose and (actionable or noise_seqs):
-                        logger.debug(
-                            "Pluto peek: %d actionable (+%d fresh), "
-                            "%d noise acked",
-                            len(actionable), len(fresh) if actionable else 0,
-                            len(noise_seqs),
-                        )
+                    self._ingest(msgs)
             except (PlutoError, Exception) as exc:
                 if self._is_session_lost(exc):
                     if not self._reregister():
@@ -277,27 +338,24 @@ class PlutoConnection:
             return list(self._messages)
 
     def confirm_delivered(self, messages: list[dict]) -> None:
-        """Mark *messages* as successfully injected and ack them."""
-        seqs = [int(m["seq_token"]) for m in messages if "seq_token" in m]
+        """Mark *messages* as successfully injected and ack them.
+
+        They leave the local buffer immediately. The server-side ack is
+        clamped below any message still buffered (see
+        :meth:`_safe_ack_cursor`), so confirming a later message never
+        deletes an earlier one that has not been injected yet.
+        """
+        seqs = {int(m["seq_token"]) for m in messages if "seq_token" in m}
         if not seqs:
             return
-        up_to = max(seqs)
-        try:
-            if self._client is not None:
-                self._client.ack(up_to)
-                self._last_acked_seq = max(self._last_acked_seq, up_to)
-        except Exception as exc:
-            logger.warning(
-                "Pluto ack(up_to=%d) failed: %s — will retry next peek",
-                up_to, exc,
-            )
-            return
-        acked = set(seqs)
         with self._lock:
             self._messages = [
                 m for m in self._messages
-                if int(m.get("seq_token", -1)) not in acked
+                if int(m.get("seq_token", -1)) not in seqs
             ]
+            self._settled_hwm = max(self._settled_hwm, max(seqs))
+            up_to = self._safe_ack_cursor(self._settled_hwm)
+        self._ack_up_to(up_to)
 
     def abort_delivery(self, messages: list[dict]) -> None:
         """Record that *messages* could not be delivered; keep them in buffer."""

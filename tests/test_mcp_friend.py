@@ -126,6 +126,82 @@ class TestInboxNoiseFiltering(unittest.TestCase):
         self.assertTrue(_is_noise(msg))
 
 
+    def test_server_heartbeat_reminder_filtered(self):
+        msg = {
+            "event": "broadcast",
+            "from": "pluto",
+            "payload": {"type": "heartbeat_reminder", "message": "ping"},
+        }
+        self.assertTrue(_is_noise(msg))
+
+    def test_peer_broadcast_kept(self):
+        msg = {"event": "broadcast", "from": "alice",
+               "payload": {"type": "heartbeat_reminder"}}
+        # Only the server's own reminder is noise; a peer's broadcast is not.
+        self.assertFalse(_is_noise(msg))
+
+
+class TestTaskEventRelevance(unittest.IsolatedAsyncioTestCase):
+    """The server broadcasts every task assignment and update to every
+    agent. Only the ones this agent is party to may wake it."""
+
+    @staticmethod
+    def _assigned(seq, assignee, task_id="T-1"):
+        return {"event": "broadcast", "from": "orch", "seq_token": seq,
+                "payload": {"event": "task_assigned", "task_id": task_id,
+                            "assignee": assignee, "description": "d"}}
+
+    @staticmethod
+    def _updated(seq, task_id):
+        return {"event": "broadcast", "from": "worker", "seq_token": seq,
+                "payload": {"event": "task_updated", "task_id": task_id,
+                            "agent_id": "worker", "status": "complete"}}
+
+    async def test_task_assigned_to_me_is_delivered(self):
+        inbox = InboxManager(FakeHttpClient())
+        await inbox._absorb([self._assigned(1, "fake-agent")])
+        self.assertEqual(len(await inbox.drain()), 1)
+
+    async def test_task_assigned_to_someone_else_is_skipped_and_acked(self):
+        client = FakeHttpClient()
+        inbox = InboxManager(client)
+        await inbox._absorb([self._assigned(1, "other-agent")])
+        self.assertEqual(await inbox.drain(), [])
+        # Settled like noise so it doesn't come back on the next peek.
+        self.assertIn(1, client.acks)
+
+    async def test_task_update_only_for_tasks_i_assigned(self):
+        inbox = InboxManager(FakeHttpClient())
+        inbox.note_assigned_task("T-mine")
+        await inbox._absorb([self._updated(1, "T-mine"),
+                             self._updated(2, "T-theirs")])
+        drained = await inbox.drain()
+        self.assertEqual([m["seq_token"] for m in drained], [1])
+
+    async def test_all_mode_delivers_everything(self):
+        os.environ["PLUTO_MCP_TASK_EVENTS"] = "all"
+        try:
+            inbox = InboxManager(FakeHttpClient())
+        finally:
+            del os.environ["PLUTO_MCP_TASK_EVENTS"]
+        await inbox._absorb([self._assigned(1, "other-agent"),
+                             self._updated(2, "T-theirs")])
+        self.assertEqual(len(await inbox.drain()), 2)
+
+    async def test_task_assign_tool_records_task_id(self):
+        from agent_mcp_friend.tools import register_tools
+        from mcp.server.fastmcp import FastMCP
+
+        client = FakeHttpClient()
+        client.task_assign = lambda *a, **k: {"status": "ok", "task_id": "T-42"}
+        inbox = InboxManager(client)
+        mcp = FastMCP(name="pluto-test")
+        register_tools(mcp, client, inbox, LockManager(client))
+        await mcp.call_tool("pluto_task_assign", {"assignee": "w", "description": "x"})
+        await inbox._absorb([self._updated(5, "T-42")])
+        self.assertEqual(len(await inbox.drain()), 1)
+
+
 class TestInboxPiggyback(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.client = FakeHttpClient()
@@ -672,6 +748,67 @@ class TestToolWrappers(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(call_name, {"register", "peek", "ack",
                                          "send", "broadcast", "renew",
                                          "release", "list_agents_detailed"})
+
+
+class TestServerRenameSurfacing(unittest.IsolatedAsyncioTestCase):
+    """When the requested agent id is held by a live agent, Pluto registers
+    the adapter under '<id>-<suffix>'. That must be loud: the role prompt
+    still says '<id>', so peers keep messaging a name that routes to the
+    other session and this one is never woken."""
+
+    class _Server:
+        requested_agent_id = "Yehuda"
+
+    async def test_identity_notice_fires_once_and_session_reports_rename(self):
+        from agent_mcp_friend.tools import register_tools
+        from mcp.server.fastmcp import FastMCP
+
+        client = FakeHttpClient()
+        client.agent_id = "Yehuda-d6a4fc"
+        inbox = InboxManager(client)
+        lock_mgr = LockManager(client)
+        mcp = FastMCP(name="pluto-test")
+        register_tools(mcp, client, inbox, lock_mgr, server=self._Server())
+
+        first = json.dumps(await mcp.call_tool("pluto_recv", {}), default=str)
+        self.assertIn("_pluto_identity", first)
+        self.assertIn("Yehuda-d6a4fc", first)
+        self.assertIn("already taken", first)
+        second = json.dumps(await mcp.call_tool("pluto_recv", {}), default=str)
+        self.assertNotIn("_pluto_identity", second)
+
+        session = json.dumps(await mcp.call_tool("pluto_session", {}), default=str)
+        # FastMCP double-encodes the JSON body; match on tokens, not quoting.
+        self.assertIn("requested_agent_id", session)
+        self.assertIn("renamed_by_server", session)
+        self.assertRegex(session, r'renamed_by_server\\?": true')
+
+    async def test_no_notice_when_name_was_granted(self):
+        from agent_mcp_friend.tools import register_tools
+        from mcp.server.fastmcp import FastMCP
+
+        client = FakeHttpClient()
+        inbox = InboxManager(client)
+        lock_mgr = LockManager(client)
+        mcp = FastMCP(name="pluto-test")
+        register_tools(mcp, client, inbox, lock_mgr, server=None)
+        blob = json.dumps(await mcp.call_tool("pluto_recv", {}), default=str)
+        self.assertNotIn("_pluto_identity", blob)
+
+    def test_register_records_rename_and_relabels_push(self):
+        server = PlutoMCPServer(agent_id="Yehuda", host="localhost", http_port=9999)
+        server.client.register = lambda: {"status": "ok", "agent_id": "Yehuda-d6a4fc"}
+        self.assertTrue(server._register_blocking())
+        self.assertEqual(server.agent_id, "Yehuda-d6a4fc")
+        self.assertEqual(server.requested_agent_id, "Yehuda")
+        # The socket wakeup text must name the id peers actually need.
+        self.assertEqual(server.push._agent_id, "Yehuda-d6a4fc")
+
+    def test_register_without_rename_leaves_requested_unset(self):
+        server = PlutoMCPServer(agent_id="solo", host="localhost", http_port=9999)
+        server.client.register = lambda: {"status": "ok", "agent_id": "solo"}
+        self.assertTrue(server._register_blocking())
+        self.assertIsNone(server.requested_agent_id)
 
 
 # ────────────────────────────────────────────────────────────────────────────

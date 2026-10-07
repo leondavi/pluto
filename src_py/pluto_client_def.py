@@ -1,7 +1,7 @@
 """
 pluto_client_def.py — Definitions, constants, and type aliases for pluto_client.
 
-Import this module in pluto_client.py. Do not add logic here.
+Imported by the pluto_sdk package modules. Do not add logic here.
 """
 
 from typing import Callable, Dict, List, Optional

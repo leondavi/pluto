@@ -60,6 +60,10 @@ v021_test_() ->
            fun() -> t_http_send(TcpPort, HttpPort) end},
           {"http broadcast",
            fun() -> t_http_broadcast(TcpPort, HttpPort) end},
+          {"http agent receives broadcast",
+           fun() -> t_http_receives_broadcast(HttpPort) end},
+          {"http subscriber receives topic publish",
+           fun() -> t_http_receives_topic_publish(TcpPort, HttpPort) end},
           {"http unregister",
            fun() -> t_http_unregister(HttpPort) end},
           {"http subscribe topic",
@@ -232,6 +236,73 @@ t_http_broadcast(TcpPort, HttpPort) ->
 
     gen_tcp:close(Sock),
     http_post(HttpPort, "/agents/unregister", #{<<"token">> => Token}).
+
+%% Regression: broadcast fan-out used to require a session pid, which HTTP
+%% agents never have — so every MCP/HTTP agent silently missed broadcasts.
+t_http_receives_broadcast(HttpPort) ->
+    Sender = rand_agent(),
+    Receiver = rand_agent(),
+    {ok, RegS} = http_post(HttpPort, "/agents/register", #{<<"agent_id">> => Sender}),
+    {ok, RegR} = http_post(HttpPort, "/agents/register", #{<<"agent_id">> => Receiver}),
+    TokS = maps:get(<<"token">>, RegS),
+    TokR = maps:get(<<"token">>, RegR),
+
+    {ok, BcResp} = http_post(HttpPort, "/agents/broadcast",
+                              #{<<"token">> => TokS,
+                                <<"payload">> => #{<<"msg">> => <<"to everyone">>}}),
+    ?assertEqual(<<"ok">>, maps:get(<<"status">>, BcResp)),
+    timer:sleep(100),
+
+    {ok, Peek} = http_get(HttpPort, "/agents/peek?token=" ++ binary_to_list(TokR)
+                          ++ "&since_token=0"),
+    Msgs = maps:get(<<"messages">>, Peek),
+    Bcasts = [M || M <- Msgs, maps:get(<<"event">>, M) =:= <<"broadcast">>,
+                   maps:get(<<"from">>, M) =:= Sender],
+    ?assertEqual(1, length(Bcasts)),
+    [B] = Bcasts,
+    ?assertEqual(#{<<"msg">> => <<"to everyone">>}, maps:get(<<"payload">>, B)),
+
+    %% The sender must not receive its own broadcast.
+    {ok, PeekS} = http_get(HttpPort, "/agents/peek?token=" ++ binary_to_list(TokS)
+                           ++ "&since_token=0"),
+    ?assertEqual([], [M || M <- maps:get(<<"messages">>, PeekS),
+                           maps:get(<<"event">>, M) =:= <<"broadcast">>]),
+
+    http_post(HttpPort, "/agents/unregister", #{<<"token">> => TokS}),
+    http_post(HttpPort, "/agents/unregister", #{<<"token">> => TokR}).
+
+%% Same bug class for topic publish: an HTTP subscriber never got topic_message.
+t_http_receives_topic_publish(TcpPort, HttpPort) ->
+    Topic = <<"v021-topic-", (rand_id())/binary>>,
+    Sub = rand_agent(),
+    {ok, RegSub} = http_post(HttpPort, "/agents/register", #{<<"agent_id">> => Sub}),
+    TokSub = maps:get(<<"token">>, RegSub),
+    {ok, SubResp} = http_post(HttpPort, "/agents/subscribe",
+                               #{<<"token">> => TokSub, <<"topic">> => Topic}),
+    ?assertEqual(<<"ok">>, maps:get(<<"status">>, SubResp)),
+
+    Publisher = rand_agent(),
+    {ok, Sock} = gen_tcp:connect({127,0,0,1}, TcpPort,
+                                  [binary, {packet, line}, {active, false}], 2000),
+    send_on(Sock, #{<<"op">> => <<"register">>, <<"agent_id">> => Publisher}),
+    {ok, _} = recv_on(Sock),
+    send_on(Sock, #{<<"op">> => <<"publish">>, <<"topic">> => Topic,
+                    <<"payload">> => #{<<"n">> => 1}}),
+    {ok, PubResp} = recv_on(Sock),
+    ?assertEqual(<<"ok">>, maps:get(<<"status">>, PubResp)),
+    gen_tcp:close(Sock),
+    timer:sleep(100),
+
+    {ok, Peek} = http_get(HttpPort, "/agents/peek?token=" ++ binary_to_list(TokSub)
+                          ++ "&since_token=0"),
+    Topics = [M || M <- maps:get(<<"messages">>, Peek),
+                   maps:get(<<"event">>, M) =:= <<"topic_message">>],
+    ?assertEqual(1, length(Topics)),
+    [T] = Topics,
+    ?assertEqual(Topic, maps:get(<<"topic">>, T)),
+    ?assertEqual(Publisher, maps:get(<<"from">>, T)),
+
+    http_post(HttpPort, "/agents/unregister", #{<<"token">> => TokSub}).
 
 t_http_unregister(HttpPort) ->
     AgentId = rand_agent(),

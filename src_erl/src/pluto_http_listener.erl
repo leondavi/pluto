@@ -1059,12 +1059,15 @@ route('POST', <<"/agents/task_progress">>, Body, _Sock) ->
 %% Must come AFTER more specific /agents/* routes to avoid shadowing.
 route('GET', <<"/agents/", AgentId/binary>>, _Body, _Sock)
   when AgentId =/= <<>> ->
-    case pluto_msg_hub:agent_status(AgentId) of
-        {ok, Info} ->
-            {200, #{<<"status">> => <<"ok">>, <<"agent">> => Info}};
-        {error, not_found} ->
-            {404, #{<<"status">> => <<"error">>,
-                    <<"reason">> => <<"not_found">>}}
+    case binary:match(AgentId, <<"/">>) of
+        nomatch ->
+            agent_lookup_response(AgentId);
+        _ ->
+            %% /agents/<id>/<something> is not a lookup (agent ids never
+            %% contain '/'); it is almost always an attempt to put the agent
+            %% id in the path. Give the self-correcting 404 hint instead of
+            %% a bare "agent not_found".
+            {404, not_found_body(<<"GET">>, <<"/agents/", AgentId/binary>>)}
     end;
 
 %% ── Task management via HTTP ────────────────────────────────────────
@@ -1122,6 +1125,16 @@ is_coordination_route('POST', <<"/agents/task_update">>)          -> true;
 is_coordination_route('POST', <<"/agents/set_status">>)           -> true;
 is_coordination_route('POST', <<"/admin/force_release">>)         -> true;
 is_coordination_route(_, _)                                        -> false.
+
+%% @private GET /agents/<id>: one agent's status, or a plain 404.
+agent_lookup_response(AgentId) ->
+    case pluto_msg_hub:agent_status(AgentId) of
+        {ok, Info} ->
+            {200, #{<<"status">> => <<"ok">>, <<"agent">> => Info}};
+        {error, not_found} ->
+            {404, #{<<"status">> => <<"error">>,
+                    <<"reason">> => <<"not_found">>}}
+    end.
 
 %% @private Build a 404 body that helps the caller self-correct.
 %% Strips query string before classifying so /api/lock?foo=1 still matches.

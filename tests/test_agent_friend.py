@@ -49,6 +49,72 @@ from agent_friend.pluto_agent_friend import (
 )
 
 
+class _RangeAckServer:
+    """Fake HTTP client modelling the server inbox: ``ack(up_to)`` deletes
+    every queued message with seq <= up_to, exactly like /agents/ack."""
+
+    def __init__(self, msgs):
+        self.inbox = {int(m["seq_token"]): m for m in msgs}
+        self.acks = []
+
+    def ack(self, up_to):
+        self.acks.append(up_to)
+        for seq in [s for s in self.inbox if s <= up_to]:
+            del self.inbox[seq]
+        return 0
+
+
+class TestPlutoConnectionDelivery(unittest.TestCase):
+    """At-least-once delivery and relevance filtering in the wrapper."""
+
+    @staticmethod
+    def _msg(seq, frm="alice", **payload):
+        return {"event": "message", "from": frm, "seq_token": seq,
+                "payload": payload or {"text": f"m{seq}"}}
+
+    def _conn(self, msgs):
+        conn = PlutoConnection(agent_id="me")
+        conn._client = _RangeAckServer(msgs)
+        return conn
+
+    def test_noise_ack_never_deletes_a_buffered_message(self):
+        real = self._msg(1)
+        noise = self._msg(2, event="delivery_ack", msg_id="M1")
+        conn = self._conn([real, noise])
+        conn._ingest([real, noise])
+        # The real message is still buffered (not yet injected), so the
+        # server copy must survive: noise may only be acked below it.
+        self.assertIn(1, conn._client.inbox)
+        self.assertEqual([m["seq_token"] for m in conn.drain_messages()], [1])
+
+    def test_confirm_clamps_below_remaining_buffer(self):
+        a, b = self._msg(1), self._msg(2)
+        conn = self._conn([a, b])
+        conn._ingest([a, b])
+        conn.confirm_delivered([b])          # b injected, a still pending
+        self.assertIn(1, conn._client.inbox)
+        conn.confirm_delivered([a])
+        self.assertEqual(conn._client.inbox, {})
+        self.assertFalse(conn.has_messages())
+
+    def test_task_assignment_for_another_agent_is_skipped(self):
+        other = {"event": "broadcast", "from": "orch", "seq_token": 1,
+                 "payload": {"event": "task_assigned", "assignee": "bob"}}
+        mine = {"event": "broadcast", "from": "orch", "seq_token": 2,
+                "payload": {"event": "task_assigned", "assignee": "me"}}
+        conn = self._conn([other, mine])
+        conn._ingest([other, mine])
+        self.assertEqual([m["seq_token"] for m in conn.drain_messages()], [2])
+
+    def test_server_heartbeat_reminder_is_noise(self):
+        reminder = {"event": "broadcast", "from": "pluto", "seq_token": 1,
+                    "payload": {"type": "heartbeat_reminder"}}
+        conn = self._conn([reminder])
+        conn._ingest([reminder])
+        self.assertFalse(conn.has_messages())
+        self.assertEqual(conn._client.inbox, {})
+
+
 class TestStripAnsi(unittest.TestCase):
     """Test ANSI escape sequence stripping."""
 

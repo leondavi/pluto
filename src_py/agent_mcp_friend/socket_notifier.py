@@ -151,6 +151,12 @@ class SocketNotifier:
     def available(self) -> bool:
         return self._enabled
 
+    def set_agent_id(self, agent_id: str) -> None:
+        """Update the id shown in wakeup text. The server may rename an
+        agent at registration when the requested name is already taken,
+        and the wakeup must name the id peers actually have to use."""
+        self._agent_id = agent_id
+
     # ── Inbox hooks ───────────────────────────────────────────────────────
 
     async def notify_new_messages(self, messages: list[dict]) -> None:

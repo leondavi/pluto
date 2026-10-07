@@ -74,6 +74,9 @@ class PlutoMCPServer:
         auto_snapshot_interval_s: int = DEFAULT_AUTO_SNAPSHOT_INTERVAL_S,
     ):
         self.agent_id = agent_id
+        # Set when the server hands back a different id than requested
+        # (name already held by a live agent): the id the user asked for.
+        self.requested_agent_id: Optional[str] = None
         self.host = host
         self.http_port = http_port
         self.ttl_ms = ttl_ms
@@ -328,7 +331,16 @@ class PlutoMCPServer:
             return False
         actual = resp.get("agent_id", self.agent_id)
         if actual != self.agent_id:
+            self.requested_agent_id = self.agent_id
             self.agent_id = actual
+            self.push.set_agent_id(actual)
+            logger.error(
+                "Pluto renamed this agent: requested %r is already held by a "
+                "live agent, so this session registered as %r. Messages "
+                "addressed to %r will NOT reach this session — peers must use "
+                "%r, or relaunch with a different --agent-id.",
+                self.requested_agent_id, actual, self.requested_agent_id, actual,
+            )
         logger.info(
             "PlutoMCPFriend registered as %s (token=%s...)",
             self.agent_id,

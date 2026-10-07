@@ -92,14 +92,40 @@ def register_tools(
         one-message-per-pop invariant outright).
         """
         lost = lock_mgr.take_lost()
-        if not lost:
+        identity = _identity_notice_once()
+        if not lost and identity is None:
             return result
         if isinstance(result, dict):
             result = dict(result)
         else:
             result = {"result": result}
-        result["_pluto_lock_lost"] = lost
+        if lost:
+            result["_pluto_lock_lost"] = lost
+        if identity is not None:
+            result["_pluto_identity"] = identity
         return result
+
+    _identity_announced = [False]
+
+    def _requested_agent_id() -> Optional[str]:
+        return getattr(server, "requested_agent_id", None) if server else None
+
+    def _identity_notice_once() -> Optional[str]:
+        """One-shot warning when the server renamed this agent at
+        registration (requested name held by a live agent). Without it
+        the model believes it is the id from the role prompt and peers
+        keep messaging a name that routes elsewhere."""
+        requested = _requested_agent_id()
+        if requested is None or _identity_announced[0]:
+            return None
+        _identity_announced[0] = True
+        return (
+            f"IMPORTANT: this session is registered with Pluto as "
+            f"'{client.agent_id}', NOT '{requested}' (that name was already "
+            f"taken by a live agent). Messages sent to '{requested}' go to "
+            f"the other agent. Introduce yourself to peers as "
+            f"'{client.agent_id}', or relaunch with a different --agent-id."
+        )
 
     async def _finish(result: Any) -> Any:
         """Terminal wrapper for non-inbox tool results: piggyback pending
@@ -422,6 +448,9 @@ def register_tools(
         payload: Optional[dict] = None,
     ) -> dict:
         resp = await _run(client.task_assign, assignee, description, payload or {})
+        # Keep the assignee's status updates for this task actionable here.
+        if isinstance(resp, dict) and resp.get("task_id"):
+            inbox.note_assigned_task(resp["task_id"])
         return await _finish(resp)
 
     @mcp.tool(
@@ -538,6 +567,8 @@ def register_tools(
         watchers = inbox.active_watchers_snapshot()
         out = {
             "agent_id": client.agent_id,
+            "requested_agent_id": _requested_agent_id(),
+            "renamed_by_server": _requested_agent_id() is not None,
             "host": client.host,
             "http_port": client.http_port,
             "base_url": client.base_url,
@@ -610,6 +641,8 @@ def register_tools(
             "pluto_server": server_status,
             "agent_registered": bool(client.token) and not epoch_mismatch,
             "agent_id": client.agent_id,
+            "requested_agent_id": _requested_agent_id(),
+            "renamed_by_server": _requested_agent_id() is not None,
             "host": client.host,
             "http_port": client.http_port,
         }

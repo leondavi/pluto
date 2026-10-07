@@ -108,7 +108,9 @@ handle_info(sweep, #state{sweep_ms = SweepMs, timeout_ms = TimeoutMs} = State) -
 
 %% ── Periodic heartbeat reminder ─────────────────────────────────────
 handle_info(remind, #state{reminder_ms = ReminderMs} = State) ->
-    pluto_msg_hub:broadcast(<<"pluto">>, #{
+    %% TCP sessions only: HTTP agents are kept alive by their TTL, not by
+    %% pings, and a queued reminder would wake idle MCP-backed agents.
+    pluto_msg_hub:broadcast_to_sessions(<<"pluto">>, #{
         <<"type">>    => <<"heartbeat_reminder">>,
         <<"message">> => <<"Keep sending pings every 15 s for the entire "
                            "session lifetime. Only stop when the user "

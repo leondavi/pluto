@@ -25,6 +25,7 @@
     send_msg/3,
     send_msg/4,
     broadcast/2,
+    broadcast_to_sessions/2,
     list_agents/0,
     list_agents_detailed/0,
     lookup_agent/1,
@@ -101,9 +102,20 @@ send_msg(From, To, Payload, RequestId) ->
     gen_server:call(?MODULE, {send, From, To, Payload, RequestId}).
 
 %% @doc Broadcast a message from one agent to all other connected agents.
+%% TCP agents receive it on their socket; HTTP agents get it queued in
+%% their inbox for the next poll/peek.
 -spec broadcast(binary(), map()) -> ok.
 broadcast(From, Payload) ->
     gen_server:cast(?MODULE, {broadcast, From, Payload}).
+
+%% @doc Broadcast only to agents with a live session process (TCP).
+%% For server housekeeping that is meaningless to HTTP agents, e.g. the
+%% periodic "keep pinging" reminder: HTTP sessions stay alive through
+%% their TTL, and queueing the reminder would wake every idle MCP-backed
+%% Claude session every few minutes for nothing.
+-spec broadcast_to_sessions(binary(), map()) -> ok.
+broadcast_to_sessions(From, Payload) ->
+    gen_server:cast(?MODULE, {broadcast_to_sessions, From, Payload}).
 
 %% @doc Return the list of currently connected agent IDs.
 -spec list_agents() -> [binary()].
@@ -272,6 +284,7 @@ restore_from_snapshot(AgentId, Snapshot) when is_map(Snapshot) ->
 
 init([]) ->
     ?LOG_INFO("pluto_msg_hub started"),
+    arm_restored_grace_timers(),
     {ok, #state{}}.
 
 %% ── register ────────────────────────────────────────────────────────
@@ -677,15 +690,31 @@ handle_cast({broadcast, From, Payload}, State) ->
     },
     pluto_stats:inc(broadcasts_sent),
     pluto_stats:inc_agent(From, broadcasts_sent),
-    %% Send to all active agents except the sender
+    %% Send to all active agents except the sender. HTTP agents have no
+    %% session process, so they get the event queued in their inbox
+    %% (same path a direct send takes) instead of being skipped.
     AllAgents = ets:tab2list(?ETS_AGENTS),
-    lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid, status = S}) ->
-        case (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file) andalso AId =/= From
-             andalso is_pid(Pid) of
-            true  -> Pid ! {pluto_event, Event};
+    lists:foreach(fun(#agent{agent_id = AId, status = S} = Agent) ->
+        case is_active_status(S) andalso AId =/= From of
+            true  -> deliver_to_active(Agent, Event);
             false -> ok
         end
     end, AllAgents),
+    {noreply, State};
+
+%% ── broadcast to session-backed (TCP) agents only ───────────────────
+handle_cast({broadcast_to_sessions, From, Payload}, State) ->
+    Event = #{
+        <<"event">>   => ?EVT_BROADCAST,
+        <<"from">>    => From,
+        <<"payload">> => Payload
+    },
+    lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid, status = S}) ->
+        case is_active_status(S) andalso AId =/= From andalso is_pid(Pid) of
+            true  -> Pid ! {pluto_event, Event};
+            false -> ok
+        end
+    end, ets:tab2list(?ETS_AGENTS)),
     {noreply, State};
 
 %% ── unregister ──────────────────────────────────────────────────────
@@ -740,11 +769,11 @@ handle_cast({publish, From, Topic, Payload}, State) ->
     pluto_event_log:log(topic_publish, #{from => From, topic => Topic}),
     %% Deliver to all active agents subscribed to this topic (except sender)
     AllAgents = ets:tab2list(?ETS_AGENTS),
-    lists:foreach(fun(#agent{agent_id = AId, session_pid = Pid,
-                             subscriptions = Subs, status = S}) ->
-        case (S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file) andalso AId =/= From
-             andalso is_pid(Pid) andalso lists:member(Topic, Subs) of
-            true  -> Pid ! {pluto_event, Event};
+    lists:foreach(fun(#agent{agent_id = AId, subscriptions = Subs,
+                             status = S} = Agent) ->
+        case is_active_status(S) andalso AId =/= From
+             andalso lists:member(Topic, Subs) of
+            true  -> deliver_to_active(Agent, Event);
             false -> ok
         end
     end, AllAgents),
@@ -905,6 +934,46 @@ push_event_to_agent(AgentId, Event) ->
         _ ->
             ok
     end.
+
+%% @private Start a grace timer for every agent that is `disconnected` but
+%% has none. persistence (started before this server) restores agents from
+%% the snapshot as `disconnected` so they can resume their session; without
+%% a timer they would stay in that state until the 7-day stale cutoff —
+%% still listed, still accepting sends that queue into an inbox nobody will
+%% ever drain, and still blocking their locks' release.
+arm_restored_grace_timers() ->
+    GraceMs = pluto_config:get(reconnect_grace_ms, ?DEFAULT_RECONNECT_GRACE_MS),
+    Armed = lists:foldl(fun
+        (#agent{agent_id = AId, status = disconnected}, N) ->
+            case ets:lookup(?ETS_GRACE_TIMERS, AId) of
+                [] ->
+                    TRef = erlang:send_after(GraceMs, self(), {grace_expired, AId}),
+                    ets:insert(?ETS_GRACE_TIMERS, {AId, TRef}),
+                    N + 1;
+                _ ->
+                    N
+            end;
+        (_, N) ->
+            N
+    end, 0, ets:tab2list(?ETS_AGENTS)),
+    case Armed of
+        0 -> ok;
+        _ -> ?LOG_INFO("pluto_msg_hub: armed grace timers for ~w restored "
+                       "agent(s) (~w ms)", [Armed, GraceMs])
+    end.
+
+%% @private True for statuses that count as "live" for fan-out purposes.
+is_active_status(S) ->
+    S =:= connected orelse S =:= recovered orelse S =:= recovered_from_file.
+
+%% @private Deliver an event to an active agent regardless of transport:
+%% TCP sessions get it pushed to their session process; HTTP sessions
+%% (no session_pid) get it queued in their inbox for the next poll/peek.
+deliver_to_active(#agent{session_pid = Pid}, Event) when is_pid(Pid) ->
+    Pid ! {pluto_event, Event},
+    ok;
+deliver_to_active(#agent{agent_id = AgentId}, Event) ->
+    queue_inbox_message(AgentId, Event).
 
 %% @private Queue a message in an offline agent's inbox (bounded).
 queue_inbox_message(AgentId, Event) ->

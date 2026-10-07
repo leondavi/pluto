@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import time
 from typing import Any
 
@@ -46,12 +47,39 @@ def _slim_all(messages: list[dict]) -> list[dict]:
 
 
 def _is_noise(msg: dict) -> bool:
+    """Context-free noise: events no agent should ever be woken for."""
     if msg.get("event") not in _ACTIONABLE_EVENTS:
         return True
     payload = msg.get("payload")
     if isinstance(payload, dict) and payload.get("event") in _NOISE_PAYLOAD_EVENTS:
         return True
+    if _is_server_reminder(msg):
+        return True
     return False
+
+
+def _is_server_reminder(msg: dict) -> bool:
+    """The server's periodic "keep pinging" broadcast. It targets TCP
+    sessions; servers before v0.5.0 could leak it to HTTP agents, and it
+    must never wake an MCP-backed agent."""
+    payload = msg.get("payload")
+    return (
+        msg.get("event") == "broadcast"
+        and msg.get("from") == "pluto"
+        and isinstance(payload, dict)
+        and payload.get("type") == "heartbeat_reminder"
+    )
+
+
+#: Env var selecting which team-wide task broadcasts reach the agent.
+#: "relevant" (default): only tasks assigned TO this agent and status
+#: updates on tasks assigned BY this agent. "all": every task event.
+_TASK_EVENTS_ENV = "PLUTO_MCP_TASK_EVENTS"
+
+
+def _task_events_mode_from_env() -> str:
+    raw = (os.environ.get(_TASK_EVENTS_ENV) or "").strip().lower()
+    return "all" if raw == "all" else "relevant"
 
 
 class InboxManager:
@@ -82,6 +110,13 @@ class InboxManager:
 
     def __init__(self, client: PlutoHttpClient):
         self._client = client
+        # The server announces every task assignment and status change to
+        # every agent. Waking each agent for each team-wide task event
+        # burns a model turn per event per agent, so by default only the
+        # events this agent is party to are actionable; the rest are
+        # settled as noise. See _TASK_EVENTS_ENV.
+        self._task_events_mode: str = _task_events_mode_from_env()
+        self._assigned_by_me: set[str] = set()
         self._buffered: list[dict] = []
         self._seen_seqs: set[int] = set()
         self._last_acked_seq: int = 0
@@ -143,6 +178,31 @@ class InboxManager:
         # next pluto_pop) without surprise bulk drains via piggyback on
         # unrelated Pluto tool calls.
         self._delivery_mode: str = "batch"
+
+    # ── Task-event relevance ──────────────────────────────────────────────
+
+    def note_assigned_task(self, task_id: str) -> None:
+        """Record a task this agent assigned, so the status updates the
+        assignee broadcasts for it stay actionable here."""
+        if task_id:
+            self._assigned_by_me.add(str(task_id))
+
+    def _is_irrelevant_task_event(self, msg: dict) -> bool:
+        """True for a task broadcast this agent is not party to."""
+        if self._task_events_mode == "all" or msg.get("event") != "broadcast":
+            return False
+        payload = msg.get("payload")
+        if not isinstance(payload, dict):
+            return False
+        kind = payload.get("event")
+        if kind == "task_assigned":
+            return payload.get("assignee") != self._client.agent_id
+        if kind == "task_updated":
+            return str(payload.get("task_id")) not in self._assigned_by_me
+        return False
+
+    def _should_skip(self, msg: dict) -> bool:
+        return _is_noise(msg) or self._is_irrelevant_task_event(msg)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -694,7 +754,7 @@ class InboxManager:
                 continue
             seq_int = int(seq)
             self._max_seen_seq = max(self._max_seen_seq, seq_int)
-            if _is_noise(m):
+            if self._should_skip(m):
                 saw_noise = True
                 continue
             if seq_int in self._seen_seqs:

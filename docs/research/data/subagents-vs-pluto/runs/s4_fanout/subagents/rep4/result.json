@@ -1,0 +1,88 @@
+{
+  "scenario": "s4_fanout",
+  "condition": "subagents",
+  "rep": 4,
+  "model": "claude-sonnet-5",
+  "pluto_version": null,
+  "cost_complete": true,
+  "started_at": 1791404486.4072802,
+  "wall_s": 106.748,
+  "timed_out": false,
+  "exit_codes": {
+    "orch": 0
+  },
+  "process_secs": {
+    "orch": 106.539
+  },
+  "total_tokens": 374515,
+  "coordination_calls": 4,
+  "tokens": {
+    "input_tokens": 48,
+    "output_tokens": 9184,
+    "cache_read_input_tokens": 337714,
+    "cache_creation_input_tokens": 27569
+  },
+  "tokens_orchestrator": {
+    "input_tokens": 16,
+    "output_tokens": 34,
+    "cache_read_input_tokens": 213252,
+    "cache_creation_input_tokens": 16395
+  },
+  "tokens_workers": {
+    "input_tokens": 32,
+    "output_tokens": 172,
+    "cache_read_input_tokens": 124462,
+    "cache_creation_input_tokens": 11174
+  },
+  "cost_usd": 0.252994,
+  "tools": {
+    "orchestrator:Bash": 1,
+    "orchestrator:Read": 1,
+    "orchestrator:Agent": 4,
+    "subagents:Bash": 12
+  },
+  "errored_processes": [],
+  "subagent_stats": {
+    "spawned": 4,
+    "requested": {
+      "background": 0,
+      "foreground": 0,
+      "unset": 4
+    },
+    "started_in_background": 4,
+    "max_depth": 1,
+    "spawned_by_subagents": 0,
+    "completed": 4,
+    "failed": 0,
+    "killed": {
+      "parent": 0,
+      "user": 0,
+      "system": 0
+    },
+    "refused": {
+      "depth_limit": 0,
+      "concurrency_limit": 0,
+      "budget": 0
+    },
+    "by_type": {
+      "w1": 1,
+      "w2": 1,
+      "w3": 1,
+      "w4": 1
+    }
+  },
+  "verdict": {
+    "ok": true,
+    "duplicates": 0,
+    "missing": [],
+    "makespan_s": 25.53,
+    "ideal_makespan_s": 15.0,
+    "jobs_per_worker": {
+      "w1": 3,
+      "w2": 3,
+      "w3": 3,
+      "w4": 3
+    },
+    "task_span_s": 25.53
+  }
+}

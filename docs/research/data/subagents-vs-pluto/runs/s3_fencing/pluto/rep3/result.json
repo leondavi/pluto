@@ -1,0 +1,71 @@
+{
+  "scenario": "s3_fencing",
+  "condition": "pluto",
+  "rep": 3,
+  "model": "claude-sonnet-5",
+  "pluto_version": "0.5.1",
+  "cost_complete": true,
+  "started_at": 1791403378.037193,
+  "wall_s": 174.678,
+  "timed_out": false,
+  "exit_codes": {
+    "w2": 0,
+    "w3": 0,
+    "w1": 0,
+    "w4": 0,
+    "orch": 0
+  },
+  "process_secs": {
+    "w2": 170.194,
+    "w3": 170.396,
+    "w1": 170.601,
+    "w4": 171.822,
+    "orch": 174.472
+  },
+  "total_tokens": 1361008,
+  "coordination_calls": 50,
+  "tokens": {
+    "input_tokens": 112,
+    "output_tokens": 10811,
+    "cache_read_input_tokens": 1315916,
+    "cache_creation_input_tokens": 34169
+  },
+  "tokens_orchestrator": {
+    "input_tokens": 26,
+    "output_tokens": 6755,
+    "cache_read_input_tokens": 366851,
+    "cache_creation_input_tokens": 15348
+  },
+  "tokens_workers": {
+    "input_tokens": 86,
+    "output_tokens": 4056,
+    "cache_read_input_tokens": 949065,
+    "cache_creation_input_tokens": 18821
+  },
+  "cost_usd": 0.508193,
+  "tools": {
+    "orchestrator:Bash": 3,
+    "orchestrator:mcp__pluto__pluto_list_agents": 1,
+    "orchestrator:Read": 1,
+    "orchestrator:mcp__pluto__pluto_send": 8,
+    "orchestrator:mcp__pluto__pluto_wait_for_messages": 5,
+    "workers:mcp__pluto__pluto_wait_for_messages": 23,
+    "workers:mcp__pluto__pluto_lock_acquire": 4,
+    "workers:mcp__pluto__pluto_send": 5,
+    "workers:Bash": 5,
+    "workers:mcp__pluto__pluto_lock_release": 4
+  },
+  "errored_processes": [],
+  "verdict": {
+    "ok": true,
+    "outcome": "rejected",
+    "final_writer": "w4",
+    "fresh_writes": 2,
+    "stale_attempted": true,
+    "exercised": true,
+    "stale_rejected": true,
+    "corrupted": false,
+    "used_tokens": true,
+    "task_span_s": 47.411
+  }
+}

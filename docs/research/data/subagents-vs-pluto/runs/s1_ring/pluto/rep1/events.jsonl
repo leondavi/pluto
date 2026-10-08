@@ -1,0 +1,8 @@
+{"agent": "w1", "op": "hop", "ts": 1791400071.317719, "word": "alpha"}
+{"agent": "w2", "op": "hop", "ts": 1791400078.689885, "word": "beta"}
+{"agent": "w3", "op": "hop", "ts": 1791400083.13208, "word": "gamma"}
+{"agent": "w4", "op": "hop", "ts": 1791400088.175062, "word": "delta"}
+{"agent": "w1", "op": "hop", "ts": 1791400101.807074, "word": "epsilon"}
+{"agent": "w2", "op": "hop", "ts": 1791400108.4730968, "word": "zeta"}
+{"agent": "w3", "op": "hop", "ts": 1791400113.932511, "word": "eta"}
+{"agent": "w4", "op": "hop", "ts": 1791400118.382314, "word": "theta"}

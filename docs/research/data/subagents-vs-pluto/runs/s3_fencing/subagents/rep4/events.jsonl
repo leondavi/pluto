@@ -1,0 +1,6 @@
+{"agent": "w1", "op": "stall_start", "seconds": 60.0, "ts": 1791404234.757424}
+{"accepted": true, "agent": "w2", "op": "put", "token": 1791404243568, "ts": 1791404243.611443, "value": "w2-fresh"}
+{"accepted": true, "agent": "w4", "op": "put", "token": 1791404256967, "ts": 1791404257.007531, "value": "w4-fresh"}
+{"agent": "w1", "op": "stall_end", "ts": 1791404294.763268}
+{"accepted": false, "agent": "w1", "max_token": 1791404256967, "op": "put", "reason": "stale_token", "token": 1791404231792, "ts": 1791404298.0853992, "value": "w1-stale"}
+{"accepted": true, "agent": "w3", "op": "put", "token": 1791404313563, "ts": 1791404313.6033401, "value": "w3-fresh"}

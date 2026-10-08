@@ -1,0 +1,9 @@
+{"agent": "w1", "op": "hop", "ts": 1791404828.059094, "word": "Alpha"}
+{"agent": "w2", "op": "hop", "ts": 1791404833.688705, "word": "Bravo"}
+{"agent": "w3", "op": "hop", "ts": 1791404841.406244, "word": "Charlie"}
+{"agent": "w4", "op": "hop", "ts": 1791404847.279135, "word": "Delta"}
+{"agent": "w1", "op": "hop", "ts": 1791404851.5849102, "word": "Echo"}
+{"agent": "w2", "op": "hop", "ts": 1791404856.444963, "word": "Foxtrot"}
+{"agent": "w3", "op": "hop", "ts": 1791404862.041397, "word": "Golf"}
+{"agent": "w4", "op": "hop", "ts": 1791404866.354065, "word": "Hotel"}
+{"agent": "w1", "op": "hop", "ts": 1791404870.7031791, "word": "India"}

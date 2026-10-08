@@ -43,6 +43,7 @@
 %%   session_pid    — PID of the session process (for async notification)
 %%   requested_at   — Monotonic time (ms) when request was enqueued
 %%   max_wait_until — Absolute monotonic time deadline (ms), or 'infinity'
+%%   ttl_ms         — Lease duration requested by the waiter, applied on grant
 %%
 -record(wait_entry, {
     wait_ref       :: binary(),
@@ -52,7 +53,8 @@
     session_id     :: binary(),
     session_pid    :: pid(),
     requested_at   :: integer(),
-    max_wait_until :: integer() | infinity
+    max_wait_until :: integer() | infinity,
+    ttl_ms = 30000 :: pos_integer()
 }).
 
 %% ── Agent record ────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 {application, pluto, [
     {description, "Pluto — Agent Coordination Server"},
-    {vsn, "0.5.0"},
+    {vsn, "0.5.1"},
     {registered, [
         pluto_sup,
         pluto_lock_mgr,

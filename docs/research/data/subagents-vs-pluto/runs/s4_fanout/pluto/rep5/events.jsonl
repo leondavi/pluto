@@ -1,0 +1,24 @@
+{"agent": "w2", "job": 2, "op": "job_start", "ts": 1791405680.805482}
+{"agent": "w2", "job": 2, "op": "job_end", "result": "0e753487879f", "ts": 1791405681.8158789}
+{"agent": "w1", "job": 1, "op": "job_start", "ts": 1791405682.227187}
+{"agent": "w4", "job": 4, "op": "job_start", "ts": 1791405684.466323}
+{"agent": "w3", "job": 3, "op": "job_start", "ts": 1791405685.255017}
+{"agent": "w4", "job": 4, "op": "job_end", "result": "072b0d9580b3", "ts": 1791405686.476744}
+{"agent": "w1", "job": 1, "op": "job_end", "result": "026ab639c21d", "ts": 1791405694.237674}
+{"agent": "w3", "job": 3, "op": "job_end", "result": "25220777d99f", "ts": 1791405695.265481}
+{"agent": "w2", "job": 5, "op": "job_start", "ts": 1791405696.497366}
+{"agent": "w2", "job": 5, "op": "job_end", "result": "3629b22938ee", "ts": 1791405704.507849}
+{"agent": "w1", "job": 7, "op": "job_start", "ts": 1791405707.546206}
+{"agent": "w4", "job": 6, "op": "job_start", "ts": 1791405707.6608021}
+{"agent": "w4", "job": 6, "op": "job_end", "result": "7b42e12c3f64", "ts": 1791405708.6710558}
+{"agent": "w3", "job": 8, "op": "job_start", "ts": 1791405711.9762292}
+{"agent": "w1", "job": 7, "op": "job_end", "result": "c37bd1a8462d", "ts": 1791405713.5567}
+{"agent": "w2", "job": 9, "op": "job_start", "ts": 1791405714.5734038}
+{"agent": "w3", "job": 8, "op": "job_end", "result": "8c06992db191", "ts": 1791405714.986677}
+{"agent": "w2", "job": 9, "op": "job_end", "result": "e7a4577ffc3d", "ts": 1791405719.5802171}
+{"agent": "w4", "job": 10, "op": "job_start", "ts": 1791405720.7503319}
+{"agent": "w4", "job": 10, "op": "job_end", "result": "4c275e6a33f8", "ts": 1791405722.760661}
+{"agent": "w3", "job": 12, "op": "job_start", "ts": 1791405727.977996}
+{"agent": "w3", "job": 12, "op": "job_end", "result": "1e31a045c1be", "ts": 1791405730.988238}
+{"agent": "w1", "job": 11, "op": "job_start", "ts": 1791405731.402668}
+{"agent": "w1", "job": 11, "op": "job_end", "result": "4f026f1566a8", "ts": 1791405735.41291}

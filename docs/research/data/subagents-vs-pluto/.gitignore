@@ -1,0 +1,9 @@
+# Commit only the analysed data: result rows, summaries, per-run ground
+# truth (events.jsonl) and verdicts (result.json). Raw agent transcripts are
+# kept compressed in transcripts.tar.gz; everything else in a run directory
+# (ledger.py copy, stderr, sandbox server state, local MCP configs) is either
+# reproducible or machine-specific.
+**/runs/**/*
+!**/runs/**/
+!**/runs/**/events.jsonl
+!**/runs/**/result.json

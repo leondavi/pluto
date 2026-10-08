@@ -25,6 +25,7 @@ class PlutoConnection:
     # Events that carry actionable content for the agent.
     _ACTIONABLE_EVENTS = {
         "message", "broadcast", "task_assigned", "topic_message",
+        "lock_granted", "wait_timeout",
     }
 
     def __init__(

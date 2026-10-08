@@ -366,6 +366,20 @@ def register_tools(
 
     # ── Locks ─────────────────────────────────────────────────────────────
 
+    # wait_ref -> (resource, ttl_ms) for queued acquires with auto_renew, so
+    # the lock is put under auto-renewal the moment its grant arrives.
+    _pending_waits: dict[str, tuple[str, int]] = {}
+
+    async def _on_grant(messages: list[dict]) -> None:
+        for m in messages:
+            pending = _pending_waits.pop(str(m.get("wait_ref")), None)
+            if pending is None:
+                continue
+            if m.get("event") == "lock_granted" and m.get("lock_ref"):
+                await lock_mgr.register(m["lock_ref"], *pending)
+
+    inbox.on_new_message(_on_grant)
+
     @mcp.tool(
         name="pluto_lock_acquire",
         description=(
@@ -386,12 +400,11 @@ def register_tools(
         auto_renew: bool = True,
     ) -> dict:
         resp = await _run(client.acquire, resource, mode, ttl_ms, max_wait_ms)
-        if (
-            auto_renew
-            and resp.get("status") == "ok"
-            and resp.get("lock_ref")
-        ):
+        if auto_renew and resp.get("status") == "ok" and resp.get("lock_ref"):
             await lock_mgr.register(resp["lock_ref"], resource, ttl_ms)
+        elif auto_renew and resp.get("status") == "wait" and resp.get("wait_ref"):
+            # Granted later via a lock_granted inbox event; see _on_grant.
+            _pending_waits[resp["wait_ref"]] = (resource, ttl_ms)
         return await _finish(resp)
 
     @mcp.tool(

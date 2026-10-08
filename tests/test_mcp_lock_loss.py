@@ -263,3 +263,52 @@ class TestDeliveryModeToolValidation(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QueueingClient(FakeHttpClient):
+    """FakeHttpClient whose acquire always queues (status='wait')."""
+
+    def acquire(self, resource, mode="write", ttl_ms=30000, max_wait_ms=None):
+        self._record("acquire", resource, mode, ttl_ms, max_wait_ms)
+        return {"status": "wait", "wait_ref": "WAIT-7"}
+
+
+class TestQueuedLockGrant(unittest.IsolatedAsyncioTestCase):
+    """v0.5.1: a queued acquire's lock_granted event must reach the agent
+    (not be filtered as noise) and the granted lock must be auto-renewed."""
+
+    async def asyncSetUp(self):
+        self.client = QueueingClient()
+        self.inbox = InboxManager(self.client)
+        self.lock_mgr = LockManager(self.client)
+        self.mcp = FastMCP(name="pluto-test")
+        register_tools(self.mcp, self.client, self.inbox, self.lock_mgr)
+
+    async def asyncTearDown(self):
+        await self.lock_mgr.shutdown()
+
+    async def test_grant_is_delivered_and_auto_renewed(self):
+        await self.mcp.call_tool("pluto_lock_acquire",
+                                 {"resource": "ledger", "ttl_ms": 4000})
+        grant = {"event": "lock_granted", "seq_token": 5, "wait_ref": "WAIT-7",
+                 "lock_ref": "LOCK-3", "fencing_token": 9, "resource": "ledger"}
+        await self.inbox._absorb([grant])
+        self.assertIn("LOCK-3", self.lock_mgr._tracked)
+        self.assertEqual(self.lock_mgr._tracked["LOCK-3"].ttl_ms, 4000)
+        drained = await self.inbox.drain()
+        self.assertEqual(len(drained), 1)
+        self.assertEqual(drained[0]["fencing_token"], 9)
+        self.assertEqual(drained[0]["lock_ref"], "LOCK-3")
+
+    async def test_grant_without_auto_renew_is_not_tracked(self):
+        await self.mcp.call_tool("pluto_lock_acquire",
+                                 {"resource": "ledger", "auto_renew": False})
+        await self.inbox._absorb([{"event": "lock_granted", "seq_token": 6,
+                                   "wait_ref": "WAIT-7", "lock_ref": "LOCK-4"}])
+        self.assertNotIn("LOCK-4", self.lock_mgr._tracked)
+        self.assertEqual(len(await self.inbox.drain()), 1)
+
+    async def test_wait_timeout_is_actionable(self):
+        await self.inbox._absorb([{"event": "wait_timeout", "seq_token": 8,
+                                   "wait_ref": "WAIT-1", "resource": "ledger"}])
+        self.assertEqual((await self.inbox.drain())[0]["wait_ref"], "WAIT-1")

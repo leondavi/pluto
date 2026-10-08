@@ -10,6 +10,7 @@ research doc gains a status note pointing there.
 | Document | Topic |
 |---|---|
 | [token-efficiency.md](token-efficiency.md) | Where Pluto-connected agents spend context-window tokens, a survey of state-of-the-art remedies (MCP 2026-07-28, prompt caching, code-mode tool calling, notification-driven delivery), and proposals grouped by whether they eliminate a token class outright (A), shrink what remains (B), or track protocol/interop (C). |
+| [subagents-vs-pluto-communication.md](subagents-vs-pluto-communication.md) | A live experiment comparing a 4-worker team coordinated by native Claude Code subagents with one coordinated over Pluto. It measures relay latency, tokens, cost, wall time and correctness under lock contention, stale-lease fencing and dynamic fan-out. It also reports the queued-lock delivery bugs the experiment found, fixed in v0.5.1. |
 
 ## Conventions
 

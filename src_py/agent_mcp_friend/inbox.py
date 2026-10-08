@@ -27,7 +27,8 @@ logger = logging.getLogger("pluto_mcp_friend.inbox")
 
 # Mirror agent_friend.pluto_connection: events the agent must never see.
 _NOISE_PAYLOAD_EVENTS = {"delivery_ack", "status_update", "heartbeat"}
-_ACTIONABLE_EVENTS = {"message", "broadcast", "task_assigned", "topic_message"}
+_ACTIONABLE_EVENTS = {"message", "broadcast", "task_assigned", "topic_message",
+                      "lock_granted", "wait_timeout"}
 
 
 # Envelope fields the agent actually needs. Server messages also carry
@@ -35,7 +36,8 @@ _ACTIONABLE_EVENTS = {"message", "broadcast", "task_assigned", "topic_message"}
 # are trimmed at the presentation edge to save tokens. The internal
 # buffer keeps full messages (ack accounting reads them).
 _ENVELOPE_KEEP = ("event", "from", "payload", "seq_token", "request_id",
-                  "topic", "task_id")
+                  "topic", "task_id", "wait_ref", "lock_ref", "fencing_token",
+                  "resource")
 
 
 def _slim(msg: dict) -> dict:

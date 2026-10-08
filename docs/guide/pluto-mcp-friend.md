@@ -698,6 +698,9 @@ Claude window in the same repo) and relaunch, or tell peers the real id.
 Servers before v0.5.0 dropped broadcasts and topic messages for HTTP
 agents, which includes every MCP adapter. Upgrade and restart the server.
 
+**A queued lock (`status: "wait"`) is never granted.**
+Before v0.5.1, when a lock freed, the server silently dropped queued requests from HTTP agents (every MCP adapter). It created no lock and sent no `lock_granted`. Those servers also gave every queued grant a 30 s lease, whatever `ttl_ms` asked for. From v0.5.1 the grant arrives as a `lock_granted` message carrying `wait_ref`, `lock_ref` and `fencing_token`, and its lease uses the requested `ttl_ms`. With `auto_renew=true` the adapter renews it as soon as it lands. A `wait_timeout` message tells you the request expired after `max_wait_ms`.
+
 **Team task events.** The server announces every task assignment and
 update to every agent. By default the adapter only surfaces assignments
 addressed to this agent and updates on tasks this agent assigned with

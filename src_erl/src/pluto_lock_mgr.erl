@@ -405,7 +405,8 @@ enqueue_waiter(Resource, Mode, AgentId, Opts, State) ->
         session_id     = SessId,
         session_pid    = SessPid,
         requested_at   = Now,
-        max_wait_until = MaxWaitUntil
+        max_wait_until = MaxWaitUntil,
+        ttl_ms         = maps:get(ttl_ms, Opts, 30000)
     },
 
     %% Key for ordered_set: {Resource, RequestedAt, WaitRef} ensures FIFO
@@ -461,11 +462,16 @@ advance_waiters([{Key, Entry} | Rest], Resource, State) ->
             State
     end.
 
-%% @private Send a lock_granted event to the waiting session.
+%% @private Create the lock for a granted waiter and notify its agent.
+%%
+%% TCP waiters get the event pushed to their session process. HTTP waiters
+%% have no session process (session_pid = undefined), so the event is queued
+%% in the agent's inbox via pluto_msg_hub and returned by the next poll.
 notify_lock_granted(#wait_entry{session_pid = Pid, wait_ref = WaitRef,
                                 resource = Resource, agent_id = AgentId,
-                                mode = WaitMode, session_id = WSessId},
-                    State) when is_pid(Pid) ->
+                                mode = WaitMode, session_id = WSessId,
+                                ttl_ms = TtlMs},
+                    State) ->
     #state{fencing_seq = FSeq, lock_counter = LC} = State,
     NewFSeq = FSeq + 1,
     NewLC   = LC + 1,
@@ -479,7 +485,7 @@ notify_lock_granted(#wait_entry{session_pid = Pid, wait_ref = WaitRef,
         agent_id      = AgentId,
         session_id    = WSessId,
         fencing_token = NewFSeq,
-        expires_at    = pluto_lease:make_expires_at(30000),
+        expires_at    = pluto_lease:make_expires_at(TtlMs),
         inserted_at   = pluto_lease:now_ms()
     },
     ets:insert(?ETS_LOCKS, Lock),
@@ -492,14 +498,18 @@ notify_lock_granted(#wait_entry{session_pid = Pid, wait_ref = WaitRef,
         <<"fencing_token">> => NewFSeq,
         <<"resource">>      => Resource
     },
-    Pid ! {pluto_event, Event},
+    notify_waiter(Pid, AgentId, Event),
     %% Log the event
     pluto_event_log:log(lock_granted, #{agent_id => AgentId, resource => Resource,
                                         lock_ref => LockRef, fencing_token => NewFSeq}),
-    State#state{fencing_seq = NewFSeq, lock_counter = NewLC};
-notify_lock_granted(_, State) ->
-    %% No session PID — can't notify
-    State.
+    State#state{fencing_seq = NewFSeq, lock_counter = NewLC}.
+
+%% @private Deliver a waiter event: straight to a TCP session process, or
+%% through the agent's inbox for HTTP agents.
+notify_waiter(Pid, _AgentId, Event) when is_pid(Pid) ->
+    Pid ! {pluto_event, Event};
+notify_waiter(_NoPid, AgentId, Event) ->
+    pluto_msg_hub:push_event_to_agent(AgentId, Event).
 
 %% @private Sweep and remove expired locks, advancing queues where needed.
 %% Also sends a lock_expiring_soon warning once per lock when the remaining
@@ -566,18 +576,12 @@ sweep_expired_waiters() ->
                           [WRef, AId, Res]),
                 ets:delete(?ETS_WAITERS, Key),
                 pluto_deadlock:remove_edge(AId),
-                %% Notify the session about the timeout
-                case is_pid(Pid) of
-                    true ->
-                        Event = #{
-                            <<"event">>    => ?EVT_WAIT_TIMEOUT,
-                            <<"wait_ref">> => WRef,
-                            <<"resource">> => Res
-                        },
-                        Pid ! {pluto_event, Event};
-                    false ->
-                        ok
-                end;
+                %% Notify the waiting agent about the timeout
+                notify_waiter(Pid, AId, #{
+                    <<"event">>    => ?EVT_WAIT_TIMEOUT,
+                    <<"wait_ref">> => WRef,
+                    <<"resource">> => Res
+                });
             false ->
                 ok
         end

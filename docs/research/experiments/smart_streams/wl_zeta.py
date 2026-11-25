@@ -13,7 +13,7 @@ from wl_common import *  # noqa: F401,F403  (inlined by the builder)
 TAU = 2 * math.pi
 KEEP_S = 75.0                                  # block tables are kept this long
 MAX_BLOCK, MAX_F, MAX_REQ = 16, 64, 60
-STUCK_LIMIT_S = 1500.0
+STUCK_LIMIT_S = 900.0
 
 
 def theta(t):

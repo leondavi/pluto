@@ -52,11 +52,13 @@ def classify(samples):
         votes += any(abs(my_z(t, drop=d) - z) < 6e-4 for d in range(1, n // 8 + 2))
     if votes > .9 * len(samples):
         return "TRUNC"
-    worst = (9, 0)
-    for i in range(-250, 251):
-        sh = i / 500
-        worst = min(worst, (max(abs(my_z(t, shift=sh) - z) for t, z in samples[:5]), sh))
-    if worst[0] < .03:
+    def misfit(sh):
+        return max(abs(my_z(t, shift=sh) - z) for t, z in samples)
+    sh, step = min((misfit(i / 200), i / 200) for i in range(-100, 101))[1], 1 / 200
+    while step > 1e-6:                          # a pure phase shift fits to rounding error
+        sh = min((sh - step, sh, sh + step), key=misfit)
+        step /= 2
+    if misfit(sh) < 2e-3:
         return "THETA"
     return "NOISE"
 
@@ -133,8 +135,12 @@ def supervise(ws, be, wise):
         runs[j].append(Launch(h, at))
     for j in runs:
         start(j)
-    left, pending = set(runs), {j: [] for j in runs}
+    left, pending, t0 = set(runs), {j: [] for j in runs}, time.time()
     while left:
+        if not wise and time.time() - t0 > 480:          # gives up like a session that ends
+            for j in left:
+                be.stop(runs[j][-1].h)
+            break
         time.sleep(0.5)
         for j in sorted(left):
             la = runs[j][-1]
@@ -151,12 +157,17 @@ def supervise(ws, be, wise):
                 pending[j] = []
                 continue
             if wise:
-                for a, b in pending[j]:
+                # the zero of the last cell is printed after the closing G line, so a block
+                # is judged only once a later sample (or the end) has been read
+                pending[j] += la.blocks()
+                after = la.s[-1][0] if la.s else 0.0
+                ready = [x for x in pending[j] if rc is not None or after > la.g[x[1]][0]]
+                for a, b in ready:
                     if la.short(a, b):
                         refine(ws, j, la, a, b, 16)
-                pending[j] = [x for x in la.blocks()]        # judged one round later
+                pending[j] = [x for x in pending[j] if x not in ready]
             if rc is not None:
-                assert rc == 0, (j, rc)
+                assert rc == 0 or not wise, (j, rc)
                 if not pending[j]:
                     left.discard(j)
     return runs

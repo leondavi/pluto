@@ -126,8 +126,11 @@ promote at every gate, ignore outages .144; error rates over all lines, ignore o
 0.02 of a core per 12 streams.
 
 **E7 zeta_campaign** (w1..w4, 48 windows, 12 per agent, 5 to 8 minutes, about 1 MB each). Held-out task whose author
-is an LLM agent that read E1 to E5, the runner, this README (not its first part) and `ss_procs.py`,
-but no product code, product guide, article notes, results or E6 sources. No LLM has run it yet.
+is an LLM agent that read E1 to E5, the runner, `ss_*.py`, `verify_solvers.py`, `verify_e45.py`, the tests and
+the task and scoring parts of this README, but no product code, product guide, article notes or results, and no E6
+source. Incidental exposure: the E6 entries of this README (task and scoring), some tool paragraphs of `ss_prompts.py`
+(the sub-agent paragraph) and `exp4_crash.py` (`TOOLS_EXTRA`), and the jobs-arm client classes in `verify_solvers.py`
+and `verify_e45.py`. No LLM has run it yet.
 
 *Domain.* The Riemann hypothesis says that all non-trivial zeros of zeta lie on the line 1/2 + it. Up to a finite height it
 can be verified: Hardy's Z(t) is real with |Z(t)| = |zeta(1/2 + it)|, so every sign change is a zero on the line,

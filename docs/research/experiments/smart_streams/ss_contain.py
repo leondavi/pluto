@@ -17,7 +17,10 @@ import shutil
 import stat
 import sys
 
-PROFILE = "(version 1)(allow default)(deny signal)(allow signal (target same-sandbox))"
+#: ps and top are set-uid, which a sandbox may not execute; they only read,
+#: so they run outside it.
+PROFILE = ("(version 1)(allow default)(deny signal)(allow signal (target same-sandbox))"
+           '(allow process-exec (with no-sandbox) (literal "/bin/ps") (literal "/usr/bin/top"))')
 MARK = "SS_CONTAINED"
 SANDBOX = "/usr/bin/sandbox-exec"
 

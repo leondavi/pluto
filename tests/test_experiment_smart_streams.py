@@ -584,8 +584,9 @@ def test_contained_processes_cannot_signal_others(tmp_path):
     outside = subprocess.Popen(["/bin/sleep", "71"])
     try:
         r = subprocess.run([ss_contain.SANDBOX, "-p", ss_contain.PROFILE, "/bin/sh", "-c",
-                            "sleep 72 & kill $! || exit 9; kill %d; echo rc=$?; "
-                            "pkill -f 'sleep 7[1]'" % outside.pid],
+                            "ps -p %d >/dev/null || exit 8; sleep 72 & kill $! || exit 9; "
+                            "kill %d; echo rc=$?; "
+                            "pkill -f 'sleep 7[1]'" % (outside.pid, outside.pid)],
                            capture_output=True, text=True, timeout=20)
         assert "rc=1" in r.stdout and outside.poll() is None, r
     finally:

@@ -344,6 +344,15 @@ file name does not tell what they do. Differences of a few percent between arms 
 * The pilot 2 detector flagged agents that read raw output of their own run's jobs, which the
   product points them to, and `cd` inside here-documents. Both are fixed; the transcripts of a
   run's agents are now matched explicitly.
+* **v5.** Pilot 3 was stopped after eight runs. In its E6 run of A one agent typed `pkill -f judge.py -P 1`,
+  which matched every command line with a "1": a teammate's session, the Pluto server, running programs,
+  and programs of the machine's owner. The run counts as it is (score .2); the runner now contains all
+  arms alike (`ss_contain.py`). Reading that transcript ended the implementer's blindness to E6, and
+  showed a missing means: a replaceable program on live output. `follow` was added for it, so E6 is
+  tuned for A from here on. E7 and E8 were written before and are unread.
+* Pilot 3's E2 run of B scored 0 by the same hazard: `pkill -f "tune 2.*" -n` matched the `-n` in the command lines of three
+  teammates' sessions, which ended in the same second. Agents of every arm had signalled
+  programs by pattern, sometimes a teammate's.
 * Pilot 1's E3 SS run overlapped other work on the machine (pacing lag up to .62 s
   against .02 s for native).
 * Scores are coarse: one E2 podium entry is .058 and one E1 livelock .031, against

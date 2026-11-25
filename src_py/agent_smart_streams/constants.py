@@ -17,8 +17,11 @@ SHORT_RE = r"[0-9a-f]{6}"
 NAME_RE = r"[A-Za-z][A-Za-z0-9_.\-]{0,59}"
 NAME_TAG = "="                    # tag of a named batch: "=soak"
 BRIEF_JOBS = 50                   # whose rules are counted
-BRIEF_SHAPES = 8
-BRIEF_TEXT = 3000
+BRIEF_SHAPES = 5
+BRIEF_TEXT = 2000
+FOLLOW_POLL_S = 0.2              # pss cat -f
+FOLLOW_END_MS = 10_000            # a replaced follower ends before the new one starts
+FOLLOW_CHECK_S = 1.0              # how often it asks whether the job ended
 EACH_WORKERS = 4                  # pss each, programs at once
 EACH_TEXT = 1500                  # characters shown of one program's output
 EACH_TOTAL = 12_000               # and of all of them together

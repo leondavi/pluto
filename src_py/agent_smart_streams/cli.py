@@ -20,7 +20,8 @@ if _SRC_PY not in sys.path:
 
 from agent_friend.frameworks import load_pluto_config  # noqa: E402
 from agent_smart_streams import (  # noqa: E402
-    brief, cli_parser, compact, each, fleet, names, render, report, submit,
+    brief, cli_parser, compact, each, fleet, follow as live, names, render, report, rules,
+    submit,
 )
 from agent_smart_streams.constants import (  # noqa: E402
     CLI_AGENT_ENV, CLI_HOST_ENV, CLI_PORT_ENV, GROUP_MAX, WAIT_FOREVER_S,
@@ -68,7 +69,7 @@ def do_run(jobs, a, waiter):
         params = dict(e.partition("=")[::2] for e in a.each)
         r = submit.start_all(jobs, submit.expand(a.command, params), spec, a.name)
         handle = a.name or r["group"]
-        text = f"{handle}/{r['jobs']}: {r['n']} started" if a.name else \
+        text = f"{handle}/{r['jobs']}: {r['n']} started{rules.said(a.rules)}" if a.name else \
             f"{handle} {r['n']} jobs: {r['jobs']}"
         for name, why in r.get("failed", {}).items():
             print(f"pss: {name}: {why}", file=sys.stderr)
@@ -211,8 +212,21 @@ def do_log(jobs, a, _w):
     print("\n".join(each.facts(c)["log"] for c in names.cards(jobs, a.ids)))
 
 
+def do_follow(jobs, a, _w):
+    cards = names.cards(jobs, a.ids)
+    name = a.name or "follow-" + (names.group_of(cards[0]) or compact.short(cards[0]["job_id"]))
+    r = live.start(jobs, cards, a.command, name, os.getcwd())
+    print(f"{name}: {r['n']} started" + (f", {r['replaced']} replaced" if r["replaced"] else ""))
+    for key, why in r.get("failed", {}).items():
+        print(f"pss: {key}: {why}", file=sys.stderr)
+    return int("failed" in r)
+
+
 def do_cat(jobs, a, _w):
     for c in names.cards(jobs, a.ids):
+        if a.follow:
+            live.stream(jobs, c)
+            continue
         with open(each.facts(c)["log"], "rb") as f:
             while data := f.read(1 << 20):
                 sys.stdout.buffer.write(data)
@@ -261,7 +275,7 @@ DO = {"run": do_run, "wait": do_wait, "ps": do_ps, "analyze": do_analyze,
       "watch": do_watch, "grep": do_grep, "tail": do_tail, "cat": do_cat,
       "log": do_log, "stop": do_control, "pause": do_control,
       "resume": do_control, "give": do_give, "brief": do_brief, "each": do_each,
-      "report": do_report, "call": do_call}
+      "report": do_report, "follow": do_follow, "call": do_call}
 
 
 def connect() -> PlutoJobsClient:
@@ -280,8 +294,8 @@ def connect() -> PlutoJobsClient:
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("help", "-h", "--help") or argv[-1] in ("-h", "--help"):
-        topic = next((x for x in argv if x in cli_parser.MORE), None)
-        print(cli_parser.MORE[topic] if topic else cli_parser.HELP)
+        asked = [x for x in argv if x not in ("help", "-h", "--help")][:1]
+        print(cli_parser.topic(asked[0]) if asked else cli_parser.HELP)
         return 0
     a = cli_parser.build().parse_args(argv)
     try:

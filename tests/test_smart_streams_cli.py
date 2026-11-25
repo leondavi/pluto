@@ -78,7 +78,7 @@ def test_a_supervised_batch_is_one_command(srv, tmp_path):  # noqa: F811
     out = pss(srv, "run", "-n", "soak", "-e", "k=1-4", "sh soak.sh {k}",
               "--on", "want {t}", "--append", "control/{k}.ack", "{t}",
               "--idle", "2", "--stop", cwd=tmp_path)
-    assert out == "soak/1-4: 4 started\n"
+    assert out.startswith("soak/1-4: 4 started; the server holds 2 rules")
     out = pss(srv, "wait", "soak", "-t", "40", cwd=tmp_path, code=1)
     assert "soak/1,4 2x succeeded" in out and "failed exit=1" in out and "soak/3 " in out
     assert "cancelled" in out and len(out) < 400, out
@@ -242,3 +242,54 @@ def test_replacement_after_a_crash_owns_its_jobs(srv):  # noqa: F811
     assert b.call("job_control", job_id=job, action="stop")["ok"] == [job]
     b.p.kill()
     b.p.wait()
+
+
+JUDGE = """import sys
+for line in sys.stdin:
+    if 'GATE' in line:
+        open('ctl.%s' % sys.argv[1], 'a').write({what} + '\\n')
+    sys.stdout.write(line)
+"""
+
+
+def test_a_wrong_program_is_replaced_without_touching_the_job(srv, tmp_path):  # noqa: F811
+    (tmp_path / "j.py").write_text(JUDGE.replace("{what}", "nonsense"))
+    pss(srv, "run", "-n", "lane", "-e", "k=1-3", "echo run=$$; echo GATE {k}a; sleep 5; echo GATE {k}b",
+        cwd=tmp_path)
+    pids = pss(srv, "cat", "lane", cwd=tmp_path)
+    assert "judge: 3 started\n" == pss(srv, "follow", "lane", "python3 -u j.py {k}", "-n", "judge",
+                                       cwd=tmp_path)
+    assert "NameError" in (time.sleep(2), pss(srv, "tail", "judge/1", cwd=tmp_path))[1]
+    (tmp_path / "j.py").write_text(JUDGE.replace("{what}", "line.split()[1]"))
+    pss(srv, "follow", "lane", "python3 -u j.py {k}", "-n", "judge", cwd=tmp_path)
+    pss(srv, "wait", "lane", "judge", "-t", "30", cwd=tmp_path)
+    for k in "123":
+        assert (tmp_path / f"ctl.{k}").read_text() == f"{k}a\n{k}b\n"       # all of it, once
+    out = pss(srv, "cat", "lane/1", cwd=tmp_path)
+    assert out.count("run=") == 1 and out.split()[0] in pids
+    assert pss(srv, "cat", "judge/1", cwd=tmp_path) == out                  # byte for byte
+    assert pss(srv, "cat", "-f", "lane/2", cwd=tmp_path) == pss(srv, "cat", "lane/2", cwd=tmp_path)
+
+
+def test_following_again_ends_the_running_follower(srv, tmp_path):  # noqa: F811
+    pss(srv, "run", "-n", "src", "echo a; sleep 6", cwd=tmp_path)
+    pss(srv, "follow", "src", "cat; sleep 60", cwd=tmp_path)
+    assert "1 replaced" in pss(srv, "follow", "src", "cat", cwd=tmp_path)
+    out = pss(srv, "wait", "src", "follow-src", "-t", "30", cwd=tmp_path)
+    assert out.count("succeeded") == 2
+    assert "cancelled" in pss(srv, "ps", "-v", cwd=tmp_path)
+
+
+def test_help_and_errors_are_short(srv):  # noqa: F811
+    for op in ("give", "wait", "ps", "each", "stop", "brief", "follow", "tail"):
+        out = pss(srv, "help", op)
+        assert op in out and len(out) < 420, (op, out)
+    assert "no such command" in pss(srv, "help", "frobnicate")
+    r = subprocess.run([PSS, "run", "x", "--stop"], capture_output=True, text=True)
+    assert r.returncode == 2 and "needs a condition" in r.stderr and len(r.stderr) < 700
+
+
+def test_run_says_what_the_server_will_do(srv, tmp_path):  # noqa: F811
+    out = pss(srv, "run", "-n", "say", "-e", "k=1-2", "echo {k}", "--on", "X {t}", "--append", "f{k}",
+              "{t}", "--idle", "60", "--stop", cwd=tmp_path)
+    assert "2 rules per job: 'X {t}' -> append f{k}; 'idle 60s' -> cancel" in out

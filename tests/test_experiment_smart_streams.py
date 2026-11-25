@@ -570,3 +570,42 @@ def test_files_stay_small():
         if f.endswith((".py", ".md")):
             assert len(open(os.path.join(EXP, f)).readlines()) < 1000
     assert textwrap.dedent(FAKE)
+
+
+# ── containment ─────────────────────────────────────────────────────────────
+
+import shutil as _shutil  # noqa: E402
+
+import ss_contain  # noqa: E402
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS sandbox")
+def test_contained_processes_cannot_signal_others(tmp_path):
+    outside = subprocess.Popen(["/bin/sleep", "71"])
+    try:
+        r = subprocess.run([ss_contain.SANDBOX, "-p", ss_contain.PROFILE, "/bin/sh", "-c",
+                            "sleep 72 & kill $! || exit 9; kill %d; echo rc=$?; "
+                            "pkill -f 'sleep 7[1]'" % outside.pid],
+                           capture_output=True, text=True, timeout=20)
+        assert "rc=1" in r.stdout and outside.poll() is None, r
+    finally:
+        outside.kill()
+
+
+@pytest.mark.skipif(not _shutil.which("pgrep"), reason="pgrep")
+def test_guarded_pkill_spares_sessions_and_the_server(tmp_path):
+    guard = ss_contain.install(str(tmp_path / "guard"))
+    mark = f"marker{os.getpid()}"
+    script = "import time; time.sleep(60)"
+    procs = {n: subprocess.Popen([sys.executable, "-c", script, *argv]) for n, argv in {
+        "work": [mark], "session": ["claude -p ", mark], "server": ["beam.smp", mark]}.items()}
+    try:
+        time.sleep(.5)
+        r = subprocess.run([os.path.join(guard, "pkill"), "-KILL", "-f", mark], timeout=20)
+        assert r.returncode == 0
+        assert procs["work"].wait(5) == -9
+        assert procs["session"].poll() is None and procs["server"].poll() is None
+        assert subprocess.run([os.path.join(guard, "pkill"), "-f", "no-such-" + mark]).returncode == 1
+    finally:
+        for p in procs.values():
+            p.kill()

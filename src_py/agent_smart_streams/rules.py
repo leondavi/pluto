@@ -50,6 +50,20 @@ class _Rule(argparse.Action):
             last["then"] = value if what == "then" else _ACTIONS[what]
 
 
+def said(rules: list[dict] | None) -> str:
+    """Confirmation, so that nobody has to check: "; 2 rules per job: ..."."""
+    if not rules:
+        return ""
+
+    def one(r):
+        when = r.get("match") or ", ".join(r.get("where", ())) or \
+            (f"idle {r['idle_s']:g}s" if "idle_s" in r else f"absent {r['absent_s']:g}s")
+        do = r.get("then", "notify")
+        return f"{when[:50]!r} -> {do}" + (f" {r['file']}" if "file" in r else "")
+
+    return f"; the server holds {len(rules)} rules per job: " + "; ".join(map(one, rules))
+
+
 def add_options(p: argparse.ArgumentParser, aliases: bool = False) -> None:
     """*aliases*: also the names job_watch uses, where they are free."""
     def option(name, *more, **kw):

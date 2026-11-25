@@ -49,8 +49,8 @@ def text(jobs: PlutoJobsClient, cards: list[dict]) -> str:
         out += ["  " + r for r in render.rows(cs, owner)]
         out += _rules(jobs, cs[:BRIEF_JOBS])
         out += _shapes(jobs, cs)
-    out.append("Use the names above with pss: wait, ps, each, report, grep, stop (owner only). "
-               "pss log JOB is the path of its raw output.")
+    out.append("pss wait NAME; pss each NAME 'prog {log} {key} {state} {exit}' -o 'out/{key}.json' "
+               "runs a program per job as it ends; pss stop NAME (owner only). The rules stay.")
     body = "\n".join(out)
     return body if len(body) <= BRIEF_TEXT else body[:BRIEF_TEXT] + "\n(cut; name fewer jobs)"
 

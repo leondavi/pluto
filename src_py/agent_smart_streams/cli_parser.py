@@ -27,6 +27,9 @@ all of it outlives your session. JOBS: soak  soak/3  soak/1-6,9  or an id.
   ps [JOBS] [-v] [--all]     tail|cat|log JOBS     grep RE JOBS
   each JOBS CMD [-o FILE]    your program per job as it ends; {log} {key}
         {state} {exit} and parameters are filled in; -o keeps its output
+  follow JOBS CMD            your program per job, live: reads all its output on
+        stdin. Wrong? Fix it and follow again: it restarts from the beginning,
+        the job is not disturbed
   report JOBS -x 'E{e:int} p={p:int}'.. -f 'bad=first:e where p > 9'.. [-o FILE]
         a record per job without a program; last.F is the value in force
   analyze JOBS [...]         outline of any output; queries: pss help analyze
@@ -54,8 +57,30 @@ its action; {field} is what --on captured, or a parameter. --once: first time on
 }
 
 
+class _Parser(argparse.ArgumentParser):
+    """Says what is wrong and how it goes, not every option there is."""
+
+    def error(self, message):
+        op = self.prog.partition(" ")[2]
+        self.exit(2, f"pss {op}: {message}\n" + topic(op) + "\n")
+
+
+def topic(op: str) -> str:
+    """Help on one command."""
+    if op in MORE:
+        return MORE[op]
+    found, take = [], False
+    for line in HELP.splitlines():
+        names = line.split()[:1]
+        if line.startswith("  ") and not line.startswith("   ") and names:
+            take = op in names[0].split("|") or f"     {op} " in line or f"     {op}|" in line
+        if take:
+            found.append(line)
+    return "\n".join(found) or "no such command; see pss help"
+
+
 def build() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pss", add_help=False)
+    p = _Parser(prog="pss", add_help=False)
     sub = p.add_subparsers(dest="op", metavar="OP")
     many: dict = dict(action="append", default=[])
     yes: dict = dict(action="store_true")
@@ -100,9 +125,12 @@ def build() -> argparse.ArgumentParser:
               (["-F", "--fixed"], yes), ids=None)
     grep.add_argument("pattern")
     grep.add_argument("ids", nargs="+")
+    follow = op("follow", (["-n", "--name"], {}), ids=None)
+    follow.add_argument("ids", nargs="+")
+    follow.add_argument("command")
     op("tail", (["-n"], dict(type=int, default=10)))
-    for name in ("cat", "log"):
-        op(name)
+    op("cat", (["-f", "--follow"], yes))
+    op("log")
     for name in ("stop", "pause", "resume"):
         op(name, (["--tree"], yes))
     give = op("give", ids=None)

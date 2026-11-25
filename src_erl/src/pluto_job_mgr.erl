@@ -561,7 +561,8 @@ do_transfer({By, _} = Actor, #{<<"job_id">> := Id, <<"to">> := To}, S) ->
             Board = lists:foldl(fun(A, B) ->
                 pluto_job_notice:notify(A, ?EVT_JOB_TRANSFERRED, P1, St, B)
             end, pluto_job_notice:move(Id, From, To, S#state.board),
-            lists:usort([From, To])),
+            %% Who did it knows.
+            lists:usort([From, To]) -- [By]),
             {{ok, #{<<"job_id">> => Id, <<"from">> => From, <<"to">> => To}},
              S#state{board = Board}};
         E -> {E, S}

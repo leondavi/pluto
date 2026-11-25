@@ -121,8 +121,8 @@
 -define(JOB_KEY_MIN,      32).                  %% shortest key accepted
 
 %% ── Configurable defaults (pluto_config.json "smartstreams") ────────────────
--define(DEFAULT_JOB_MAX_RUNNING,    64).
--define(DEFAULT_JOB_MAX_PER_AGENT,  16).
+-define(DEFAULT_JOB_MAX_RUNNING,    128).
+-define(DEFAULT_JOB_MAX_PER_AGENT,  32).
 -define(DEFAULT_JOB_IDLE_AFTER_MS,  30000).
 -define(DEFAULT_JOB_MIN_FREE_BYTES, 268435456).
 

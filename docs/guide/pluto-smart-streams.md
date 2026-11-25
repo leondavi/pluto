@@ -46,6 +46,11 @@ pss give other-agent soak; pss brief soak        # handover
   {state} {exit}` and the parameters are filled in, shell-quoted (and in the
   environment as `PSS_LOG` ...); `-o` keeps its output, completely or not at all,
   and checks that a `.json` file is JSON.
+- **`follow`** runs your own program on live output, one per job, as jobs of their own:
+  `pss follow soak 'python3 -u judge.py {k}'` reads everything from the beginning on
+  stdin. Following again replaces it, again from the beginning, and the followed jobs
+  never notice. Prefer it to `prog | filter`, where a bug in the filter cannot be fixed
+  without starting the program again.
 - **`report`** makes a record per job without a program:
   `-x 'E{e:int} probe={p:int}' -x 'E{e:int} CAL limit={limit:int}'
   -f 'bad=first:e where p > last.limit' -f 'code=_exit' -o 'out/{k}.json'`.
@@ -213,7 +218,7 @@ every hash and never runs anything.
 ## Configuration
 
 Optional `smartstreams` section in `config/pluto_config.json`: `home`,
-`python`, `max_running` (64), `max_per_agent` (16), `idle_after_ms` (30000),
+`python`, `max_running` (128), `max_per_agent` (32; a follower counts), `idle_after_ms` (30000),
 `min_free_bytes` (256 MiB; below it jobs are stopped), `allow_remote` (false).
 `PLUTO_SMARTSTREAMS_HOME` overrides the storage directory and must match for
 server and clients; a directory is used by one server at a time. The server

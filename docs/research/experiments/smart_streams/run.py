@@ -21,13 +21,14 @@ sys.path.insert(0, HERE)
 import ss_build  # noqa: E402
 import ss_chaos  # noqa: E402
 import ss_classify  # noqa: E402
+import ss_contain  # noqa: E402
 import ss_metrics  # noqa: E402
 import ss_procs  # noqa: E402
 import ss_prompts  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(HERE, *[".."] * 4))
 ADAPTER = os.path.join(REPO, "src_py", "agent_smart_streams", "smart_streams.py")
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 MIN_PEAK = 8
 CONDITIONS = ("smartstreams", "native", "native_sub")      # the arms
 VARIANTS = ("ss_mcp", "ss_both")                          # only to choose the SS design
@@ -195,6 +196,8 @@ def run_one(exp, condition, rep, seed, args):
     server = port = home = chaos = None
     tracker, t0 = ss_procs.Tracker(), time.time()
     status, meta, killed, env = {}, {}, [], agent_env(condition, args.model)
+    guard = ss_contain.install(os.path.join(run_dir, "guard"))
+    env["PATH"] = guard + os.pathsep + env.get("PATH", "")
     sessions = [n for n, _ in roster]
 
     def launch(name, session, limit=None, note=""):
@@ -326,6 +329,8 @@ def parse_args(argv=None):
     p.add_argument("--claude", default="claude")
     p.add_argument("--seed", default=os.environ.get("SS_EXP_SEED"),
                    help="master seed; default random (a seed in argv is visible to ps)")
+    p.add_argument("--allow-uncontained", action="store_true",
+                   help="run where agents could signal every process of this user")
     p.add_argument("--dry-run", action="store_true", help="print commands and prompts only")
     a = p.parse_args(argv)
     a.out = os.path.realpath(a.out)
@@ -358,6 +363,8 @@ def main(argv=None):
     plan = schedule(args.exps, args.conditions, args.reps, master, args.rep_start)
     if args.dry_run:
         return dry_run(plan, args)
+    if argv is None:
+        ss_contain.reexec(args.allow_uncontained)
     for k in session_vars(os.environ):                   # the Pluto server inherits our env
         del os.environ[k]
     os.makedirs(os.path.join(args.out, "runs"), exist_ok=True)

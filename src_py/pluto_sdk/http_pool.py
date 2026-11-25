@@ -43,10 +43,15 @@ class HTTPConnectionPool:
         )
 
     @contextlib.contextmanager
-    def acquire(self, *, read_timeout: Optional[float] = None):
-        """Yield a connection, returning it to the pool on success."""
+    def acquire(self, *, read_timeout: Optional[float] = None,
+                fresh: bool = False):
+        """Yield a connection, returning it to the pool on success.
+
+        ``fresh`` never reuses one: when the server dropped one idle
+        connection it has usually dropped the others as well.
+        """
         try:
-            conn = self._free.get_nowait()
+            conn = self._new_conn() if fresh else self._free.get_nowait()
         except queue.Empty:
             conn = self._new_conn()
         # Per-call socket read timeout overrides the connection default.

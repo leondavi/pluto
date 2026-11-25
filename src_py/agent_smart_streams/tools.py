@@ -9,16 +9,18 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from typing import Optional
+from typing import Optional, Union
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from agent_smart_streams import compact, fleet
-from agent_smart_streams.constants import MANIFEST_PAGE
+from agent_smart_streams import compact, fleet, submit
+from agent_smart_streams.constants import MANIFEST_PAGE, SUBMIT_MAX
+from agent_smart_streams.compact import short
 from agent_smart_streams.notices import NoticeBoard
+from agent_smart_streams.schema import slim_tools
 from pluto_jobs_def import (
-    GREP_MATCHES, LIST_DEFAULT, READ_DEFAULT, WAIT_DEFAULT_S, WAIT_MAX_S,
+    GREP_MATCHES, LIST_DEFAULT, READ_DEFAULT, WAIT_DEFAULT_S,
 )
 from pluto_sdk import PlutoError, PlutoJobsClient
 
@@ -27,7 +29,7 @@ WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 RUNS = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
-def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
+def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> NoticeBoard:
     board = NoticeBoard(jobs)
     waiter = fleet.Waiter(jobs)
 
@@ -42,7 +44,11 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
             except OSError as exc:
                 result = {"error": f"Pluto server unreachable: {exc}"}
             return board.attach(result)
-        result = await asyncio.to_thread(work)
+        board.busy += 1
+        try:
+            result = await asyncio.to_thread(work)
+        finally:
+            board.busy -= 1
         if piggyback:
             result = await piggyback(result)
         return compact.dumps(result)
@@ -50,18 +56,22 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
     @mcp.tool(annotations=RUNS, structured_output=False)
     async def job_start(
         command: Optional[str] = None, argv: Optional[list[str]] = None,
+        each: Optional[dict[str, Union[str, list[str]]]] = None,
         commands: Optional[list[str]] = None, names: Optional[list[str]] = None,
         cwd: Optional[str] = None, env: Optional[dict[str, str]] = None,
         name: Optional[str] = None, tags: Optional[list[str]] = None,
         timeout_s: Optional[float] = None, stdin: bool = False,
         parent: Optional[str] = None, rerun_of: Optional[str] = None,
         task_id: Optional[str] = None, max_output_bytes: Optional[int] = None,
+        wait_s: int = 0,
     ) -> str:
         """Launch a shell command (or argv) as a durable background job and
         return at once. All output is kept on the server; it outlives this
-        session. commands (with optional names) starts several at once, in
-        order. parent nests it
-        under another job; rerun_of repeats an earlier job."""
+        session. Start many at once with a template: command="prog --n {n}",
+        each={"n": "1-12"} ("1-4,8" or a list; several keys give every
+        combination), or with a commands list. Many get a group handle that
+        works as a job id in other calls. wait_s also waits for all of them,
+        like job_wait. parent nests under a job; rerun_of repeats one."""
         here = cwd or (None if rerun_of else os.getcwd())
         if here:
             here = os.path.abspath(here)
@@ -69,26 +79,43 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
                     stdin=stdin or None, parent=parent, rerun_of=rerun_of,
                     task_id=task_id, max_output_bytes=max_output_bytes)
 
-        def many():
+        def batch():
+            if each:
+                if not command or commands or argv or names:
+                    raise PlutoError("each goes with command only")
+                return submit.expand(command, each)
             if command or argv:
                 raise PlutoError("give commands, or command/argv, not both")
             if names and len(names) != len(commands):
                 raise PlutoError("names and commands differ in length")
-            return {"jobs": [compact.started(jobs.start(
-                command=c, name=names[i] if names else name, **spec))
-                for i, c in enumerate(commands)]}
-        if commands:
-            return await _run(many)
-        return await _run(jobs.start, command=command, argv=argv, name=name,
-                          shape=compact.started, **spec)
+            if len(commands) > SUBMIT_MAX:
+                raise PlutoError(f"more than {SUBMIT_MAX} jobs in one call")
+            return list(zip(names or [name] * len(commands), commands))
+
+        def work():
+            if each or commands:
+                out = submit.start_all(jobs, batch(), spec)
+                handle = out["group"]
+            else:
+                out = compact.started(jobs.start(command=command, argv=argv,
+                                                 name=name, **spec))
+                handle = out["job_id"]
+            out.update(submit.output_path("{id}" if "group" in out else handle))
+            if wait_s:
+                w = compact.waited(waiter.wait(handle, None, wait_all=True,
+                                               timeout_s=wait_s))
+                out["waited"] = w
+            return out
+        return await _run(work)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def job_status(job_id: Optional[str] = None,
                          job_ids: Optional[list[str]] = None) -> str:
         """State, exit code, active/idle, elapsed, output size, your cursor
         and unread bytes, of one job or several."""
-        return await _run(fleet.one_or_many, lambda j: compact.status(
-            jobs.call("status", job_id=j)), job_id, job_ids)
+        return await _run(fleet.one_or_many, jobs, lambda j: dict(
+            compact.status(jobs.call("status", job_id=j)),
+            **submit.output_path(short(j))), job_id, job_ids)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def job_window(
@@ -153,9 +180,13 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
         """action: cancel (or halt), pause, resume, signal (with signal=
         INT|TERM|HUP|USR1|USR2|QUIT|KILL|STOP|CONT), on one job or several.
         tree=true also applies it to child jobs."""
-        return await _run(fleet.one_or_many, lambda j: jobs.call(
-            "control", job_id=j, action=action, signal=signal,
-            tree=tree or None)["jobs"], job_id, job_ids)
+        def work():
+            r = fleet.control(jobs, job_id, job_ids, action=action,
+                              signal=signal, tree=tree or None)
+            if action in ("cancel", "halt"):
+                board.expect_finish(r["ok"])
+            return r
+        return await _run(work)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def job_wait(
@@ -164,15 +195,15 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
         wait_all: bool = False, timeout_s: int = WAIT_DEFAULT_S,
         from_offset: Optional[int] = None, idle_ms: Optional[int] = None,
     ) -> str:
-        """Block (max 55 s) until a job exits, or until="output", "idle"
+        """Block (max 300 s) until a job exits, or until="output", "idle"
         (idle_ms), or "pattern" (regex appears in output). Give job_ids to
         watch many; returns when one has news, or with wait_all when all do.
-        Each event is reported once, so just call again with the same ids;
+        An exited job comes with its last line. Each event is reported once, so just call again with the same ids;
         from_offset searches again. Use this instead of polling."""
         return await _run(
             waiter.wait, job_id, job_ids, until=until, pattern=pattern,
             wait_all=wait_all, from_offset=from_offset, idle_ms=idle_ms,
-            timeout_ms=max(1, min(int(timeout_s), WAIT_MAX_S)) * 1000,
+            timeout_s=timeout_s,
             shape=compact.waited)
 
     @mcp.tool(annotations=RUNS, structured_output=False)
@@ -187,7 +218,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
         tags: Optional[list[str]] = None, parent: Optional[str] = None,
         limit: int = LIST_DEFAULT,
     ) -> str:
-        """List jobs, including those from earlier sessions. scope: mine,
+        """List jobs (id name state elapsed size owner), including those from earlier sessions. scope: mine,
         user or all. parent lists the children of a job."""
         return await _run(jobs.call, "list", scope=scope, states=states,
                           tags=tags, parent=parent, limit=limit,
@@ -222,7 +253,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
             jobs.call("transfer", job_id=j, to=to)
             return "ok"
         return await _run(lambda: {"to": to, "jobs": fleet.each(
-            one, fleet.ids_of(job_id, job_ids))})
+            one, fleet.ids_of(jobs, job_id, job_ids))})
 
     @mcp.tool(annotations=WRITE, structured_output=False)
     async def job_review(
@@ -262,3 +293,6 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
             name=name, pattern=pattern, from_offset=from_offset,
             to_offset=to_offset, text=text, followup_id=followup_id,
             status=status, assignee=assignee)
+
+    slim_tools(mcp)
+    return board

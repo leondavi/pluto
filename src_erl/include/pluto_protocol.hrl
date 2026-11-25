@@ -146,6 +146,7 @@
 -define(EVT_JOB_FINISHED,    <<"job_finished">>).
 -define(EVT_JOB_TRANSFERRED, <<"job_transferred">>).
 -define(ERR_BAD_JOB_ID,      <<"bad_job_id">>).
+-define(ERR_AMBIGUOUS_JOB,   <<"ambiguous_short_id_use_the_full_id">>).
 -define(ERR_UNKNOWN_JOB,     <<"unknown_job">>).
 -define(ERR_UNKNOWN_STREAM,  <<"unknown_stream">>).
 -define(ERR_NOT_OWNER,       <<"not_owner">>).

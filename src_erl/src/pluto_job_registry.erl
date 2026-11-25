@@ -25,7 +25,7 @@
 
 -include("pluto.hrl").
 
--export([pkg/1, all/0, live/0, children/1, state/1, is_done/1,
+-export([pkg/1, resolve/1, fresh_id/0, all/0, live/0, children/1, state/1, is_done/1,
          save/1, forget/1, load_all/0]).
 
 %% @doc Package of a job id. Validates the id, which becomes a path.
@@ -39,6 +39,32 @@ pkg(Id) ->
                 []          -> {error, ?ERR_UNKNOWN_JOB}
             end
     end.
+
+%% @doc Full id for a short one (its last hex digits). Anything else is
+%% returned unchanged and judged by pkg/1.
+-spec resolve(term()) -> term().
+resolve(Id) when is_binary(Id), byte_size(Id) =:= ?JOB_SHORT_ID_LEN ->
+    case ets:lookup(?ETS_JOBS_SHORT, Id) of
+        [{_, Full}]  -> Full;
+        [_, _ | _]   -> throw({job_error, ?ERR_AMBIGUOUS_JOB});
+        []           ->
+            case re:run(Id, "^[0-9a-f]+$", [{capture, none}]) of
+                match   -> throw({job_error, ?ERR_UNKNOWN_JOB});
+                nomatch -> Id
+            end
+    end;
+resolve(Id) -> Id.
+
+%% @doc A new id whose short form no known job uses.
+-spec fresh_id() -> job_id().
+fresh_id() ->
+    Id = pluto_job_store:new_id(),
+    case ets:member(?ETS_JOBS_SHORT, short(Id)) of
+        true  -> fresh_id();
+        false -> Id
+    end.
+
+short(Id) -> binary:part(Id, byte_size(Id), -?JOB_SHORT_ID_LEN).
 
 -spec all() -> [pkg()].
 all() -> ets:select(?ETS_JOBS, [{{'_', '$1', '_'}, [], ['$1']}]).
@@ -103,6 +129,7 @@ save(#{<<"id">> := Id} = P) ->
     end.
 
 insert(#{<<"id">> := Id} = P) ->
+    ets:insert(?ETS_JOBS_SHORT, {short(Id), Id}),
     case is_done(P) of
         true ->
             ets:insert(?ETS_JOBS, {Id, P, combine(P, read_state(Id))}),
@@ -116,6 +143,7 @@ insert(#{<<"id">> := Id} = P) ->
 -spec forget(job_id()) -> ok.
 forget(Id) ->
     ets:delete(?ETS_JOBS, Id),
+    ets:delete_object(?ETS_JOBS_SHORT, {short(Id), Id}),
     ets:delete(?ETS_JOBS_LIVE, Id),
     ok.
 
@@ -123,6 +151,7 @@ forget(Id) ->
 -spec load_all() -> ok.
 load_all() ->
     ets:delete_all_objects(?ETS_JOBS),
+    ets:delete_all_objects(?ETS_JOBS_SHORT),
     ets:delete_all_objects(?ETS_JOBS_LIVE),
     recover_replaced(),
     Host = pluto_job_store:host_id(),

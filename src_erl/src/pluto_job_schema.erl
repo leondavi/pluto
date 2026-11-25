@@ -9,7 +9,7 @@
 
 -include("pluto.hrl").
 
--export([check/1, agent/1, actor/1]).
+-export([check/1, full_ids/1, agent/1, actor/1]).
 
 %% @doc ok, or the name of the first badly typed field. null is absent.
 -spec check(map()) -> ok | {error, binary()}.
@@ -41,6 +41,19 @@ env(M) ->
     is_map(M) andalso lists:all(fun str/1, maps:values(M)) andalso
         lists:all(fun(K) -> str(K) andalso K =/= <<>> andalso
                             binary:match(K, <<"=">>) =:= nomatch end, maps:keys(M)).
+
+%% @doc Replace short job ids by full ones wherever a request names jobs.
+-spec full_ids(map()) -> map().
+full_ids(R) ->
+    Full = fun pluto_job_registry:resolve/1,
+    maps:map(fun(K, V) when is_binary(V), K =:= <<"job_id">>;
+                            is_binary(V), K =:= <<"parent">>;
+                            is_binary(V), K =:= <<"rerun_of">> -> Full(V);
+                (<<"job_ids">>, V) when is_list(V) -> lists:map(Full, V);
+                (<<"from_offsets">>, V) when is_map(V) ->
+                     maps:from_list([{Full(I), N} || {I, N} <- maps:to_list(V)]);
+                (_, V) -> V
+             end, R).
 
 %% @doc The calling agent's id; throws {bad, Reason}.
 -spec agent(map()) -> agent_id().

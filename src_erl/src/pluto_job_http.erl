@@ -32,7 +32,7 @@ handle(_, _, _, _, _) -> {405, err(<<"method_not_allowed">>)}.
 dispatch(Op, R) ->
     try
         case pluto_job_schema:check(R) of
-            ok         -> result(op(Op, R));
+            ok         -> result(op(Op, pluto_job_schema:full_ids(R)));
             {error, W} -> {400, err(W)}
         end
     catch

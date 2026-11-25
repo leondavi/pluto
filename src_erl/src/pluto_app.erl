@@ -83,6 +83,7 @@ create_ets_tables() ->
                                  {keypos, #http_session.token}]),
     ets:new(?ETS_LONG_POLL, [named_table, set, public]),
     ets:new(?ETS_JOBS, [named_table, set, public, {read_concurrency, true}]),
+    ets:new(?ETS_JOBS_SHORT, [named_table, bag, public, {read_concurrency, true}]),
     ets:new(?ETS_JOBS_LIVE, [named_table, set, public]),
     ets:new(?ETS_GRACE_TIMERS, [named_table, set, public]),
     %% Ensure signal directory exists

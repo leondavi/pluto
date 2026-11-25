@@ -15,12 +15,12 @@ from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP
 
 from agent_mcp_friend.inbox import InboxManager
-from agent_mcp_friend.socket_notifier import SocketNotifier
 from agent_smart_streams.constants import (
     DRAIN_HINT, EPOCH_CHECK_S, INBOX_KEY, INSTRUCTIONS, SERVER_NAME,
     SESSION_TTL_MS, WAKEABLE_FRAMEWORKS,
 )
 from agent_smart_streams.tools import register_tools
+from agent_smart_streams.wake import JobNotifier
 from pluto_jobs_def import JOB_EVENTS
 from pluto_sdk import PlutoHttpClient, PlutoJobsClient
 
@@ -43,15 +43,15 @@ class SmartStreamsServer:
         # Only the host Claude Code session may be woken. Any other CLI
         # started from inside Claude inherits that session's socket, and
         # pushing there would wake a session this agent is not part of.
-        self.push = (SocketNotifier.from_env(agent_id)
+        self.push = (JobNotifier.from_env(agent_id)
                      if framework in WAKEABLE_FRAMEWORKS and not attach
-                     else SocketNotifier(None, None, agent_id, enabled=False))
+                     else JobNotifier(None, None, agent_id, enabled=False))
         self.push.drain_tool = DRAIN_HINT
         self.inbox.set_push_notifier(self.push)
         self.mcp = FastMCP(name=SERVER_NAME, instructions=INSTRUCTIONS,
                            lifespan=self._lifespan)
-        register_tools(self.mcp, self.jobs,
-                       None if attach else self._piggyback)
+        self.push.board = register_tools(
+            self.mcp, self.jobs, None if attach else self._piggyback)
 
     async def _piggyback(self, result):
         # Looked up per call: the inbox is replaced after a server restart.

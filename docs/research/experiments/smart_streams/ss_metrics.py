@@ -52,6 +52,12 @@ def content_bytes(content):
     return n
 
 
+def _text(content):
+    if isinstance(content, str):
+        return content
+    return "".join(str(b.get("text") or "") for b in content or [] if isinstance(b, dict))
+
+
 def blocks(ev):
     msg = ev.get("message")
     c = msg.get("content") if isinstance(msg, dict) else None
@@ -64,7 +70,7 @@ def parse_agent(events):
          "tool_errors": 0, "permission_denials": 0, "mcp_status": {}, "model": None,
          "subtype": None, "has_result": False, "is_error": True, "duration_ms": None}
     seen_msg, uses, seen_res, denied = {}, {}, set(), 0
-    result = None
+    result, duration = None, 0
     for ev in events:
         t = ev.get("type")
         if t == "system" and ev.get("subtype") == "init":
@@ -72,7 +78,8 @@ def parse_agent(events):
             m["mcp_status"] = {s.get("name"): s.get("status") for s in ev.get("mcp_servers") or []
                                if isinstance(s, dict)}
         elif t == "result":
-            result = ev
+            result = ev            # totals are cumulative, durations are not
+            duration += int(ev.get("duration_ms") or 0)
         elif t == "assistant":
             msg = ev.get("message") or {}
             if msg.get("id"):
@@ -92,13 +99,16 @@ def parse_agent(events):
                 by = m["tool_result_bytes_by_tool"]
                 by[tool] = by.get(tool, 0) + n
                 m["max_tool_result_bytes"] = max(m["max_tool_result_bytes"], n)
+                if tool.startswith("mcp__") and not b.get("is_error") and re.match(
+                        r'\{"error":', _text(b.get("content"))):
+                    m["tool_errors"] += 1
                 if b.get("is_error"):
                     m["tool_errors"] += 1
                     text = json.dumps(b.get("content"))
                     denied += bool(re.search(r"requested permissions?|permission to use", text, re.I))
     if result:
         m.update(has_result=True, subtype=result.get("subtype"),
-                 is_error=bool(result.get("is_error")), duration_ms=result.get("duration_ms"),
+                 is_error=bool(result.get("is_error")), duration_ms=duration,
                  cost_usd=result.get("total_cost_usd"))
         pd = result.get("permission_denials")
         denied = max(denied, len(pd) if isinstance(pd, list) else 0)
@@ -146,19 +156,38 @@ def leak_patterns(ws, out_dir):
     return [
         ("harness", re.compile(r"experiments/smart_streams|pluto-v0\.6\.0|exp[123]_\w+\.py|wl_\w+\.py\b")),
         ("other_run", re.compile(out + r"(?!" + own + r")(?:/|\b)")),
-        ("parent_dir", re.compile(r"\.\./\.\.")),
         ("truth", re.compile(r"_private|truth\.json")),
         ("decompile", re.compile(r"\bmarshal\b|\bdis\.dis\b|-m dis\b|uncompyle|decompyle|pycdc|"
                                  r"\bunseal\b")),
-        ("program_internals", re.compile(r"bin/img|\.img\b|\b(?:strings|xxd|hexdump|od|cp|cat)\b[^;|&]*\.pyc|"
+        ("program_internals", re.compile(r"bin/img|\.img\b|\b(?:strings|xxd|hexdump|od|cp|cat)\b[^;|&<>\n]*\.pyc|"
                                          r"\.runs\b")),
         ("transcripts", re.compile(r"\.claude/projects")),
     ]
 
 
+def outside_by_parent(command, cwd, ws):
+    """(path reached through '..' that lies outside ws or None, new cwd).
+
+    Follows cd in textual order; subshells and variables are not modelled."""
+    hit = None
+    for mt in re.finditer(r"(?:^|[;&|(\n])\s*cd\s+([^\s;&|)]+)|(?<![\w./*-])((?:~?/)?(?:[\w.*-]+/)*\.\.(?:/[\w.*-]*)*)(?=[\s;&|)'\"]|$)",
+                          command):
+        target = (mt.group(1) or mt.group(2)).strip("'\"")
+        if "$" in target:
+            continue
+        path = os.path.normpath(os.path.join(cwd, os.path.expanduser(target)))
+        if ".." in target.split("/") and path != ws and not path.startswith(ws + "/"):
+            hit = hit or mt
+        if mt.group(1):
+            cwd = path
+    return hit, cwd
+
+
 def find_leaks(events, ws, out_dir):
     """[(code, tool, excerpt)] for tool INPUTS that touch forbidden material."""
     pats, hits, seen = leak_patterns(ws, out_dir), [], set()
+    ws = os.path.normpath(ws)
+    cwd = ws
     for ev in events:
         if ev.get("type") != "assistant":
             continue
@@ -166,7 +195,17 @@ def find_leaks(events, ws, out_dir):
             if b.get("type") != "tool_use" or b.get("id") in seen:
                 continue
             seen.add(b.get("id"))
-            text = json.dumps(b.get("input"), ensure_ascii=False)
+            arg = b.get("input") or {}
+            # real line breaks, so that a pattern stays within one line
+            text = json.dumps(arg, ensure_ascii=False).replace("\\n", "\n")
+            cmds = [arg.get("command")] + list(arg.get("commands") or [])
+            for cmd in (c for c in cmds if isinstance(c, str)):
+                mt, after = outside_by_parent(cmd, cwd, ws)
+                if b.get("name") == "Bash":
+                    cwd = after
+                if mt:
+                    hits.append(("parent_dir", b.get("name"),
+                                 cmd[max(0, mt.start() - 60):mt.end() + 80]))
             for code, rx in pats:
                 mt = rx.search(text)
                 if mt:

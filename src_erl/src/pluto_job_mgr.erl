@@ -245,7 +245,7 @@ new_package(R) ->
     Owner = maps:get(<<"agent_id">>, R),
     Now = now_ms(),
     (maps:filter(fun(_, V) -> V =/= null end, maps:with(?JOB_SPEC_KEYS, R)))
-    #{<<"schema">> => ?JOB_SCHEMA, <<"id">> => pluto_job_store:new_id(),
+    #{<<"schema">> => ?JOB_SCHEMA, <<"id">> => pluto_job_registry:fresh_id(),
       <<"origin">> => pluto_job_store:origin(),
       <<"user">> => opt(<<"user">>, R, <<"unknown">>),
       <<"opener">> => Owner, <<"owner">> => Owner,

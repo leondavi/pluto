@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from pluto_jobs_def import FINAL_STATES
+from pluto_jobs_def import FINAL_STATES, SHORT_ID_LEN
 
 _FINAL = frozenset(FINAL_STATES)
 
@@ -21,14 +21,26 @@ def dumps(obj) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
+def short(jid: str) -> str:
+    """The form of a job id that agents see; every call accepts it."""
+    return jid[-SHORT_ID_LEN:]
+
+
 def brief(job: dict) -> dict:
     out = {k: job[k] for k in _BRIEF if job.get(k) is not None}
+    out["job_id"] = short(job["job_id"])
+    if job.get("state") in _FINAL:
+        out.pop("activity", None)
+        if job["state"] == "succeeded":
+            out.pop("exit_code", None)
+            out.pop("leader_exit_code", None)
     out["elapsed_s"] = round(job.get("elapsed_ms", 0) / 1000, 1)
     return out
 
 
 def started(r: dict) -> dict:
-    return {k: r[k] for k in ("job_id", "name", "state") if r.get(k) is not None}
+    out = {k: r[k] for k in ("name", "state") if r.get(k) is not None}
+    return {"job_id": short(r["job_id"]), **out}
 
 
 def status(r: dict) -> dict:
@@ -48,6 +60,10 @@ def waited(r: dict) -> dict:
             rest[job["state"]] = rest.get(job["state"], 0) + 1
             continue
         out = dict(brief(job), hit=h["reason"])
+        if h["reason"] == "exit":
+            del out["hit"]      # the state says it
+        if h.get("last"):
+            out["last"] = h["last"]
         if h["reason"] == "pattern":
             out["hit"] = f"{h['line']}@{h['offset']}:{h['text']}"
         hits.append(out)
@@ -60,8 +76,12 @@ def waited(r: dict) -> dict:
 
 
 def listed(r: dict) -> dict:
-    return {"total": r["total"],
-            "jobs": [dict(brief(j), owner=j.get("owner")) for j in r["jobs"]]}
+    def row(j: dict) -> str:
+        b = brief(j)
+        return " ".join(str(x) for x in (
+            b["job_id"], b.get("name", "-"), b["state"], f"{b['elapsed_s']}s",
+            f"{b.get('size', 0)}B", j.get("owner")) if x is not None)
+    return {"total": r["total"], "jobs": [row(j) for j in r["jobs"]]}
 
 
 def read(r: dict, hashes: bool = False) -> dict:
@@ -95,7 +115,11 @@ def grep(r: dict) -> dict:
 
 
 def final_jobs(r: dict) -> set:
-    """Ids whose final state this result already tells the agent."""
+    """Short ids whose final state this result already tells the agent."""
     jobs = r.get("jobs") if isinstance(r.get("jobs"), list) else [r]
-    return {j["job_id"] for j in jobs if isinstance(j, dict)
-            and j.get("job_id") and j.get("state") in _FINAL}
+    rows = [j for j in jobs if isinstance(j, dict)]
+    waited = r.get("waited")
+    if isinstance(waited, dict):
+        rows += waited["jobs"]
+    return {short(j["job_id"]) for j in rows
+            if j.get("job_id") and j.get("state") in _FINAL}

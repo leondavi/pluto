@@ -12,6 +12,9 @@ CONFIG_SECTION = "smartstreams"
 DEFAULT_HOME_PARTS = (".pluto", "smartstreams")
 KEY_FILE = "key"
 
+# ── Ids ──────────────────────────────────────────────────────────────────────
+SHORT_ID_LEN = 6                  # last hex digits, accepted as an id
+
 # ── States ────────────────────────────────────────────────────────────────────
 FINAL_STATES = ("succeeded", "failed", "cancelled", "signaled", "timed_out",
                 "output_limit", "lost")

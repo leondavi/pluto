@@ -6,6 +6,7 @@ Needs erl and a compiled src_erl (``rebar3 compile``).
 import base64
 import hashlib
 import io
+import glob
 import json
 import os
 import re
@@ -513,13 +514,15 @@ def test_mcp_stdio_session(srv):
             seen = [x for x in seen if x["job_id"] == two["job_id"]]
             err = await call("job_status", job_id="nope")
             agents = srv.jobs().http.list_agents()
-            return tools, g, n, seen, err, agents, dup, many, jid
-    tools, g, n, seen, err, agents, dup, many, jid = asyncio.run(go())
+            return tools, g, n, seen, err, agents, dup, many, jid, w8, job
+    tools, g, n, seen, err, agents, dup, many, jid, w8, job = asyncio.run(go())
     assert len(tools) == 15 and g["lines"].splitlines() == ["100-100", "101@292:BAD"]
     assert n["text"].endswith("BAD\n") and "bad_job_id" in err["error"]
     assert "mcp1" in agents
     assert not dup and any(x["event"] == "job_finished" for x in seen)
     assert many[jid]["matches"] == 1 and "bad_job_id" in many["J-x"]["error"]
+    assert len(jid) == 6 and w8["jobs"][0]["last"] == "BAD" and os.path.isfile(
+        glob.glob(job["output"])[0])
 
 
 def test_cli_reports(srv, tmp_path):
@@ -762,11 +765,13 @@ def test_fleet_tools_over_mcp(srv):
                     for i in range(12)]
             started = await call("job_start", commands=cmds,
                                  names=[f"n{i}" for i in range(12)])
-            ids = [x["job_id"] for x in started["jobs"]]
-            assert [x["name"] for x in started["jobs"]] == [f"n{i}" for i in range(12)]
+            pairs = [x.split("=") for x in started["jobs"].split()]
+            ids = [x[1] for x in pairs]
+            assert [x[0] for x in pairs] == [f"n{i}" for i in range(12)]
+            group = started["group"]
             hits = []
             while len(hits) < 24:
-                m = await call("job_wait", job_ids=ids, until="pattern", pattern="^EV")
+                m = await call("job_wait", job_id=group, until="pattern", pattern="^EV")
                 assert not m.get("timed_out"), (len(hits), m)
                 hits += [j["hit"] for j in m["jobs"] if "EV" in j["hit"]]
             assert len(set(hits)) == 24 or len(hits) == 24
@@ -785,7 +790,41 @@ def test_fleet_tools_over_mcp(srv):
             t = await call("job_transfer", job_ids=ids[1:3], to="other")
             assert set(t["jobs"].values()) == {"ok"}
             c = await call("job_control", job_ids=ids[:2], action="cancel")
-            assert c[ids[0]] == {ids[0]: "ok"} and "error" in c[ids[1]]
+            assert c["ok"] == [ids[0]] and list(c["errors"]) == [ids[1]]
+            g = await call("job_grep", job_id=group, pattern="two 3")
+            assert g[ids[3]]["matches"] == 1 and set(g["no_match"]) == set(ids) - {ids[3]}
+            t = await call("job_start", command="echo r {n} {k} | awk '{print $3}'",
+                           each={"n": "08-10", "k": ["a", "b"]}, wait_s=30)
+            assert t["n"] == 6 and t["jobs"].startswith("08-a=")
+            last = {j["name"]: j["last"] for j in t["waited"]["jobs"]}
+            assert last["08-a"] == "a" and last["10-b"] == "b"
+            assert len(glob.glob(t["output"].replace("{id}", "??????"))) >= 18
+            # Another agent can use the handle, and a wait reports it once.
+            assert (await call("job_wait", job_id=t["group"], timeout_s=1))["jobs"]
+            assert "no such group" in (await call("job_wait", job_id="gffffff"))["error"]
+            for bad in (dict(command="x", each={"n": "1"}),
+                        dict(command="x {n}", each={"n": "1-900"}),
+                        dict(command="{n}", each={"n": ""}, names=["q"]),
+                        dict(commands=["true"] * 65)):
+                assert "error" in await call("job_start", **bad), bad
+            lst = await call("job_list", limit=3)
+            assert all(isinstance(r_, str) for r_ in lst["jobs"])
             assert "error" in await call("job_status")
             assert "error" in await call("job_start", commands=["a"], command="b")
     asyncio.run(go())
+
+
+def test_short_ids(srv):
+    j = srv.jobs("short")
+    a, b = (j.start(command="sleep 60")["job_id"] for _ in "ab")
+    sa, sb = a[-6:], b[-6:]
+    assert j.call("status", job_id=sa)["job_id"] == a
+    r = j.wait(job_ids=[sa, sb], until="output", from_offsets={sa: 0}, timeout_ms=300)
+    assert {x["job_id"] for x in r["jobs"]} == {a, b}
+    child = j.start(command="true", parent=sa)["job_id"]
+    assert [x["job_id"] for x in j.call("list", parent=sa)["jobs"]] == [child]
+    for bad in ("ffffff", "../../", "FFFFFF"):
+        with pytest.raises(PlutoError, match="unknown_job|bad_job_id"):
+            j.call("status", job_id=bad)
+    j.call("control", job_id=sa, action="cancel")
+    j.call("control", job_id=sb, action="cancel")

@@ -103,7 +103,8 @@ class PlutoHttpClient:
         last_exc: Optional[BaseException] = None
         for attempt in (1, 2):
             try:
-                with self._pool.acquire(read_timeout=timeout) as conn:
+                with self._pool.acquire(read_timeout=timeout,
+                                        fresh=attempt > 1) as conn:
                     conn.request(method, path, body=data, headers=headers)
                     resp = conn.getresponse()
                     raw = resp.read()  # must drain to make the socket reusable

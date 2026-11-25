@@ -103,6 +103,7 @@
 
 %% ── Formats ─────────────────────────────────────────────────────────────────
 -define(JOB_SCHEMA,       1).
+-define(JOB_SHORT_ID_LEN, 6).   %% last hex digits, accepted as an id
 -define(JOB_ID_RE,        "\\AJ-[0-9]{8}-[0-9a-f]{16}\\z").
 -define(STREAM_ID_RE,     "\\AS[0-9]{1,6}\\z").
 -define(JOB_CHUNK_BYTES,  65536).

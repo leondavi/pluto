@@ -39,6 +39,7 @@ def test_formats_and_limits():
                        ("STREAM_LOG_MAX", priv.STREAM_LOG_MAX),
                        ("STREAM_MAX", priv.STREAM_MAX),
                        ("JOB_AGENT_ID_MAX", priv.AGENT_ID_MAX),
+                       ("JOB_SHORT_ID_LEN", client.SHORT_ID_LEN),
                        ("JOB_READ_DEFAULT", client.READ_DEFAULT),
                        ("JOB_READ_MAX", client.READ_MAX),
                        ("GREP_DEFAULT_HITS", client.GREP_MATCHES),

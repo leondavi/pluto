@@ -6,9 +6,10 @@ import exp3_relay
 import exp4_crash
 import exp5_probe
 import exp6_train
+import exp7_zeta
 
 EXPS = {"1": exp1_shards, "2": exp2_sssp, "3": exp3_relay, "4": exp4_crash, "5": exp5_probe,
-        "6": exp6_train}
+        "6": exp6_train, "7": exp7_zeta}
 
 CORE = """You are agent {me} in a team of four equal agents: {team}. {phase_note}Every agent works in the same directory: {ws}
 Agents coordinate only through files there: use board/ for notes (one file per author, so nobody overwrites another) and answers/ for results. Write a JSON answer to a temporary name and rename it when complete.

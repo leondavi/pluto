@@ -125,6 +125,31 @@ Scripted results for E6, seed 12345, `verify_e6.py`: rules followed with an inde
 promote at every gate, ignore outages .144; error rates over all lines, ignore outages .056 (both 376 s). Program CPU is
 0.02 of a core per 12 streams.
 
+**E7 zeta_campaign** (w1..w4, 48 windows, 12 per agent, 5 to 8 minutes, about 1 MB each). Held-out task whose author
+is an LLM agent that read E1 to E5, the runner, this README (not its first part) and `ss_procs.py`,
+but no product code, product guide, article notes, results or E6 sources. No LLM has run it yet.
+
+*Domain.* The Riemann hypothesis says that all non-trivial zeros of zeta lie on the line 1/2 + it. Up to a finite height it
+can be verified: Hardy's Z(t) is real with |Z(t)| = |zeta(1/2 + it)|, so every sign change is a zero on the line,
+and the Riemann-Siegel formula evaluates Z with about sqrt(t / 2pi) terms. Gram points g_n (theta(g_n) = n pi)
+predict where signs alternate. Gram's law, (-1)^n Z(g_n) > 0, fails at 10 to 15% of them; between two good points
+(a Gram block) Rosser's rule gives the exact number of zeros. The rule is known to hold below n = 13 999 525, and all
+windows lie below. It is the completeness test here (for larger n one needs Turing's bound on the integral of S).
+A coarse grid misses close pairs of zeros; the most famous is Lehmer's, at 7005.0629 and 7005.1006. The
+spacings follow GUE statistics (Montgomery, Odlyzko).
+
+*Task.* Eight bands (g_n with n from 5e3 to 1.13e7, t up to 5.7e6), each cut into six windows that belong to different
+agents. The programs compute everything they print. Blocks short of zeros must be refined
+(control file, 75 s), evaluators that go wrong must be stopped and repaired (`--safe --from N`, 120 s). Five kinds of trouble exist;
+they are real changes of the arithmetic, visible only through the values. Afterwards: counts, the trouble and
+its onset per window; closest pairs, spacing variance, Gram blocks and S(g_n) per joined band; campaign statistics.
+
+*Truth.* `zeta_ref.py` shares no code with the programs (remainder up to C3 by Cauchy's integral, adaptive grid, every block certified
+by Rosser's rule). Tests compare it with Euler-Maclaurin summation (1e-8), the first zeros, N(100) = 29,
+N(1000) = 649, N(10000) = 10142, the 10000th zero, the bad Gram points below 400 and Lehmer's pair. Truth takes about 50 s of CPU.
+
+@@SOLVER@@
+
 **Arm C `native_sub`.** B's tools, prompt and limits plus Claude Code's Agent/Task tool. Its
 paragraph is B's plus a neutral offer (foreground or background, at most four at a time). Rules: the same
 Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`), depth 1 and 4 in parallel
@@ -154,6 +179,10 @@ is not matched against leak patterns (it may repeat the rules).
   anomaly), 0.15 x (questions answered in time minus wrong codes), 0.10 x pairwise F1 of the cause groups.
 * E6: decisions in time 0.50 (right +1, wrong -1, none 0, good and bad builds weighted equally, floor 0; first
   launch of a lane only), build reports 0.40 (reason .4, p95 .3, errors .3; outages reason only), culprits 0.10.
+
+* E7: refinement F1 0.25 (a short block asked for in time .7, with a grid fine enough .3), repairs 0.25 (credit
+  minus unneeded interventions, over the jobs with trouble), diagnosis F1 0.15 (kind .6, onset .4), counts per window
+  0.15, bands 0.15, campaign 0.05. Reactions are thus half of the score; a window that was never launched earns nothing.
 
 Largest single item: E4 .0075, E5 about .005 (v2: up to .058).
 Missing shards or jobs in `final.json` fall back to the per-shard/job file.
@@ -369,11 +398,12 @@ file name does not tell what they do. Differences of a few percent between arms 
     PY=<python with the mcp package>; H=docs/research/experiments/smart_streams
     (cd src_erl && rebar3 compile)
     $PY -m pytest tests/test_experiment_smart_streams.py tests/test_experiment_smart_streams_e45.py \
-        tests/test_experiment_smart_streams_e6.py
+        tests/test_experiment_smart_streams_e6.py tests/test_experiment_smart_streams_e7.py
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style plain     # full size, no LLM
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style jobs      # real server and client
     $PY $H/verify_e45.py SCRATCH --exp 4,5 --style plain|jobs [--policy naive]
     $PY $H/verify_e6.py SCRATCH [--policy wise|lazy|errors]
+    $PY $H/verify_e7.py SCRATCH [--policy wise|lazy]
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --dry-run
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --budget-usd 5 \
         [--exp 4,5] [--conditions smartstreams,native,native_sub]

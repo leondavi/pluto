@@ -29,13 +29,15 @@ REPO = os.path.abspath(os.path.join(HERE, *[".."] * 4))
 ADAPTER = os.path.join(REPO, "src_py", "agent_smart_streams", "smart_streams.py")
 PROTOCOL_VERSION = 3
 MIN_PEAK = 8
-CONDITIONS = ("smartstreams", "native", "native_sub")
+CONDITIONS = ("smartstreams", "native", "native_sub")      # the arms
+VARIANTS = ("ss_mcp", "ss_cli")                            # only to choose the SS design
+SS_MODES = ss_prompts.SS_MODES
 SUBAGENT_TOOLS = ["Agent", "Task"]
 SUBAGENT_DEPTH, SUBAGENT_PARALLEL = 1, 4
 BUILTIN = ["Bash", "BashOutput", "KillShell", "TaskOutput", "TaskStop", "Monitor", "Read",
            "Grep", "Glob", "Write", "Edit", "TodoWrite", "ToolSearch"]
-JOB_TOOLS = ["start", "status", "window", "grep", "next_chunk", "control", "manifest", "list",
-             "transfer", "wait", "input", "open", "review", "export", "stream"]
+JOB_TOOLS = ["start", "window", "grep", "control", "list", "transfer", "wait", "analyze",
+             "watch", "more"]
 DENIED = ["Agent", "Task", "WebFetch", "WebSearch", "Skill", "Workflow", "SendMessage",
           "ScheduleWakeup", "CronCreate", "RemoteTrigger", "EnterWorktree", "Artifact",
           "PushNotification"]
@@ -51,9 +53,9 @@ KEEP_ENV = {"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_U
 
 
 def allowed_tools(condition):
-    extra = {"smartstreams": [f"mcp__smartstreams__job_{t}" for t in JOB_TOOLS],
-             "native_sub": SUBAGENT_TOOLS}
-    return BUILTIN + extra.get(condition, [])
+    if SS_MODES.get(condition, "none") != "none":
+        return BUILTIN + [f"mcp__smartstreams__job_{t}" for t in JOB_TOOLS]
+    return BUILTIN + (SUBAGENT_TOOLS if condition == "native_sub" else [])
 
 
 def denied_tools(condition):
@@ -61,11 +63,12 @@ def denied_tools(condition):
 
 
 def mcp_config(condition, agent_id, args, port=None, home=None):
-    if condition != "smartstreams":
+    if condition not in SS_MODES:
         return {"mcpServers": {}}
     srv = {"command": args.mcp_python,
            "args": [args.adapter, "--agent-id", agent_id, "--host", args.pluto_host,
-                    "--http-port", str(port or args.http_port), "--framework", "claude"]}
+                    "--http-port", str(port or args.http_port), "--framework", "claude", "--tools",
+                    "none" if SS_MODES[condition] == "none" else "core"]}
     home = home or args.smartstreams_home
     if home:
         srv["env"] = {"PLUTO_SMARTSTREAMS_HOME": home}
@@ -98,6 +101,15 @@ def agent_env(condition="native", model="sonnet"):
                    CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=str(SUBAGENT_DEPTH),
                    CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=str(SUBAGENT_PARALLEL))
     return env
+
+
+def ss_env(env, condition, agent_id, host, port, home):
+    """pss for the variants that have it."""
+    if SS_MODES.get(condition) not in ("both", "none"):
+        return env
+    return dict(env, PSS_AGENT=agent_id, PSS_HOST=host, PSS_PORT=str(port),
+                PATH=os.path.join(REPO, "bin") + os.pathsep + env.get("PATH", ""),
+                **({"PLUTO_SMARTSTREAMS_HOME": home} if home else {}))
 
 
 def private_pluto(base):
@@ -148,9 +160,9 @@ def preflight(args, conditions):
     if subprocess.run(["git", "-C", probe, "rev-parse", "--show-toplevel"],
                       capture_output=True).returncode == 0:
         sys.exit(f"--out must be outside any git repository: {args.out}")
-    if args.http_port and "4" in args.exps and "smartstreams" in conditions:
+    if args.http_port and "4" in args.exps and set(SS_MODES) & set(conditions):
         sys.exit("experiment 4 kills its server and needs private ones: drop --http-port")
-    if "smartstreams" in conditions:
+    if set(SS_MODES) & set(conditions):
         if not os.path.isfile(args.adapter):
             sys.exit(f"adapter not found: {args.adapter}")
         if not args.http_port:
@@ -191,7 +203,8 @@ def run_one(exp, condition, rep, seed, args):
             json.dump(mcp_config(condition, ids[name], args, port, home), f)
         prompt = ss_prompts.agent_prompt(exp, condition, name, ws, ids, timeout, cutoff) + note
         return ss_procs.Agent(session, claude_command(condition, cfg, args), prompt, ws, logs,
-                              env, tracker, limit)
+                              ss_env(env, condition, ids[name], args.pluto_host,
+                                     port or args.http_port, home), tracker, limit)
 
     def respawn(name, n):
         """Replacement of a crashed agent: same prompt and id, what is left of its time."""
@@ -200,7 +213,7 @@ def run_one(exp, condition, rep, seed, args):
         return launch(name, sessions[-1], limit, mod.REPLACEMENT.format(me=name)
                       + f" About {int(limit)} s of the time limit remain.\n")
     try:
-        if condition == "smartstreams" and not args.http_port:
+        if condition in SS_MODES and not args.http_port:
             server = private_pluto(os.path.join(run_dir, "pluto"))
             server.start()
             port, home = server.port, server.home
@@ -320,7 +333,7 @@ def parse_args(argv=None):
     if set(a.exps) - set(ss_prompts.EXPS):
         p.error("--exp takes 1 to 5")
     a.conditions = list(CONDITIONS) if a.condition == "all" else a.condition.split(",")
-    if set(a.conditions) - set(CONDITIONS) or len(set(a.conditions)) < len(a.conditions):
+    if set(a.conditions) - set(CONDITIONS + VARIANTS) or len(set(a.conditions)) < len(a.conditions):
         p.error("--condition takes " + ", ".join(CONDITIONS))
     return a
 

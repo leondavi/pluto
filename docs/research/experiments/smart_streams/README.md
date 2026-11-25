@@ -301,6 +301,21 @@ file name does not tell what they do. Differences of a few percent between arms 
   resolves `..` and matches within a line. It does not catch `pkill -f` patterns
   that reach a teammate's program, which happened once (native, E2, no score
   effect). `duration_ms` and MCP `tool_errors` were undercounted and are fixed.
+* Then came `job_analyze` and `job_watch` (built by an agent that did not see the
+  experiments), a smaller default tool set, the `pss` shell command, per-job grep
+  limits, and crash-safe agent identity: building E4 showed that a replacement agent
+  was renamed and did not own its predecessor's jobs. That is fixed in the product
+  before any E4 agent run, so E4 was not blind to this defect. The SmartStreams prompt paragraph
+  now names means instead of one tool per step.
+* Three SmartStreams variants (MCP `ss_mcp`, shell `ss_cli`, both `smartstreams`) are
+  compared on E1-E3 in pilot 2, one rep each, and the cheapest whose mean score is
+  within 0.05 of the best is frozen. E1-E3 cost results are therefore tuned;
+  E4 and E5 are run by no agent before the main run.
+* Pilot 2 go/no-go against pilot 1 (fixed in advance): total SS cost on E1-E3
+  at least 25 % lower, turns at least 25 % lower, mean score at most .05 lower,
+  no protocol failure, every peak at least 8, the new means used.
+* Pilot 1's E3 SS run overlapped other work on the machine (pacing lag up to .62 s
+  against .02 s for native).
 * Scores are coarse: one E2 podium entry is .058 and one E1 livelock .031, against
   the .05 materiality threshold, and errors cluster by agent. In pilot 1 each score
   gap came from one mistake by one native agent.

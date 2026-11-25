@@ -112,7 +112,8 @@ def summarize(rows, exclude_tainted=False):
         out["experiments"][exp] = e
     for r in sorted(rows, key=lambda r: (r["exp"], r["rep"], r["condition"])):
         codes = sorted({c for fs in r["protocol_failures"].values() for c in fs})
-        ss = sum(n for k, n in r["team"]["tool_calls"].items() if k.startswith("mcp__smartstreams__"))
+        ss = sum(n for k, n in r["team"]["tool_calls"].items() if k.startswith("mcp__smartstreams__")) \
+            + r["team"].get("pss_calls", 0)
         out["runs"].append({"exp": r["exp"], "rep": r["rep"], "condition": r["condition"],
                             "run_id": r["run_id"], "tainted": r["tainted"],
                             "timed_out": [n for n, t in r["timed_out"].items() if t],

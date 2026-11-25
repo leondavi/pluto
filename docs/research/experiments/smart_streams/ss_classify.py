@@ -43,6 +43,7 @@ import ss_metrics
 CLASSES = ("process", "analysis", "coordination", "answer", "other", "text")
 ORDER = ("answer", "coordination", "process", "analysis", "other")
 TOOL_CLASS = {
+    "job_analyze": "analysis", "job_watch": "process", "job_more": "other",
     "job_start": "process", "job_status": "process", "job_list": "process",
     "job_wait": "process", "job_control": "process", "job_input": "process",
     "job_stream": "process", "job_transfer": "coordination", "job_grep": "analysis",
@@ -54,14 +55,14 @@ TOOL_CLASS = {
 PATTERNS = {
     "answer": re.compile(r"\banswers\\?/|\bcomb\w*\.py|\bans(?:wers?)?_dir\b|final\.json|\b(?:shard|job|stream)_\{?\w*\}?\.json"),
     "coordination": re.compile(
-        r"\bboard/|handoff|\bls\b.*\b(?:board|answers)\b|\bwhile\b.*\banswers/"),
+        r"\bpss\s+give\b|\bboard/|handoff|\bls\b.*\b(?:board|answers)\b|\bwhile\b.*\banswers/"),
     "process": re.compile(
-        r"\bbin/\w+|\bnohup\b|\bp?kill(?:all)?\b|\bpgrep\b|\bps\s+-|\bps\b.*\bpid\b|\bsleep\b|\bwait\b|\bdisown\b"
+        r"\bpss\s+(?:run|wait|ps|stop|pause|resume|watch|log)\b|\bbin/\w+|\bnohup\b|\bp?kill(?:all)?\b|\bpgrep\b|\bps\s+-|\bps\b.*\bpid\b|\bsleep\b|\bwait\b|\bdisown\b"
         r"|\.(?:pid|exit|rc)\b|\bcontrol/|subprocess|Popen|os\.kill|\bjobs\b|\blsof\b|\btrap\b"
         r"|\$[!?]|time\.sleep|proc\.(?:poll|wait)|\.ack\b|\bckpt/"
         r"|\b\w*(?:watch|kill|start|launch|run)\w*\.(?:sh|txt|out)\b"),
     "analysis": re.compile(
-        r"\b(?:grep|egrep|rg|awk|sed|tail|head|wc|sort|uniq|cut|md5|diff|zgrep|less|column|jq|tr)\b"
+        r"\bpss\s+(?:analyze|grep|tail|cat)\b|\b(?:grep|egrep|rg|awk|sed|tail|head|wc|sort|uniq|cut|md5|diff|zgrep|less|column|jq|tr)\b"
         r"|\bopen\(|re\.(?:compile|search|match|findall|sub)|\.split\(|\.startswith\(|\bfor \w+ in\b"
         r"|readlines|\bpython3?\b|\.log\b|output\.log|\bdef \w+|\bif \w|\bprint\(|defaultdict|Counter"
         r"|\.append\(|\w+\s*[-+]?=\s*\w|\.get\(|\bint\(|\belse\b|\btar\b|\bcat\b.*(?:log|out|txt)"),

@@ -88,7 +88,7 @@ def blocks(ev):
 def parse_agent(events):
     m = {"tokens": dict.fromkeys(KEYS, 0), "cost_usd": None, "turns": 0, "tool_calls": {},
          "tool_result_bytes": 0, "tool_result_bytes_by_tool": {}, "max_tool_result_bytes": 0,
-         "tool_errors": 0, "permission_denials": 0, "mcp_status": {}, "model": None,
+         "tool_errors": 0, "pss_calls": 0, "permission_denials": 0, "mcp_status": {}, "model": None,
          "subtype": None, "has_result": False, "is_error": True, "duration_ms": None,
          "cost_est_usd": 0.0, "usage_missing": 0, "agent_calls": 0, "subagent_stats": {},
          "sub": {"turns": 0, "tool_calls": 0, "tool_result_bytes": 0, "models": [],
@@ -126,6 +126,8 @@ def parse_agent(events):
                 if b.get("type") == "tool_use" and b.get("id") not in uses:
                     uses[b.get("id")] = b.get("name") or "?"
                     m["tool_calls"][uses[b["id"]]] = m["tool_calls"].get(uses[b["id"]], 0) + 1
+                    m["pss_calls"] += len(re.findall(r"\bpss\s+[a-z]", str(
+                        (b.get("input") or {}).get("command") or "")))
         elif t == "user":
             for b in blocks(ev):
                 if b.get("type") != "tool_result" or b.get("tool_use_id") in seen_res:
@@ -206,11 +208,12 @@ def failures(m, status, condition):
         out.append("subagent_nested")
     if m["usage_missing"] > 0.5 * m["sub"]["cache_read_input_tokens"] > 0:
         out.append("subagent_usage_missing")
-    if condition == "smartstreams":
+    if condition.startswith("s"):          # smartstreams and its ss_* variants
         st = m["mcp_status"].get("smartstreams")
         if st != "connected" and st != "pending":
             out.append("mcp_not_connected")
-        if not any(k.startswith("mcp__smartstreams__") for k in m["tool_calls"]):
+        if not m["pss_calls"] and not any(
+                k.startswith("mcp__smartstreams__") for k in m["tool_calls"]):
             out.append("smartstreams_unused")
     return out
 
@@ -297,13 +300,13 @@ def find_leaks(events, ws, out_dir, denied=()):
 def merge(per_agent):
     """Team totals. cost_complete is False if any agent has no cost."""
     tot = {"tokens": dict.fromkeys(KEYS, 0), "cost_usd": 0.0, "turns": 0, "tool_calls": {},
-           "tool_result_bytes": 0, "max_tool_result_bytes": 0, "tool_errors": 0,
+           "tool_result_bytes": 0, "max_tool_result_bytes": 0, "tool_errors": 0, "pss_calls": 0,
            "permission_denials": 0, "cost_complete": True, "cost_est_usd": 0.0,
            "sub": {"agents": 0, "turns": 0, "tool_calls": 0, "tool_result_bytes": 0}}
     for m in per_agent.values():
         for k in KEYS:
             tot["tokens"][k] += m["tokens"][k]
-        for k in ("turns", "tool_result_bytes", "tool_errors", "permission_denials"):
+        for k in ("turns", "tool_result_bytes", "tool_errors", "pss_calls", "permission_denials"):
             tot[k] += m[k]
         tot["cost_est_usd"] = round(tot["cost_est_usd"] + m["cost_est_usd"], 6)
         for k in tot["sub"]:

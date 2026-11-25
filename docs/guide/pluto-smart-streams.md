@@ -198,3 +198,26 @@ PLUTO_LIVE_TESTS=1 python -m pytest tests/test_smart_streams_live.py \
 ```
 
 The live tests start their own server on free ports.
+
+## The `pss` command
+
+`PlutoSmartStreams.sh` puts `pss` on the agent's `PATH`. It offers the same jobs,
+owners and watches as the MCP tools, but steps combine in one shell call and a
+script, or a job, can drive other jobs. `pss help` lists everything.
+
+```
+g=$(pss run -q -e n=1-12 'prog --seed {n}')      # one group handle for 12 jobs
+pss wait $g                                      # states, exit codes, last lines
+pss analyze $g                                   # outline, no pattern needed
+pss analyze $g -a p95:latency -b endpoint        # query
+pss watch $g -w 'loss > prev*3' --then cancel    # standing rule
+pss give other-agent $g
+```
+
+Without `PSS_AGENT` it acts as you (`user:<name>`). The MCP server shows ten tools
+by default; `job_more` reaches the rest, `--tools all` shows every tool and
+`--tools none` leaves only wakeups.
+
+An agent restarted under the same id on the same machine, also after `kill -9`,
+owns its predecessor's jobs. The launcher may still refuse an id whose crashed
+session has not expired; pass `--allow-rename`, and the adapter takes the id back.

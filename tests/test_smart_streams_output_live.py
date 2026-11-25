@@ -373,7 +373,7 @@ def test_over_mcp(srv):
     params = StdioServerParameters(
         command=PY, env=dict(os.environ, PLUTO_SMARTSTREAMS_HOME=srv.home), args=[
             os.path.join(ROOT, "src_py/agent_smart_streams/smart_streams.py"),
-            "--agent-id", "mcpout", "--host", "127.0.0.1", "--http-port", str(srv.port)])
+            "--tools", "all", "--agent-id", "mcpout", "--host", "127.0.0.1", "--http-port", str(srv.port)])
 
     async def go():
         async with stdio_client(params) as (r, w), ClientSession(r, w) as s:

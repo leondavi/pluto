@@ -24,8 +24,16 @@ Tools. {tools}
 
 TOOLS = {
     "native": """Use your normal Claude Code tools. Start long programs with Bash run_in_background or with nohup, with stdout and stderr redirected to a log file in the workspace, and inspect the logs with grep, awk, python, tail, Grep or bounded Read (shell loops, xargs or one Bash call can start, check or search many at once); Monitor and background-task output can tell you when something happens. A process started by run_in_background ends when your session ends; a detached one (nohup ... &, with a small wrapper that saves the exit code to a file) survives it. Do not use any other agent or scheduling tool.""",
-    "smartstreams": """Besides your normal Claude Code tools you have the smartstreams MCP tools, which run programs as durable jobs owned by a server: the job and its complete output survive your session, and any agent can read them by job id. Start the long programs with job_start (cwd = the workspace; a command may be a shell pipeline), follow them with job_wait, job_status and job_list, read bounded pieces with job_grep, job_window and job_next_chunk (job_start accepts a commands list, and job_wait, job_grep, job_status, job_control and job_transfer a job_ids list, for many jobs at once), stop them with job_control, and hand them over with job_transfer (only the owner may control a job; agent ids: {ids}). Use your ordinary tools for everything else. Do not use any other agent or scheduling tool.""",
 }
+
+# What SmartStreams offers, per variant; like the native text it names means, not steps.
+_DURABLE = """Besides your normal Claude Code tools you have PlutoSmartStreams, which runs programs as durable jobs owned by a server: a job and its complete output survive your session, and any agent can read them by job id (only the owner may control a job; agent ids: {ids})."""
+_MCP = """ The smartstreams MCP tools start jobs (one, or a whole batch from a template, as one group handle that other calls accept), wait for them, list, stop, pause and transfer them, read and search their output, outline, query and compare it (job_analyze) and keep standing rules on it (job_watch)."""
+_CLI = """ The shell command pss does the same from Bash (pss help explains it), so one Bash call, a shell loop or a script can start, follow, query and stop many jobs at once, and a job may itself start jobs."""
+_REST = """ Use your ordinary tools for everything else. Do not use any other agent or scheduling tool."""
+SS_MODES = {"smartstreams": "both", "ss_mcp": "core", "ss_cli": "none"}
+TOOLS.update(smartstreams=_DURABLE + _MCP + _CLI + _REST, ss_mcp=_DURABLE + _MCP + _REST,
+             ss_cli=_DURABLE + _CLI.replace("does the same from Bash", "starts jobs (one, or a whole batch from a template, as one group handle), waits for them, lists, stops, pauses and transfers them, reads and searches their output, outlines, queries and compares it and keeps standing rules on it") + _REST)
 
 NO_OTHER = " Do not use any other agent or scheduling tool."
 TOOLS["native_sub"] = TOOLS["native"].replace(NO_OTHER, "") + """ You may also use Claude Code's own sub-agents (the Agent tool, also called Task), in the foreground or the background, at most four at a time, for parts of your work that you judge worth delegating; a sub-agent reports back once and does not see your conversation. All rules above hold for sub-agents too: they work inside the workspace only, share your wall time and budget, use the same model, and must not start further agents or use a worktree or remote isolation. A background sub-agent ends when your session ends. Do not use any other agent or scheduling tool."""
@@ -50,8 +58,8 @@ def agent_prompt(exp, condition, me, ws, ids, limit, cutoff=None):
         note = "The team works in two shifts of two agents. "
         limit = cutoff if me[0] == "p" else limit
     tools = TOOLS[condition]
-    if condition == "smartstreams":
+    if condition in SS_MODES:
         tools = tools.format(ids=", ".join(f"{n}={ids[n]}" for n in names))
-    tools += getattr(mod, "TOOLS_EXTRA", {}).get(condition, "")
+    tools += getattr(mod, "TOOLS_EXTRA", {}).get("smartstreams" if condition in SS_MODES else condition, "")
     return CORE.format(me=me, team=", ".join(names), phase_note=note, ws=ws, task=task,
                        limit=int(limit), tools=tools)

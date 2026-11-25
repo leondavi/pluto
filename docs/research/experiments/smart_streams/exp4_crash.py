@@ -238,6 +238,6 @@ You replace an agent {me} that crashed a moment ago. You have its name, its prom
 
 TOOLS_EXTRA = {
     "native": """ For work that must survive a crash of your session: start each program with nohup through a small wrapper that writes its pid and, at the end, its exit code to files; ps -o pid,lstart,command, the pid files, the exit-code files and the logs tell a later session what still runs and how the rest ended; kill stops a process by pid.""",
-    "smartstreams": """ For work that must survive a crash of your session: jobs, their output and their exit codes are kept by the server, also over a restart of the server (calls fail while it is down); job_list with scope=all shows every job with its state and owner, also those of earlier sessions. A new session may own only its own jobs; you can always signal a process with kill in Bash.""",
+    "smartstreams": """ For work that must survive a crash of your session: jobs, their output and their exit codes are kept by the server, also over a restart of the server (calls fail while it is down); job_list with scope=all shows every job with its state and owner, also those of earlier sessions. A replacement session has the same agent id and owns its predecessor's jobs; you can also signal a process with kill in Bash.""",
 }
 TOOLS_EXTRA["native_sub"] = TOOLS_EXTRA["native"]

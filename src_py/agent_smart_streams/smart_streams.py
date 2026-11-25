@@ -21,6 +21,7 @@ if _SRC_PY not in sys.path:
 
 from agent_friend.frameworks import load_pluto_config  # noqa: E402
 from agent_smart_streams import reports  # noqa: E402
+from agent_smart_streams.constants import TOOLSETS  # noqa: E402
 from pluto_jobs_def import HISTORY_ALL  # noqa: E402
 from pluto_sdk import PlutoError, PlutoHttpClient, PlutoJobsClient  # noqa: E402
 
@@ -31,6 +32,7 @@ def parse(argv):
     p.add_argument("--host")
     p.add_argument("--http-port", type=int)
     p.add_argument("--framework")
+    p.add_argument("--tools", choices=TOOLSETS, default="core")
     p.add_argument("--attach", action="store_true",
                    help="another adapter holds this agent's registration")
     p.add_argument("--manage", action="store_true")
@@ -125,7 +127,8 @@ def main(argv=None) -> int:
             return 2
         from agent_smart_streams.server import SmartStreamsServer
         SmartStreamsServer(agent_id=a.agent_id, host=host, http_port=port,
-                           attach=a.attach, framework=a.framework).run()
+                           attach=a.attach, framework=a.framework,
+                           toolset=a.tools).run()
         return 0
     http = PlutoHttpClient(host=host, http_port=port, agent_id="user")
     jobs = PlutoJobsClient(http, as_user=True)

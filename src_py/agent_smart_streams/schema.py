@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from mcp.server.fastmcp import FastMCP
 
 
@@ -26,3 +28,31 @@ def slim(node):
 def slim_tools(mcp: FastMCP) -> None:
     for tool in mcp._tool_manager.list_tools():
         tool.parameters = slim(tool.parameters)
+
+
+def fold(mcp: FastMCP, keep: tuple) -> None:
+    """Hide all tools but *keep* behind one job_more tool (none at all when
+    keep is empty): rarely used schemas should not be paid for."""
+    manager = mcp._tool_manager
+    hidden = {t.name: t for t in manager.list_tools() if t.name not in keep}
+    for name in hidden:
+        del manager._tools[name]
+    if not keep:
+        return
+    ops = {n.removeprefix("job_"): t for n, t in hidden.items()}
+
+    async def job_more(op: str, args: dict | None = None) -> str:
+        tool = ops.get(op.removeprefix("job_"))
+        if tool is None:
+            return json.dumps({"error": f"op must be one of {sorted(ops)}"})
+        if args is None:
+            return json.dumps({"use": tool.description,
+                               "args": slim(tool.parameters)["properties"]})
+        try:
+            return await tool.run(args)
+        except Exception as exc:     # bad arguments: tell the agent which
+            return json.dumps({"error": str(exc)[:500]})
+
+    mcp.tool(structured_output=False, description=(
+        f"Less common operations: {', '.join(sorted(ops))}. Without args it "
+        "explains the operation."))(job_more)

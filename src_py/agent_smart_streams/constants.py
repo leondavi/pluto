@@ -8,12 +8,17 @@ NOTICE_KEY = "_job_notices"
 INBOX_KEY = "_pluto_inbox"
 MANIFEST_PAGE = 20
 FLEET_THREADS = 4                 # matches the HTTP connection pool
-MIN_MATCHES_PER_JOB = 3
+GREP_MATCHES_MANY = 10            # default per job when grepping several
+GREP_MATCHES_CALL = 600           # ceiling of one call
 SUBMIT_MAX = 64                   # jobs per job_start
 GROUP_RE = r"g[0-9a-f]{6}"        # handle of a batch
 GROUP_MAX = 500
 LAST_LINE_BYTES = 240             # of an exited job, in job_wait
 WAIT_TOTAL_MAX_S = 300            # job_wait: repeated server-side waits
+WAIT_FOREVER_S = 86_400           # pss wait
+CLI_WAIT_S = 100                  # below the usual shell tool limit
+CLI_AGENT_ENV, CLI_HOST_ENV, CLI_PORT_ENV = "PSS_AGENT", "PSS_HOST", "PSS_PORT"
+CLI_STATE_DIR = "cli"             # under the SmartStreams home
 WAKE_GRACE_S = 3.0                # a result may still tell the agent
 WAKE_POLL_S = 0.5
 
@@ -29,6 +34,24 @@ INSTRUCTIONS = (
     "that do anything else. Jobs and cursors survive this session; job_list "
     "finds earlier ones."
 )
+
+#: Tools every session sees; the others are reached through job_more.
+CORE_TOOLS = ("job_start", "job_wait", "job_analyze", "job_watch", "job_grep",
+              "job_window", "job_control", "job_list", "job_transfer")
+TOOLSETS = ("core", "all", "none")     # none: pss only, wakeups stay
+
+CLI_INSTRUCTIONS = (
+    "The shell command pss runs and follows durable jobs (pss help). Combine "
+    "steps in one shell call, and put result-driven work in a script (which "
+    "may itself be a job): g=$(pss run -q -e n=1-12 'prog {n}'); pss wait $g; "
+    "pss analyze $g outlines any output without patterns, and extracts, "
+    "filters, aggregates and compares across jobs; pss watch adds rules that "
+    "notify, pause or cancel as output arrives."
+)
+
+#: Words agents try for an action, and what they mean.
+ACTION_ALIASES = {"kill": "cancel", "stop": "cancel", "terminate": "cancel",
+                  "continue": "resume"}
 
 #: Host CLIs whose inbox socket may be written to wake the agent.
 WAKEABLE_FRAMEWORKS = (None, "claude")

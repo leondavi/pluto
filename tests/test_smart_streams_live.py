@@ -487,7 +487,7 @@ def test_mcp_stdio_session(srv):
     env = dict(os.environ, PLUTO_SMARTSTREAMS_HOME=srv.home)
     params = StdioServerParameters(command=PY, env=env, args=[
         os.path.join(ROOT, "src_py/agent_smart_streams/smart_streams.py"),
-        "--agent-id", "mcp1", "--host", "127.0.0.1", "--http-port", str(srv.port)])
+        "--tools", "all", "--agent-id", "mcp1", "--host", "127.0.0.1", "--http-port", str(srv.port)])
 
     async def go():
         async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
@@ -753,7 +753,7 @@ def test_fleet_tools_over_mcp(srv):
     params = StdioServerParameters(
         command=PY, env=dict(os.environ, PLUTO_SMARTSTREAMS_HOME=srv.home), args=[
             os.path.join(ROOT, "src_py/agent_smart_streams/smart_streams.py"),
-            "--agent-id", "fleet", "--host", "127.0.0.1", "--http-port", str(srv.port)])
+            "--tools", "all", "--agent-id", "fleet", "--host", "127.0.0.1", "--http-port", str(srv.port)])
 
     async def go():
         async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
@@ -790,7 +790,7 @@ def test_fleet_tools_over_mcp(srv):
             t = await call("job_transfer", job_ids=ids[1:3], to="other")
             assert set(t["jobs"].values()) == {"ok"}
             c = await call("job_control", job_ids=ids[:2], action="cancel")
-            assert c["ok"] == [ids[0]] and list(c["errors"]) == [ids[1]]
+            assert c["ok"] == [ids[0]] and c["finished"] == [ids[1]]
             g = await call("job_grep", job_id=group, pattern="two 3")
             assert g[ids[3]]["matches"] == 1 and set(g["no_match"]) == set(ids) - {ids[3]}
             t = await call("job_start", command="echo r {n} {k} | awk '{print $3}'",

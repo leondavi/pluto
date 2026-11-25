@@ -15,12 +15,14 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from agent_smart_streams import compact, fleet, submit
-from agent_smart_streams.constants import MANIFEST_PAGE, SUBMIT_MAX
+from agent_smart_streams.constants import (
+    ACTION_ALIASES, CORE_TOOLS, GROUP_MAX, MANIFEST_PAGE, SUBMIT_MAX,
+)
 from agent_smart_streams.compact import short
 from agent_smart_streams.notices import NoticeBoard
-from agent_smart_streams.schema import slim_tools
+from agent_smart_streams.schema import fold, slim_tools
 from pluto_jobs_def import (
-    GREP_MATCHES, LIST_DEFAULT, READ_DEFAULT, WAIT_DEFAULT_S,
+    LIST_DEFAULT, READ_DEFAULT, WAIT_DEFAULT_S,
 )
 from pluto_sdk import PlutoError, PlutoJobsClient
 
@@ -30,7 +32,8 @@ WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 RUNS = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
-def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> NoticeBoard:
+def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None,
+                   toolset: str = "all") -> NoticeBoard:
     board = NoticeBoard(jobs)
     waiter = fleet.Waiter(jobs)
     board.watch_seen = waiter.watch_seen
@@ -142,13 +145,14 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> Notic
     async def job_grep(
         pattern: str, job_id: Optional[str] = None,
         job_ids: Optional[list[str]] = None, before: int = 0, after: int = 0,
-        max_matches: int = GREP_MATCHES, ignore_case: bool = False, fixed: bool = False,
+        max_matches: Optional[int] = None, ignore_case: bool = False, fixed: bool = False,
         invert: bool = False, from_offset: Optional[int] = None,
         to_offset: Optional[int] = None, from_line: Optional[int] = None,
         to_line: Optional[int] = None, stream: Optional[str] = None,
     ) -> str:
         """Regex search over the output of a job (or several, with job_ids)
-        on the server, with context lines. Returns line@offset:text for
+        on the server, with context lines. max_matches is per job (50, or 10
+        when several). Returns line@offset:text for
         matches, line-text for context. If resume_at is present, continue
         with from_offset=resume_at."""
         return await _run(
@@ -245,7 +249,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> Notic
         def work():
             r = fleet.control(jobs, job_id, job_ids, action=action,
                               signal=signal, tree=tree or None)
-            if action in ("cancel", "halt"):
+            if ACTION_ALIASES.get(action, action) in ("cancel", "halt"):
                 board.expect_finish(r["ok"])
             return r
         return await _run(work)
@@ -261,8 +265,8 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> Notic
         (idle_ms), "pattern" (regex appears in output) or "watch" (a job_watch
         rule fired). Give job_ids to
         watch many; returns when one has news, or with wait_all when all do.
-        An exited job comes with its last line. Each event is reported once, so just call again with the same ids;
-        from_offset searches again. Use this instead of polling."""
+        An exited job comes with its last line. Each event is reported
+        once, so just call again with the same ids. Use this, not polling."""
         return await _run(
             waiter.wait, job_id, job_ids, until=until, pattern=pattern,
             wait_all=wait_all, from_offset=from_offset, idle_ms=idle_ms,
@@ -272,20 +276,31 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> Notic
     @mcp.tool(annotations=RUNS, structured_output=False)
     async def job_input(job_id: str, text: str = "", close: bool = False) -> str:
         """Write text to the stdin of a job started with stdin=true."""
-        return await _run(jobs.call, "input", job_id=job_id, text=text,
-                          close=close or None)
+        return await _run(jobs.input, job_id, text, close)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def job_list(
         scope: str = "mine", states: Optional[list[str]] = None,
         tags: Optional[list[str]] = None, parent: Optional[str] = None,
-        limit: int = LIST_DEFAULT,
+        owner: Optional[str] = None, name: Optional[str] = None,
+        job_ids: Optional[list[str]] = None, limit: int = LIST_DEFAULT,
     ) -> str:
-        """List jobs (id name state elapsed size owner), including those from earlier sessions. scope: mine,
-        user or all. parent lists the children of a job."""
-        return await _run(jobs.call, "list", scope=scope, states=states,
-                          tags=tags, parent=parent, limit=limit,
-                          shape=compact.listed)
+        """List jobs (id name state elapsed size owner), including those from
+        earlier sessions. scope: mine, user or all. Filter by owner, text in
+        the name, states or tags; parent lists children; job_ids shows those."""
+        def work():
+            if job_ids:
+                rows = [jobs.call("status", job_id=j)
+                        for j in fleet.ids_of(jobs, None, job_ids)]
+                return {"total": len(rows), "jobs": rows}
+            r = jobs.call("list", scope="all" if owner else scope, states=states,
+                          tags=tags, parent=parent,
+                          limit=GROUP_MAX if owner or name else limit)
+            if owner or name:
+                rows = fleet.filtered(r["jobs"], owner, name)
+                r = {"total": len(rows), "jobs": rows[:limit]}
+            return r
+        return await _run(work, shape=compact.listed)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def job_open(job_id: Optional[str] = None,
@@ -357,5 +372,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> Notic
             to_offset=to_offset, text=text, followup_id=followup_id,
             status=status, assignee=assignee)
 
+    if toolset != "all":
+        fold(mcp, CORE_TOOLS if toolset == "core" else ())
     slim_tools(mcp)
     return board

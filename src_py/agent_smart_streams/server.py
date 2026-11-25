@@ -16,9 +16,10 @@ from mcp.server.fastmcp import FastMCP
 
 from agent_mcp_friend.inbox import InboxManager
 from agent_smart_streams.constants import (
-    DRAIN_HINT, EPOCH_CHECK_S, INBOX_KEY, INSTRUCTIONS, SERVER_NAME,
+    CLI_INSTRUCTIONS, DRAIN_HINT, EPOCH_CHECK_S, INBOX_KEY, INSTRUCTIONS, SERVER_NAME,
     SESSION_TTL_MS, WAKEABLE_FRAMEWORKS,
 )
+from agent_smart_streams.lease import Lease
 from agent_smart_streams.tools import register_tools
 from agent_smart_streams.wake import JobNotifier
 from pluto_jobs_def import JOB_EVENTS
@@ -32,8 +33,11 @@ class SmartStreamsServer:
 
     def __init__(self, *, agent_id: str, host: str, http_port: int,
                  ttl_ms: int = SESSION_TTL_MS, attach: bool = False,
-                 framework: str | None = None):
+                 framework: str | None = None, toolset: str = "core"):
         self.attach = attach
+        self.agent_id = agent_id
+        self.lease: Lease | None = None
+        self.server_name = f"{host}:{http_port}"
         self.client = PlutoHttpClient(
             host=host, http_port=http_port, agent_id=agent_id, mode="http",
             ttl_ms=ttl_ms, attributes={"smartstreams": True})
@@ -48,10 +52,11 @@ class SmartStreamsServer:
                      else JobNotifier(None, None, agent_id, enabled=False))
         self.push.drain_tool = DRAIN_HINT
         self.inbox.set_push_notifier(self.push)
-        self.mcp = FastMCP(name=SERVER_NAME, instructions=INSTRUCTIONS,
+        self.mcp = FastMCP(name=SERVER_NAME, instructions=(
+            CLI_INSTRUCTIONS if toolset == "none" else INSTRUCTIONS),
                            lifespan=self._lifespan)
         self.push.board = register_tools(
-            self.mcp, self.jobs, None if attach else self._piggyback)
+            self.mcp, self.jobs, None if attach else self._piggyback, toolset)
 
     async def _piggyback(self, result):
         # Looked up per call: the inbox is replaced after a server restart.
@@ -63,6 +68,10 @@ class SmartStreamsServer:
 
     def _register(self) -> bool:
         try:
+            # Under the asked id, also after an earlier rename.
+            self.client.agent_id = self.agent_id
+            self.lease = self.lease or Lease(self.agent_id, self.server_name)
+            mine = self.lease.take_over(self.client)
             resp = self.client.register()
         except Exception as exc:
             logger.error("cannot register with Pluto: %s", exc)
@@ -72,6 +81,8 @@ class SmartStreamsServer:
             return False
         # A live holder of the name makes Pluto rename us; own jobs under
         # the id peers can actually reach.
+        if mine:
+            self.lease.record(self.client.token)
         self.jobs.agent_id = self.client.agent_id
         self.push.set_agent_id(self.client.agent_id)
         return True
@@ -110,6 +121,8 @@ class SmartStreamsServer:
             if self.client.token:
                 try:
                     await asyncio.to_thread(self.client.unregister)
+                    if self.lease:
+                        self.lease.record(None)
                 except Exception as exc:
                     logger.debug("unregister failed: %s", exc)
 

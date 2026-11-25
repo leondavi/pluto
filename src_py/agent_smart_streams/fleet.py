@@ -13,11 +13,11 @@ from concurrent.futures import ThreadPoolExecutor
 from agent_smart_streams import compact
 from agent_smart_streams.compact import short
 from agent_smart_streams.constants import (
-    FLEET_THREADS, GROUP_RE, LAST_LINE_BYTES, MIN_MATCHES_PER_JOB,
-    WAIT_TOTAL_MAX_S,
+    ACTION_ALIASES, FLEET_THREADS, GREP_MATCHES_CALL, GREP_MATCHES_MANY, GROUP_RE,
+    LAST_LINE_BYTES, WAIT_TOTAL_MAX_S,
 )
 from agent_smart_streams.submit import members
-from pluto_jobs_def import FINAL_STATES, WAIT_MAX_S
+from pluto_jobs_def import ERR_FINISHED, FINAL_STATES, GREP_MATCHES, WAIT_MAX_S
 from pluto_sdk import PlutoError, PlutoJobsClient
 
 
@@ -47,27 +47,45 @@ def one_or_many(jobs: PlutoJobsClient, fn, job_id, job_ids):
     return fn(ids[0]) if one else each(fn, ids)
 
 
-def control(jobs: PlutoJobsClient, job_id, job_ids, **kw) -> dict:
-    """{"ok": [ids], "errors": {id: reason}}, child jobs included."""
-    replies = each(lambda j: jobs.call("control", job_id=j, **kw)["jobs"],
+def control(jobs: PlutoJobsClient, job_id, job_ids, *, action, **kw) -> dict:
+    """{"ok": [ids], "finished": [ids], "errors": {id: reason}}, child jobs
+    included. Ending a job that already ended is not an error."""
+    action = ACTION_ALIASES.get(action, action)
+    ends = action in ("cancel", "halt")
+    replies = each(lambda j: jobs.call("control", job_id=j, action=action, **kw)["jobs"],
                    ids_of(jobs, job_id, job_ids))
-    ok, errors = [], {}
+    ok, finished, errors = [], [], {}
     for asked, reply in replies.items():
         for jid, what in reply.items():
-            if jid == "error":
+            if ends and what == ERR_FINISHED:
+                finished.append(asked if jid == "error" else short(jid))
+            elif jid == "error":
                 errors[asked] = what
             elif what == "ok":
                 ok.append(short(jid))
             else:
                 errors[short(jid)] = what
-    return {"ok": ok, **({"errors": errors} if errors else {})}
+    return {"ok": ok, **({"finished": finished} if finished else {}),
+            **({"errors": errors} if errors else {})}
 
 
-def grep(jobs: PlutoJobsClient, job_id, job_ids, *, max_matches: int, **kw):
-    """The match limit covers the whole call."""
+def filtered(rows: list, owner=None, name=None, live=False) -> list:
+    return [r for r in rows
+            if (not owner or r.get("owner") == owner)
+            and (not name or name in (r.get("name") or ""))
+            and (not live or r["state"] not in FINAL_STATES)]
+
+
+def grep(jobs: PlutoJobsClient, job_id, job_ids, *, max_matches=None, **kw):
+    """The match limit is per job: sharing one limit among jobs would return
+    partial answers that have to be asked again."""
     ids = ids_of(jobs, job_id, job_ids)
-    share = max(min(MIN_MATCHES_PER_JOB, max_matches), max_matches // len(ids))
-    limit = max_matches if len(ids) == 1 else share
+    if len(ids) > 1 and (kw.get("from_offset") or kw.get("to_offset")):
+        raise PlutoError("offsets differ per job; grep one job, or use lines")
+    limit = max_matches or (GREP_MATCHES if len(ids) == 1 else GREP_MATCHES_MANY)
+    if limit * len(ids) > GREP_MATCHES_CALL:
+        raise PlutoError(f"max_matches x jobs exceeds {GREP_MATCHES_CALL}; "
+                         "lower it, or let job_analyze summarise")
 
     def one(jid):
         return compact.grep(jobs.call("grep", job_id=jid, max_matches=limit, **kw))
@@ -115,8 +133,7 @@ class Waiter:
 
     A pattern hit is not repeated (the next wait looks after it), a finished
     job is reported once and then left out, and an idle job is reported
-    again only after it printed something new. from_offset switches this
-    memory off for that call.
+    again only after it printed something new. from_offset rewinds one job.
     """
 
     def __init__(self, jobs: PlutoJobsClient):
@@ -126,9 +143,13 @@ class Waiter:
         self.watch_seen: dict[str, int] = {}     # job -> last hit told
 
     def wait(self, job_id, job_ids, *, until="exit", pattern=None,
-             wait_all=False, from_offset=None, timeout_s=0, **kw) -> dict:
+             wait_all=False, from_offset=None, timeout_s=0,
+             limit_s=WAIT_TOTAL_MAX_S, **kw) -> dict:
         ids = [short(j) for j in ids_of(self.jobs, job_id, job_ids)]
-        end = time.monotonic() + max(1, min(int(timeout_s), WAIT_TOTAL_MAX_S))
+        if from_offset is not None and len(ids) > 1:
+            raise PlutoError("from_offset is for one job; without it every "
+                             "event of every job is told once")
+        end = time.monotonic() + max(1, min(int(timeout_s), limit_s))
         while True:
             left = min(end - time.monotonic(), WAIT_MAX_S)
             r = self._once(ids, until, pattern, wait_all, from_offset,
@@ -137,6 +158,19 @@ class Waiter:
                 # Only what is returned counts as told.
                 self._remember(r, until, pattern)
                 return self._with_last_lines(r)
+
+    def state(self) -> dict:
+        """What was told so far, for a waiter that outlives this process."""
+        return {"marks": [[*k, v] for k, v in self._marks.items()],
+                "finished": sorted(self._finished), "watch": self.watch_seen}
+
+    def restore(self, state: dict) -> None:
+        for jid, until, pattern, v in state.get("marks", []):
+            k = (jid, until, pattern)
+            self._marks[k] = max(v, self._marks.get(k, 0))
+        self._finished |= set(state.get("finished", []))
+        for jid, v in state.get("watch", {}).items():
+            self.watch_seen[jid] = max(v, self.watch_seen.get(jid, 0))
 
     def _with_last_lines(self, r: dict) -> dict:
         """The last line of a job usually says how it went."""

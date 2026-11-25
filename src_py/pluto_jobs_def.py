@@ -27,6 +27,8 @@ EVENT_TRANSFERRED = "job_transferred"
 EVENT_WATCH = "job_watch"
 JOB_EVENTS = (EVENT_FINISHED, EVENT_TRANSFERRED, EVENT_WATCH)
 ERR_BAD_KEY = "bad_key"
+ERR_NOT_RUNNING = "job_is_not_running"
+ERR_FINISHED = "job_already_finished"
 ERR_UNKNOWN_ROUTE = "unknown_route"
 CAPABILITY = "smartstreams"
 
@@ -41,6 +43,7 @@ LIST_ALL = 500                    # --manage
 HISTORY_ALL = 10000               # --history
 
 # ── Client timeouts (seconds) ─────────────────────────────────────────────────
+INPUT_PATIENCE_S = 5.0
 CALL_TIMEOUT_S = 30.0
 WAIT_SLACK_S = 15                 # beyond the server-side wait
 PACKAGE_TIMEOUT_S = 900
@@ -49,4 +52,5 @@ ANALYZE_TIMEOUT_S = 60            # server: queueing, scan, slack
 #: Environment a job needs to behave like the agent's own shell. The values
 #: are stored in the package on this host, so nothing secret goes here.
 BASE_ENV = ("PATH", "HOME", "SHELL", "LANG", "LC_ALL", "USER", "LOGNAME",
-            "TMPDIR", "VIRTUAL_ENV", "CONDA_PREFIX", "JAVA_HOME", "GOPATH")
+            "PSS_AGENT", "PSS_HOST",
+            "PSS_PORT", "PLUTO_SMARTSTREAMS_HOME", "TMPDIR", "VIRTUAL_ENV", "CONDA_PREFIX", "JAVA_HOME", "GOPATH")

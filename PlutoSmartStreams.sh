@@ -177,5 +177,7 @@ if ${no_launch}; then
     exit 0
 fi
 command -v "${framework}" >/dev/null || die "${framework} is not in PATH (use --no-launch)."
+export PSS_AGENT="${agent_id}" PSS_HOST="${host}" PSS_PORT="${port}"
+export PATH="${SCRIPT_DIR}/bin:${PATH}"
 if (( ${#cli_args[@]} > 0 )); then cmd+=("${cli_args[@]}"); fi
 exec "${cmd[@]}"

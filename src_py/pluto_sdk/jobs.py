@@ -8,6 +8,7 @@ the key on first contact; the client reads it lazily.
 import getpass
 import json
 import os
+import time
 import uuid
 from typing import Dict, Optional
 
@@ -103,6 +104,18 @@ class PlutoJobsClient:
     def watch(self, action: str = "add", **fields) -> dict:
         """Add, remove or list standing rules on the output of live jobs."""
         return self.call("watch", action=action, **fields)
+
+    def input(self, job_id: str, text: str, close: bool = False) -> dict:
+        """Write to stdin; a job that is only just starting is waited for."""
+        end = time.monotonic() + defs.INPUT_PATIENCE_S
+        while True:
+            try:
+                return self.call("input", job_id=job_id, text=text, close=close or None)
+            except PlutoError as exc:
+                if str(exc) != defs.ERR_NOT_RUNNING or time.monotonic() > end \
+                        or self.call("status", job_id=job_id)["state"] != "starting":
+                    raise
+            time.sleep(0.1)
 
     def export(self, job_id: str, path: Optional[str] = None) -> dict:
         return self.call("export", timeout=defs.PACKAGE_TIMEOUT_S, job_id=job_id, path=path)

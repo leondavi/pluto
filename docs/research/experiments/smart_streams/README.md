@@ -110,6 +110,21 @@ privileged 1.000; grep for error/fatal/fail/warn .002; rare line shapes (<=3) .0
 counter jumps .019; a claim every 100 lines .025; upper bounds of perfect one-trick detectors: counters only .26,
 messages only .28. Privileged is 1.0 on 12 seeds (2 at full size).
 
+**E6 release_trains** (w1..w4, 40 lanes, 10 per agent, 5 to 9 minutes, about 1.3 MB each). Added after
+E1 to E5 as a further held-out task. Its author is an LLM agent that read this directory (including this README
+and the tools paragraphs in `ss_prompts.py`) and the tests, but no product code, product guide, article
+notes or result files. A lane bakes four candidate builds in turn, each followed by a gate that waits 70 s for promote or
+rollback. Outages must be rolled back within 60 s. The verdict follows documented rules (error rate, p95, memory, checksum,
+with exclusions and limits that change during a bake). Each agent has 18 bad and 22 good builds. Five guilty
+component versions are found by comparing manifests over all lanes. Decisions do not change bake lines, so the truth depends
+on the seed only; wall time depends on how fast decisions come. The format is fully documented and regular: one streaming
+script can decide everything, so E6 mainly tests whether it is ready in time (first gate after about 70 s; preparation
+before launching is allowed). A ceiling is possible. No LLM has run it yet.
+
+Scripted results for E6, seed 12345, `verify_e6.py`: rules followed with an independent reader 1.000 (301 s);
+promote at every gate, ignore outages .144; error rates over all lines, ignore outages .056 (both 376 s). Program CPU is
+0.02 of a core per 12 streams.
+
 **Arm C `native_sub`.** B's tools, prompt and limits plus Claude Code's Agent/Task tool. Its
 paragraph is B's plus a neutral offer (foreground or background, at most four at a time). Rules: the same
 Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`), depth 1 and 4 in parallel
@@ -137,6 +152,8 @@ is not matched against leak patterns (it may repeat the rules).
   orphans count only for finished jobs. Raw figures: `grade.process`.
 * E5: 0.75 x micro F1 over all claims (location .5, or .25 at 9 to 60 lines; kind .5; one claim per
   anomaly), 0.15 x (questions answered in time minus wrong codes), 0.10 x pairwise F1 of the cause groups.
+* E6: decisions in time 0.50 (right +1, wrong -1, none 0, good and bad builds weighted equally, floor 0; first
+  launch of a lane only), build reports 0.40 (reason .4, p95 .3, errors .3; outages reason only), culprits 0.10.
 
 Largest single item: E4 .0075, E5 about .005 (v2: up to .058).
 Missing shards or jobs in `final.json` fall back to the per-shard/job file.
@@ -351,10 +368,12 @@ file name does not tell what they do. Differences of a few percent between arms 
 
     PY=<python with the mcp package>; H=docs/research/experiments/smart_streams
     (cd src_erl && rebar3 compile)
-    $PY -m pytest tests/test_experiment_smart_streams.py tests/test_experiment_smart_streams_e45.py
+    $PY -m pytest tests/test_experiment_smart_streams.py tests/test_experiment_smart_streams_e45.py \
+        tests/test_experiment_smart_streams_e6.py
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style plain     # full size, no LLM
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style jobs      # real server and client
     $PY $H/verify_e45.py SCRATCH --exp 4,5 --style plain|jobs [--policy naive]
+    $PY $H/verify_e6.py SCRATCH [--policy wise|lazy|errors]
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --dry-run
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --budget-usd 5 \
         [--exp 4,5] [--conditions smartstreams,native,native_sub]

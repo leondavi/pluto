@@ -393,7 +393,7 @@ def test_all_arms_share_everything_but_the_tools_paragraph(tmp_path):
         p = ss_prompts.agent_prompt(exp, "native", "w1", "/w", ids, 900)
         assert all(c in p for c in cs)
     args = ss_run.parse_args(["--out", str(tmp_path)])
-    assert args.conditions == list(ARMS) and len(args.exps) == 5
+    assert args.conditions == list(ARMS) and len(args.exps) == len(ss_prompts.EXPS)
     cmd = {c: ss_run.claude_command(c, "/cfg", args) for c in ARMS}
     at = {c: dict(zip(cmd[c], cmd[c][1:])) for c in ARMS}
     assert "Agent" in at["native_sub"]["--allowedTools"].split(",")

@@ -516,7 +516,7 @@ def test_runner_end_to_end_with_fake_claude(tmp_path, monkeypatch):
                               "--claude", str(fake)])
     row, = ss_run.run_block("3", 1, ["native"], "m", args)
     assert row["status"]["p1"]["timed_out"] and row["status"]["q1"]["rc"] == 0
-    assert row["protocol_version"] == 2 and row["low_parallelism"]
+    assert row["protocol_version"] == 3 and row["low_parallelism"]
     assert row["peak_streams"] == {"p1": 1, "p2": 0, "q1": 1, "q2": 0}
     assert row["timed_out"] == {"p1": True, "p2": False, "q1": False, "q2": False}
     assert row["grade"]["detail"]["job1"]["run_id"]          # job survived the shift change

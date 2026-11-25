@@ -1,6 +1,9 @@
-# Experiment: PlutoSmartStreams vs native Claude Code (protocol v2)
+# Experiment: PlutoSmartStreams vs native Claude Code (protocol v3)
 
-Status: pre-registered before any v2 LLM run.
+Status: E1 to E3 were pre-registered as protocol v2. v3 adds experiments E4 and E5, the
+arm `native_sub` and call classes; E4, E5 and H4 to H8 were written before any agent
+run of E4, E5 or `native_sub`. E1 to E3 tasks, graders and the prompts of their two
+arms are unchanged. Rows carry `protocol_version` 3 and are not pooled with v2.
 
 **History.** v1 (git a9eab16) is the previous protocol. v2 was designed after
 seeing the v1 pilot and partial v1 main results, so it is not blind to them:
@@ -9,10 +12,16 @@ scores were at the ceiling in both conditions (0.97 to 1.0 in the pilot, 0.92 to
 B and returned more tool-result text. v1 gave an agent only 2 to 4 streams. v1
 rows have no `protocol_version`; v2 rows have 2, and the two are never mixed.
 
+**Independence of E4 and E5.** The product was changed after pilot 1 (see Threats).
+Features for log analysis and watching are being added by other people while E4 and E5
+are written; their design was unknown to the author of E4 and E5, who had read the product
+guide, its tool list and the v2 pilot. E4 and E5 are held-out tests for those features, once only:
+changing the product after seeing their results makes later results tuned.
+
 Four Claude Sonnet agents solve one task in a shared directory. Each agent is a
 headless `claude -p` process.
 
-| | A `smartstreams` | B `native` |
+| | A `smartstreams` | B `native` (C `native_sub`: below) |
 |---|---|---|
 | Tools | B's tools plus the 15 `job_*` MCP tools | Bash (with `run_in_background`), BashOutput, Monitor, Read, Grep, Glob, Write, Edit, ... |
 | Task, model, budget, timeout, workspace, agent-to-agent channel (files) | same | same |
@@ -23,7 +32,7 @@ mentions detaching, saving exit codes, and shell loops/xargs over many logs. A
 may use everything B uses, so A is "native plus SmartStreams".
 
 Permissions: `--permission-mode dontAsk`, explicit `--allowedTools`,
-`--strict-mcp-config`; subagents, web, skills and messaging are denied in both.
+`--strict-mcp-config`; web, skills and messaging are denied in all arms, sub-agents in A and B.
 Session variables of an enclosing Claude Code process are stripped from agents,
 server and jobs; authentication variables stay.
 
@@ -61,6 +70,55 @@ checkpoint requests with a 75 s deadline.
 
 No feature needs an ability that only one condition has.
 
+**E4 crash_recovery** (w1..w4, 40 jobs, 10 per agent, ~4 min each). Fenwick-tree sweeps
+with line checksums. Per agent: three clean jobs, and seven that crash, hang or go corrupt
+(two of them twice); seven jobs write checkpoints, three do not; a checkpoint may be torn or
+already corrupt. The prompt warns all arms that programs, sessions and services may be killed.
+The harness kills, at seeded times identical in all arms:
+
+1. three agent sessions, at 95-115, 165-190 and 235-260 s, with `kill -9` of the process
+   tree (`ss_procs.crash_tree`): the CLI, its process group and its live descendants.
+   A process whose launching shell has exited has left the tree (nohup in a foreground
+   Bash call); a `run_in_background` task has not. 5 s later a new session starts with
+   the same prompt, the same agent id, the time that is left, and "you replace an agent that
+   crashed", without a transcript.
+2. the Pluto server (A only), `kill -9` at 130-150 s, restarted after 5 s with the same
+   home and ports: a fault that B and C do not have.
+
+A full reboot cannot be simulated here: detached processes, page cache, /tmp and clocks survive.
+The native arms are told their tools for this: nohup, a wrapper that saves pid and exit code,
+pid files, `ps -o pid,lstart,command`, `kill`. A is told that jobs, output and exit codes
+outlive sessions and server, how to list them, and that kill in Bash always works.
+
+*Known before the runs:* a replacement adapter that registers with the id of a session killed
+less than 10 minutes ago is renamed by the server, sees no jobs of its own and does not own the
+old ones (`job_list scope=all` shows them, output is readable, `job_control` says `not_owner` before and
+after a server restart, Bash `kill` works; measured with the real adapter). This is how the
+product behaves; it is not worked around, and it counts against A.
+
+**E5 unpredictable_output** (w1..w4, 48 streams, 12 per agent, 300 s, 0.8 to 1.9 MB
+each). Two interleaved writers per stream, each operating one of eight real data structures, in eight
+output styles (kv, JSON, CSV, tables, multi-line blocks, three prose forms) with random
+field names, which all change once midway; ANSI codes, time stamps, progress bars with carriage returns, harmless
+ERROR lines and tracebacks. The docs explain the structures' rules and no format. About 160
+anomalies of eleven kinds (rule violations, counter gaps and silent restarts, one-off messages
+about lost guarantees among look-alikes), six root causes, 28 questions to answer within 90 s and
+decoys. All needed facts are in the output.
+
+Scripted results for E5, seed 1 (privileged = knows the styles, reads only the output):
+privileged 1.000; grep for error/fatal/fail/warn .002; rare line shapes (<=3) .034, unique shapes .068;
+counter jumps .019; a claim every 100 lines .025; upper bounds of perfect one-trick detectors: counters only .26,
+messages only .28. Privileged is 1.0 on 12 seeds (2 at full size).
+
+**Arm C `native_sub`.** B's tools, prompt and limits plus Claude Code's Agent/Task tool. Its
+paragraph is B's plus a neutral offer (foreground or background, at most four at a time). Rules: the same
+Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`), depth 1 and 4 in parallel
+(`..._MAX_SUBAGENT_SPAWN_DEPTH`, `..._MAX_CONCURRENT_SUBAGENTS`), the same workspace, wall time and
+`--max-budget-usd`, no worktree or remote isolation, all other denials as in B. Sub-agent
+messages carry `parent_tool_use_id`; their turns, calls, result bytes and tool inputs (leak
+checks, one working directory per sub-agent) are counted and kept apart in `sub`. A sub-agent's prompt
+is not matched against leak patterns (it may repeat the rules).
+
 ## Scoring (max 1.0)
 
 * E1: shards 0.50 (per violated kind: kind 0.3, op 0.4, key 0.3, divided by the
@@ -72,6 +130,15 @@ No feature needs an ability that only one condition has.
   termination 0.10, violation 0.20, leak 0.10, digest or last epoch 0.10,
   continuity 0.10, checkpoints in time 0.20) + 0.1 x node-group pairwise F1.
 
+* E4: results 0.30 (digest .6, peak .4 per job), failure history 0.15, economy 0.20 (units executed
+  beyond those that the best checkpoints require, relative to the job, 6% free plus 45 units per
+  corruption), no unneeded relaunch 0.10 (a launch while a healthy one runs or after a valid
+  result), recovery within 120 s 0.20 (36 faults), no process left at the end 0.05. Economy, relaunch and
+  orphans count only for finished jobs. Raw figures: `grade.process`.
+* E5: 0.75 x micro F1 over all claims (location .5, or .25 at 9 to 60 lines; kind .5; one claim per
+  anomaly), 0.15 x (questions answered in time minus wrong codes), 0.10 x pairwise F1 of the cause groups.
+
+Largest single item: E4 .0075, E5 about .005 (v2: up to .058).
 Missing shards or jobs in `final.json` fall back to the per-shard/job file.
 
 ## Hypotheses (fresh for v2) and decision rule
@@ -95,15 +162,49 @@ reported; a sensitivity analysis drops them. Do not pool experiments.
   Falsified if the score difference is not material or is negative. This is
   realistic: v1 gave A no clear score advantage.
 
+The same rule applies to each pair of arms. Metrics whose B mean is 0 are material if every
+condition on the sign holds. `summarize.py` prints the verdict ("a>b", "a<b", "tie").
+
+* **H4 (E4): A loses less to crashes.** A has fewer recomputed program seconds
+  (`recomputed_program_s`) AND fewer unneeded relaunches AND fewer orphans than B, each
+  material, and no materially lower score. Supported if all three and the score clause hold; partly
+  supported if at least one of the three holds and none is materially worse; refuted if
+  any of the three is materially larger for A, or the A score is materially lower; otherwise null.
+  *Honest expectation:* null or partly supported. All arms are warned, nohup survives these crashes,
+  and the native wrapper recipe is in the prompt; A pays for the server fault and for lost ownership.
+* **H5 (E5): A scores no lower and reads fewer tool-result bytes.** Supported if the score difference
+  A - B is not materially negative and A's bytes are materially smaller. Refuted if the score is
+  materially lower or the bytes are materially larger. Otherwise null on bytes.
+  *Honest expectation:* score tie, bytes refuted (A larger). Finding anomalies is script work over
+  files, A offers native tools plus more round trips, and in the v2 pilot A returned 2.1 to 3.0 times B's
+  bytes. Product changes since then may alter this.
+* **H6 (E4, E5): cost.** A's `cost_est_usd` is materially higher than B's. Falsified by a tie or a lower cost.
+* **H7 (C against B, all experiments): no score difference, higher cost, no shorter wall time.** Per
+  experiment: falsified if the score difference C - B is material, or the cost (`cost_est_usd`) is not
+  materially higher, or wall time is materially shorter. *Expectation:* few sub-agents are started;
+  with fewer than one per run on average H7 says nothing about sub-agents, and is reported as
+  "not used".
+* **H8 (A against C): descriptive**, no prediction.
+
+**Power, n = 5.** The rule needs the same sign in 4 of 5 pairs. With no true effect the sign part alone holds
+by chance in 12 of 32 cases (38%); the size part is what limits false alarms. By simulation (normal
+differences), a true score difference of 0 / .05 / .10 is called material in 2 / 48 / 99% of cases with a
+paired sd of .05, and in 20 / 41 / 78% with sd .10 (the v2 pilot suggests .05 to .15): a false alarm is likely if scores vary
+much, so the observed sd is reported with every verdict. Cost sd between runs of one arm is 10 to 25%, so 15% differences are at the edge. Dozens of metrics times
+three pairs times five experiments produce chance verdicts: only H1 to H7 are confirmatory. A null
+result is "tie" on the primary metrics of a hypothesis. It means "no difference of this size seen",
+not equivalence. E4 raw counts near zero in every arm (a ceiling) are also null. Errors cluster by agent (four
+per run), so many small items give finer resolution, not more independent data.
+
 ## Secrecy and isolation
 
-* One seed per (experiment, rep), shared by A and B; condition order shuffled per
-  pair, experiments shuffled per rep.
+* One seed per (experiment, rep), shared by all arms; arm order shuffled per
+  block, experiments shuffled per rep.
 * No truth file exists; the grader recomputes truth from a seed that stays in the
   runner's memory until the pair ends (`SS_EXP_SEED`/`--seed` are visible to `ps`).
 * Workspaces hold compiled programs and opaque images only, in
-  `OUT/runs/<random id>/ws`. A finished run's directory is mode 000 while its
-  partner runs. After a hard kill of the runner: `chmod 700 OUT/runs/*`.
+  `OUT/runs/<random id>/ws`. A finished run's directory is mode 000 while the
+  others of its block run. After a hard kill of the runner: `chmod 700 OUT/runs/*`.
 * Tool inputs are scanned for reads of harness, other runs, program internals,
   decompilers and transcripts; `bin/` is hashed. Hits mark the run `tainted`.
   This detects, it does not prevent.
@@ -119,7 +220,7 @@ v1's metrics plus `protocol_version`, `peak_streams`, `peak_streams_total`,
 `low_parallelism`, per-agent `timed_out`, `cpu_share_mean/max` (whole machine, from
 `ps`), `program_cpu_s` and `max_pacing_lag_s` (worst delay of any program behind its
 own schedule; small values mean that load did not distort timing). Agent limits
-are equal in both conditions: 1200 s (E1, E2, E3 shift 2), 240 s (E3 shift 1).
+are equal in all arms: 1200 s (E1, E2, E3 shift 2, E5), 240 s (E3 shift 1), 1100 s (E4).
 
 Measured with the scripted solvers (10 cores, 24 GB, no LLM), score 1.0 in every
 cell. E2 is seed 4242, E1 and E3 seed 777; values are plain / jobs style.
@@ -132,7 +233,56 @@ cell. E2 is seed 4242, E1 and E3 seed 777; values are plain / jobs style.
 
 Maxima are single samples, and include everything else on the machine.
 
+E4 and E5 with the scripted solvers (real crash schedule and runner code; another agent's tests were running
+on the machine). E4 wall times bound a fast team; agents need longer, limits 1100 and 1200 s.
+
+| | Score | Wall s | Launches | Peak per agent | Max lag s |
+|---|---|---|---|---|---|
+| E4 plain, seed 777 (3 agent crashes) | 1.0 | 397 | 76 | 10 | 0.02 |
+| E4 jobs, seed 778 (3 agent crashes, 1 server crash) | 1.0 | 404 | 76 | 10 to 11 | 0.02 |
+| E5 plain, seed 777 | 1.0 | 311 | 48 | 12 | 0.12 |
+| E5 jobs, seed 4242 | 1.0 | 314 | 48 | 12 | 0.02 |
+| E4 plain, seed 777, policy naive | 0.8465 (6212 s recomputed) | 715 | 103 | 10 | 0.02 |
+
+The first E4 plain run scored 0.9968: the solver relaunched a program in the moment between its exit and the
+wrapper writing the exit code (a race that native agents can meet too). Only the solver was
+changed. E5 found and fixed two generator defects before any agent run (a LEVEL plant without violation, a line number
+off by one after a table header). The jobs solver calls the HTTP API under the crashed agent's id, so it does
+not meet the lost-ownership problem described above.
+
+**Cost.** `cost_usd` is the reported total. A killed session (E3 shift 1, E4 crashes) has no result event; `cost_est_usd`
+then uses list prices, which reproduce the reported cost of all 24 v2-pilot sessions, with input and
+cache tokens from the messages (equal to the final totals in all 24) and output tokens estimated
+(leave-one-out error of the cost: median 1.4%, worst 7.7%, on whole sessions; an interrupted message is
+undercounted). E4 uses `cost_est_usd` as its cost metric.
+
+**Sub-agent accounting: what is and is not verified.** From the 78 transcripts at hand: every message has
+`parent_tool_use_id` (always null there, as no sub-agent ran), result events have `subagent_stats`, and
+message usage adds up to `modelUsage` (24 checked). From the installed CLI's text (2.1.319, not run): sub-agent messages
+carry the id of the Agent call; the environment variables above exist; `--forward-subagent-text`
+also streams their text. NOT verified, needs one run: that `modelUsage`/`total_cost_usd` and
+`--max-budget-usd` include sub-agents, that the variables act in `-p` mode, that denials reach sub-agents.
+Guards: if messages show more cache-read tokens than `modelUsage` the run is flagged `subagent_usage_missing` and the
+estimate adds them; `subagent_model`, `subagent_nested`, `subagent_call` (in A or B), leaks `forbidden_tool` and
+`isolation`. Check these flags on the first C run before spending more. Sub-agents that run in the background
+may end silently with their parent.
+
+**What calls are for** (`categories`, `ss_classify.py`, all arms and sub-agents): argument bytes, turns
+and estimated output tokens per class: process handling, output analysis, coordination, answer writing, other. The
+rules are in its docstring. A manual check of 40 random v2-pilot calls (one rater, rule output
+hidden, held out) found 4 errors: 10% (95% CI 4 to 23%), on mixed Bash calls and scripts whose
+file name does not tell what they do. Differences of a few percent between arms mean nothing. Exploratory.
+
 ## Threats to validity
+
+* E4 warns agents of crashes, so it measures recovery by prepared teams. Unprepared native agents would
+  lose more. Crash times follow the wall clock and hit agents at different stages of their work; an agent that is
+  faster has finished more. A crash that finds its agent finished is recorded as missed (`chaos`).
+  A server crash needs the agent to survive it; there is one per run only.
+* E4 and E5 have the same author as the harness, who knows the product guide. E4's themes
+  (durable output, exit codes) are the product's selling points, E5's theme is not.
+* E5's structure mix, number formats and English messages are synthetic. Its root cause is one lane number.
+* C differs from B by more than the offer if the Agent tool's description changes behaviour by itself.
 
 * The SmartStreams implementation changed between the v1 runs and v2: compact
   results (after the v1 pilot), fixes from two code reviews, and list arguments
@@ -173,12 +323,15 @@ Maxima are single samples, and include everything else on the machine.
 
     PY=<python with the mcp package>; H=docs/research/experiments/smart_streams
     (cd src_erl && rebar3 compile)
-    $PY -m pytest tests/test_experiment_smart_streams.py
+    $PY -m pytest tests/test_experiment_smart_streams.py tests/test_experiment_smart_streams_e45.py
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style plain     # full size, no LLM
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style jobs      # real server and client
-    $PY $H/run.py --out ~/Workspace/ss-experiments/v2 --reps 5 --dry-run
-    $PY $H/run.py --out ~/Workspace/ss-experiments/v2 --reps 5 --budget-usd 5
-    $PY $H/summarize.py ~/Workspace/ss-experiments/v2 [--exclude-tainted]
+    $PY $H/verify_e45.py SCRATCH --exp 4,5 --style plain|jobs [--policy naive]
+    $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --dry-run
+    $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --budget-usd 5 \
+        [--exp 4,5] [--conditions smartstreams,native,native_sub]
+    $PY $H/summarize.py ~/Workspace/ss-experiments/v3 [--exclude-tainted]
+    $PY $H/ss_classify.py ~/Workspace/ss-experiments/v3 [--sample 40 --seed N --hide]
 
 `--out` must be outside git. `--http-port N` (with `--pluto-host` and
 `--smartstreams-home`) uses a running server instead of private ones.

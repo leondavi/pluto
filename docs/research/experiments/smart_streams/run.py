@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the SmartStreams vs native Claude Code experiments (see README.md)."""
+"""Run the SmartStreams vs native (with and without sub-agents) experiments (see README.md)."""
 
 import argparse
 import hashlib
@@ -19,15 +19,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import ss_build  # noqa: E402
+import ss_chaos  # noqa: E402
+import ss_classify  # noqa: E402
 import ss_metrics  # noqa: E402
 import ss_procs  # noqa: E402
 import ss_prompts  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(HERE, *[".."] * 4))
 ADAPTER = os.path.join(REPO, "src_py", "agent_smart_streams", "smart_streams.py")
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 MIN_PEAK = 8
-CONDITIONS = ("smartstreams", "native")
+CONDITIONS = ("smartstreams", "native", "native_sub")
+SUBAGENT_TOOLS = ["Agent", "Task"]
+SUBAGENT_DEPTH, SUBAGENT_PARALLEL = 1, 4
 BUILTIN = ["Bash", "BashOutput", "KillShell", "TaskOutput", "TaskStop", "Monitor", "Read",
            "Grep", "Glob", "Write", "Edit", "TodoWrite", "ToolSearch"]
 JOB_TOOLS = ["start", "status", "window", "grep", "next_chunk", "control", "manifest", "list",
@@ -47,12 +51,17 @@ KEEP_ENV = {"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_U
 
 
 def allowed_tools(condition):
-    extra = [f"mcp__smartstreams__job_{t}" for t in JOB_TOOLS]
-    return BUILTIN + (extra if condition == "smartstreams" else [])
+    extra = {"smartstreams": [f"mcp__smartstreams__job_{t}" for t in JOB_TOOLS],
+             "native_sub": SUBAGENT_TOOLS}
+    return BUILTIN + extra.get(condition, [])
+
+
+def denied_tools(condition):
+    return [t for t in DENIED if condition != "native_sub" or t not in SUBAGENT_TOOLS]
 
 
 def mcp_config(condition, agent_id, args, port=None, home=None):
-    if condition == "native":
+    if condition != "smartstreams":
         return {"mcpServers": {}}
     srv = {"command": args.mcp_python,
            "args": [args.adapter, "--agent-id", agent_id, "--host", args.pluto_host,
@@ -71,17 +80,23 @@ def claude_command(condition, cfg_path, args):
             "--setting-sources", "project", "--disable-slash-commands",
             "--no-session-persistence",
             "--allowedTools", ",".join(allowed_tools(condition)),
-            "--disallowedTools", ",".join(DENIED)]
+            "--disallowedTools", ",".join(denied_tools(condition))] + (
+                ["--forward-subagent-text"] if condition == "native_sub" else [])
 
 
 def session_vars(env):
     return [k for k in env if k.startswith(SESSION_PREFIXES) and k not in KEEP_ENV]
 
 
-def agent_env():
+def agent_env(condition="native", model="sonnet"):
+    """Sub-agents run the parent's model, cannot nest, and stay in the workspace."""
     drop = set(session_vars(os.environ)) | {"PLUTO_SMARTSTREAMS_HOME"}
     env = {k: v for k, v in os.environ.items() if k not in drop}
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+    if condition == "native_sub":
+        env.update(CLAUDE_CODE_SUBAGENT_MODEL=model, CLAUDE_CODE_SUBAGENT_MODEL_FORCE="1",
+                   CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=str(SUBAGENT_DEPTH),
+                   CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=str(SUBAGENT_PARALLEL))
     return env
 
 
@@ -107,7 +122,7 @@ def stop_pluto(server):
 
 
 def run_seed(master, exp, rep):
-    """Same workload for both conditions of one (exp, rep) pair."""
+    """Same workload for all conditions of one (exp, rep) block."""
     h = hashlib.sha256(f"{master}|{exp}|{rep}".encode()).digest()
     return int.from_bytes(h[:6], "big")
 
@@ -133,6 +148,8 @@ def preflight(args, conditions):
     if subprocess.run(["git", "-C", probe, "rev-parse", "--show-toplevel"],
                       capture_output=True).returncode == 0:
         sys.exit(f"--out must be outside any git repository: {args.out}")
+    if args.http_port and "4" in args.exps and "smartstreams" in conditions:
+        sys.exit("experiment 4 kills its server and needs private ones: drop --http-port")
     if "smartstreams" in conditions:
         if not os.path.isfile(args.adapter):
             sys.exit(f"adapter not found: {args.adapter}")
@@ -163,9 +180,25 @@ def run_one(exp, condition, rep, seed, args):
     cutoff = getattr(mod, "PHASE1_CUTOFF", None)
     roster = ss_prompts.roster(exp)
     ids = {n: f"ss-{run_id}-{n}" for n, _ in roster}
-    server = port = home = None
+    server = port = home = chaos = None
     tracker, t0 = ss_procs.Tracker(), time.time()
-    status, meta, killed = {}, {}, []
+    status, meta, killed, env = {}, {}, [], agent_env(condition, args.model)
+    sessions = [n for n, _ in roster]
+
+    def launch(name, session, limit=None, note=""):
+        cfg = os.path.join(logs, f"{session}.mcp.json")
+        with open(cfg, "w") as f:
+            json.dump(mcp_config(condition, ids[name], args, port, home), f)
+        prompt = ss_prompts.agent_prompt(exp, condition, name, ws, ids, timeout, cutoff) + note
+        return ss_procs.Agent(session, claude_command(condition, cfg, args), prompt, ws, logs,
+                              env, tracker, limit)
+
+    def respawn(name, n):
+        """Replacement of a crashed agent: same prompt and id, what is left of its time."""
+        limit = max(60.0, t0 + timeout - time.time())
+        sessions.append(f"{name}.r{n}")
+        return launch(name, sessions[-1], limit, mod.REPLACEMENT.format(me=name)
+                      + f" About {int(limit)} s of the time limit remain.\n")
     try:
         if condition == "smartstreams" and not args.http_port:
             server = private_pluto(os.path.join(run_dir, "pluto"))
@@ -178,46 +211,52 @@ def run_one(exp, condition, rep, seed, args):
             for name, p in roster:
                 if p != phase:
                     continue
-                cfg = os.path.join(logs, f"{name}.mcp.json")
-                with open(cfg, "w") as f:
-                    json.dump(mcp_config(condition, ids[name], args, port, home), f)
-                prompt = ss_prompts.agent_prompt(exp, condition, name, ws, ids, timeout, cutoff)
-                agents.append(ss_procs.Agent(name, claude_command(condition, cfg, args), prompt,
-                                             ws, logs, agent_env(), tracker))
+                agents.append(launch(name, name))
+            if hasattr(mod, "chaos"):
+                chaos = ss_chaos.Chaos(mod.chaos(seed), t0, respawn, mod.RESPAWN_S, server,
+                                       mod.SERVER_DOWN_S)
             short = exp == "3" and phase == 1
-            status.update(ss_procs.run_phase(agents, cutoff if short else timeout, short))
+            status.update(ss_procs.run_phase(agents, cutoff if short else timeout, short, chaos))
             meta[f"phase{phase}_end"] = time.time()
     finally:
         meta["run_end"] = time.time()
+        if chaos:
+            chaos.finish()
+            meta["crashes"] = chaos.crashes()
         tracker.sample()
         if tracker.is_alive():
             tracker.stop()
         if server:
             stop_pluto(server)
         killed = ss_procs.cleanup(tracker, ws, t0)
-    per, fails, leaks = {}, {}, []
-    for name, _ in roster:
+    per, fails, leaks, cats = {}, {}, [], {}
+    for name in sessions:
         ev = ss_metrics.read_jsonl(os.path.join(logs, f"{name}.jsonl"))
         per[name] = ss_metrics.parse_agent(ev)
         fails[name] = ss_metrics.failures(per[name], status.get(name, {}), condition)
         leaks += [dict(zip(("code", "tool", "excerpt"), h), agent=name)
-                  for h in ss_metrics.find_leaks(ev, ws, args.out)]
+                  for h in ss_metrics.find_leaks(ev, ws, args.out, denied_tools(condition))]
+        cats[name] = ss_classify.by_category(ev, per[name])
     g = mod.grade(ws, mod.truth(seed), meta)
     tampered = ss_build.tree_digest(ws) != before
     team = ss_metrics.merge(per)
-    hard = [f for fs in fails.values() for f in fs if f != "cutoff"]
+    hard = [f for fs in fails.values() for f in fs
+            if f not in ("cutoff", "crash_injected")]
     recs = ss_build.launches(ws)
     peaks = ss_build.peak_streams(recs, [n for n, _ in roster], meta, mod.owner,
                                   getattr(mod, "owner2", None))
     cpu = tracker.cpu or [0.0]
-    row = {"protocol_version": PROTOCOL_VERSION, "exp": exp, "name": mod.NAME, "condition": condition, "rep": rep, "run_id": run_id,
+    row = {"protocol_version": PROTOCOL_VERSION, "exp": exp, "name": mod.NAME,
+           "condition": condition, "rep": rep, "run_id": run_id,
            "model": args.model, "seed": seed, "started_at": t0,
            "score": g["score"], "wall_s": round(meta["run_end"] - t0, 1),
            "grade": g, "team": team, "per_agent": per, "status": status,
            "protocol_failures": fails, "n_protocol_failures": len(hard) + int(not g["final_valid"]),
            "leaks": leaks, "tampered": tampered, "tainted": bool(leaks) or tampered,
-           "leftovers_killed": killed,
-           "timed_out": {n: bool(status.get(n, {}).get("timed_out")) for n, _ in roster},
+           "leftovers_killed": killed, "categories": ss_classify.merge(cats),
+           "chaos": chaos.log if chaos else [], "sessions": sessions,
+           "timed_out": {n: any(bool(st.get("timed_out")) for s, st in status.items()
+                                if s.split(".")[0] == n) for n, _ in roster},
            "peak_streams": peaks, "low_parallelism": min(peaks.values()) < MIN_PEAK,
            "peak_streams_total": ss_build.peak([(r["t0"], r["t_last"]) for r in recs]),
            "cpu_share_mean": round(sum(cpu) / len(cpu), 3), "cpu_share_max": max(cpu),
@@ -231,8 +270,8 @@ def run_one(exp, condition, rep, seed, args):
 
 
 def run_block(exp, rep, conds, master, args):
-    """One paired block. The first run's directory is unreadable while the
-    second runs, and rows (with the seed) are written only afterwards."""
+    """One block, one run per arm. A finished run's directory is unreadable while
+    the others run, and rows (with the seed) are written only afterwards."""
     rows, locked = [], []
     try:
         for c in conds:
@@ -255,8 +294,9 @@ def run_block(exp, rep, conds, master, args):
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--exp", default="all", help="all or a comma list of 1,2,3")
-    p.add_argument("--condition", default="all", choices=("all",) + CONDITIONS)
+    p.add_argument("--exp", default="all", help="all or a comma list of 1,2,3,4,5")
+    p.add_argument("--condition", "--conditions", default="all",
+                   help="all or a comma list of " + ", ".join(CONDITIONS))
     p.add_argument("--reps", type=int, default=1)
     p.add_argument("--rep-start", type=int, default=1)
     p.add_argument("--model", default="sonnet")
@@ -278,8 +318,10 @@ def parse_args(argv=None):
     a.out = os.path.realpath(a.out)
     a.exps = list(ss_prompts.EXPS) if a.exp == "all" else a.exp.split(",")
     if set(a.exps) - set(ss_prompts.EXPS):
-        p.error("--exp takes 1, 2 and 3")
-    a.conditions = list(CONDITIONS) if a.condition == "all" else [a.condition]
+        p.error("--exp takes 1 to 5")
+    a.conditions = list(CONDITIONS) if a.condition == "all" else a.condition.split(",")
+    if set(a.conditions) - set(CONDITIONS) or len(set(a.conditions)) < len(a.conditions):
+        p.error("--condition takes " + ", ".join(CONDITIONS))
     return a
 
 

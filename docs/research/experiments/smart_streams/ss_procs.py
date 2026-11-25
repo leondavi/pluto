@@ -146,8 +146,8 @@ def cleanup(tracker, ws, t0, rounds=4):
 class Agent:
     """One headless claude process with its transcript pump."""
 
-    def __init__(self, name, cmd, prompt, cwd, log_dir, env, tracker, stamp=True):
-        self.name = name
+    def __init__(self, name, cmd, prompt, cwd, log_dir, env, tracker, limit=None):
+        self.name, self.limit = name, limit
         self.err = open(os.path.join(log_dir, f"{name}.stderr"), "w")
         self.t0 = time.time()
         self.p = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
@@ -183,13 +183,68 @@ class Agent:
             pass
 
 
-def run_phase(agents, timeout, expected_cutoff=False):
-    """Wait for all agents; stop the late ones. Returns {name: status}."""
+def session_members(root, tab, pgid=None):
+    """Pids a crash of ``root`` takes down: its live descendants by parent link
+    and the members of its process group. A process that was detached (its
+    launching shell has exited, so its parent is init) is in neither set."""
+    live = {root} if root in tab else set()
+    grew = True
+    while grew:
+        new = {p for p, r in tab.items() if r["ppid"] in live and p not in live}
+        live |= new
+        grew = bool(new)
+    for p in tab:
+        try:
+            if os.getpgid(p) == (pgid or root):
+                live.add(p)
+        except OSError:
+            pass
+    return live - {os.getpid()}
+
+
+def crash_tree(agent):
+    """kill -9 of the agent's process tree; returns the commands killed.
+
+    Everything is stopped first, so that nothing can be started, reparented or
+    reported in between; pid reuse is excluded by comparing start times."""
+    done = {}
+    for _ in range(4):
+        tab = ps_table()
+        new = {p: tab[p]["start"] for p in session_members(agent.p.pid, tab) if p in tab
+               and p not in done}
+        if not new:
+            break
+        for p in new:
+            try:
+                os.kill(p, signal.SIGSTOP)
+            except OSError:
+                pass
+        done.update(new)
+    tab, cmds = ps_table(), []
+    for p, start in done.items():
+        if p in tab and tab[p]["start"] == start:
+            cmds.append(tab[p]["cmd"][:160])
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+    agent.p.wait()
+    return cmds
+
+
+def run_phase(agents, timeout, expected_cutoff=False, chaos=None):
+    """Wait for all agents; stop the late ones. Returns {name: status}.
+
+    ``chaos.step(left, status)`` may crash agents and returns replacements."""
     status, left = {}, {a.name: a for a in agents}
+    agents = list(agents)
     try:
-        while left:
+        while left or (chaos and chaos.pending()):
+            for a in chaos.step(left, status) if chaos else ():
+                agents.append(a)
+                left[a.name] = a
             for name, a in list(left.items()):
-                late = time.time() - a.t0 > timeout
+                late = time.time() - a.t0 > (a.limit or timeout)
                 if a.p.poll() is None and late:
                     a.signal(signal.SIGTERM)
                     try:

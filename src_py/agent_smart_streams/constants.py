@@ -7,6 +7,8 @@ DRAIN_HINT = "any job_* tool"     # named in wakeups
 NOTICE_KEY = "_job_notices"
 INBOX_KEY = "_pluto_inbox"
 MANIFEST_PAGE = 20
+FLEET_THREADS = 4                 # matches the HTTP connection pool
+MIN_MATCHES_PER_JOB = 3
 
 INSTRUCTIONS = (
     "Run long or noisy commands as jobs: job_start, then job_wait, then read "

@@ -40,15 +40,20 @@ def status(r: dict) -> dict:
 
 
 def waited(r: dict) -> dict:
-    out = {"jobs": [brief(j) for j in r["jobs"]]}
-    hits = {}
-    for jid, h in r["hits"].items():
+    """Only the jobs something happened to, plus a count of the rest."""
+    hits, rest = [], {}
+    for job in r["jobs"]:
+        h = r["hits"].get(job["job_id"])
+        if h is None:
+            rest[job["state"]] = rest.get(job["state"], 0) + 1
+            continue
+        out = dict(brief(job), hit=h["reason"])
         if h["reason"] == "pattern":
-            hits[jid] = f"{h['line']}@{h['offset']}:{h['text']}"
-        else:
-            hits[jid] = h["reason"]
-    if hits:
-        out["hits"] = hits
+            out["hit"] = f"{h['line']}@{h['offset']}:{h['text']}"
+        hits.append(out)
+    out = {"jobs": hits}
+    if rest:
+        out["others"] = rest
     if r["timed_out"]:
         out["timed_out"] = True
     return out

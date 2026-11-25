@@ -740,3 +740,52 @@ def test_short_jobs_finish_promptly(srv):
         t0 = time.time()
         run(j, "true")
         assert time.time() - t0 < 2.5
+
+
+def test_fleet_tools_over_mcp(srv):
+    """A dozen jobs, few calls, every event once."""
+    import asyncio
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    params = StdioServerParameters(
+        command=PY, env=dict(os.environ, PLUTO_SMARTSTREAMS_HOME=srv.home), args=[
+            os.path.join(ROOT, "src_py/agent_smart_streams/smart_streams.py"),
+            "--agent-id", "fleet", "--host", "127.0.0.1", "--http-port", str(srv.port)])
+
+    async def go():
+        async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
+            await s.initialize()
+
+            async def call(tool, **kw):
+                return json.loads((await s.call_tool(tool, kw)).content[0].text)
+            cmds = [f"echo EV one {i}; sleep 3; echo EV two {i}; sleep {0 if i else 60}"
+                    for i in range(12)]
+            started = await call("job_start", commands=cmds,
+                                 names=[f"n{i}" for i in range(12)])
+            ids = [x["job_id"] for x in started["jobs"]]
+            assert [x["name"] for x in started["jobs"]] == [f"n{i}" for i in range(12)]
+            hits = []
+            while len(hits) < 24:
+                m = await call("job_wait", job_ids=ids, until="pattern", pattern="^EV")
+                assert not m.get("timed_out"), (len(hits), m)
+                hits += [j["hit"] for j in m["jobs"] if "EV" in j["hit"]]
+            assert len(set(hits)) == 24 or len(hits) == 24
+            rest = [j for j in ids if j != ids[0]]
+            m = await call("job_wait", job_ids=rest, wait_all=True)
+            assert all(j["state"] == "succeeded" for j in m["jobs"])
+            m = await call("job_wait", job_ids=ids[:1], until="idle", idle_ms=500)
+            assert m["jobs"][0]["hit"] == "idle"
+            m = await call("job_wait", job_ids=ids[:1], until="idle", idle_ms=500,
+                           timeout_s=2)
+            assert m["timed_out"]
+            g = await call("job_grep", job_ids=ids, pattern="two")
+            assert all(g[j]["matches"] == 1 for j in ids)
+            st = await call("job_status", job_ids=ids)
+            assert st[ids[1]]["state"] == "succeeded"
+            t = await call("job_transfer", job_ids=ids[1:3], to="other")
+            assert set(t["jobs"].values()) == {"ok"}
+            c = await call("job_control", job_ids=ids[:2], action="cancel")
+            assert c[ids[0]] == {ids[0]: "ok"} and "error" in c[ids[1]]
+            assert "error" in await call("job_status")
+            assert "error" in await call("job_start", commands=["a"], command="b")
+    asyncio.run(go())

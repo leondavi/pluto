@@ -134,6 +134,10 @@ Maxima are single samples, and include everything else on the machine.
 
 ## Threats to validity
 
+* The SmartStreams implementation changed between the v1 runs and v2: compact
+  results (after the v1 pilot), fixes from two code reviews, and list arguments
+  (`commands`, `job_ids`, once-only `job_wait` events) added after the v2
+  stress test and before any v2 agent run. v1 and v2 numbers must not be pooled.
 * v2 was shaped after v1 results (see History), in order to lift tasks off the
   ceiling, not toward a condition; the ceiling may return, as Sonnet scripts well.
 * Small n, one model, one machine. Defects are planted in trace emission; AVL and

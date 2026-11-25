@@ -39,12 +39,21 @@ check_pattern(P) ->
         {error, W} -> throw({bad, W})
     end.
 
+%% Where to look from. A client following many jobs passes from_offsets
+%% ({job id: offset}) so that each wait reports only what is new: pattern
+%% and output count from there, and idle needs output beyond it.
+mark(Id, Until, R) ->
+    case opt(<<"from_offsets">>, R, #{}) of
+        #{Id := N} -> N;
+        _ -> default_mark(Id, Until, R)
+    end.
+
 %% A pattern is searched from the start; new output means "from now".
-mark(_, ?WAIT_PATTERN, R) -> opt(<<"from_offset">>, R, 0);
-mark(Id, ?WAIT_OUTPUT, R) ->
+default_mark(_, ?WAIT_PATTERN, R) -> opt(<<"from_offset">>, R, 0);
+default_mark(Id, ?WAIT_OUTPUT, R) ->
     opt(<<"from_offset">>, R,
         filelib:file_size(pluto_job_store:file(Id, ?JOB_FILE_OUTPUT)));
-mark(_, _, _) -> 0.
+default_mark(_, _, _) -> -1.
 
 enough(Hits, Ids, true)   -> map_size(Hits) =:= length(Ids);
 enough(Hits, _Ids, false) -> map_size(Hits) > 0.
@@ -79,9 +88,10 @@ hit(Id, Until, R, Mark) ->
     end.
 
 condition(?WAIT_EXIT, _, _, Mark, _) -> {false, Mark};
-condition(?WAIT_IDLE, P, R, Mark, _) ->
+condition(?WAIT_IDLE, #{<<"id">> := Id} = P, R, Mark, _) ->
+    Size = filelib:file_size(pluto_job_store:file(Id, ?JOB_FILE_OUTPUT)),
     Last = opt(<<"last_output_at">>, pluto_job_registry:state(P)),
-    case is_integer(Last) andalso
+    case is_integer(Last) andalso Size > Mark andalso
          now_ms() - Last >= opt(<<"idle_ms">>, R, ?JOB_WAIT_IDLE_MS) of
         true  -> {true, #{<<"reason">> => ?WAIT_IDLE}};
         false -> {false, Mark}
@@ -106,8 +116,9 @@ pattern(#{hi := Hi} = Src, R, Mark, Done) ->
          pluto_job_grep:grep(Src, opt(<<"pattern">>, R),
                              #{from => Mark, to => To, max => 1}) of
         false -> {false, Mark};
-        {ok, #{<<"groups">> := [[E | _] | _]}} ->
-            {true, E#{<<"reason">> => ?WAIT_PATTERN}};
+        {ok, #{<<"groups">> := [[#{<<"offset">> := Off} = E | _] | _]}} ->
+            Next = pluto_job_read:offset_after_line(Src, Off),
+            {true, E#{<<"reason">> => ?WAIT_PATTERN, <<"next">> => Next}};
         {ok, #{<<"resume_at">> := null}} -> {false, To};
         {ok, #{<<"resume_at">> := Pos}}  -> {false, Pos};
         {error, W} -> {true, #{<<"reason">> => W}}

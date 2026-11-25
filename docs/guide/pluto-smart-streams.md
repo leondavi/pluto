@@ -33,6 +33,11 @@ run concurrently without the LLM managing the underlying process.
 | `job_review` | Verdict and note pinned to a hashed byte range |
 | `job_open`, `job_export` | Open or import a package; write a `.pjob` |
 
+`job_start(commands=[...])` starts many jobs in one call; `job_status`,
+`job_grep`, `job_wait`, `job_control` and `job_transfer` take `job_ids`.
+`job_wait` reports each event once per session, so an agent can follow a
+dozen jobs by repeating the same call.
+
 A job ends when its whole process group has ended, so background children
 (`server &`) keep it running, under limits and cancellable. The exit code is
 the main process's; until the group ends it shows as `leader_exit_code`.

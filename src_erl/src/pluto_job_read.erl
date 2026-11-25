@@ -13,7 +13,7 @@
 
 -include("pluto.hrl").
 
--export([read/4, bytes/3, line_of/2, offset_of_line/2, tail_start/3,
+-export([read/4, bytes/3, line_of/2, offset_of_line/2, tail_start/3, offset_after_line/2,
          last_line_end/2, records/3, verify/2, sanitize/1]).
 
 %% @doc Read up to Max bytes at Off. Mode `cut' ends on a line boundary
@@ -147,6 +147,10 @@ skip_lines(#{hi := Hi} = Src, Off, N) ->
                 C -> skip_lines(Src, Off + byte_size(D), N - C)
             end
     end.
+
+%% @doc Start of the line after the one that begins at Off.
+-spec offset_after_line(src(), non_neg_integer()) -> non_neg_integer().
+offset_after_line(Src, Off) -> skip_lines(Src, Off, 1).
 
 %% @doc Start of the last N lines, bounded by Max bytes.
 -spec tail_start(src(), pos_integer(), pos_integer()) -> non_neg_integer().

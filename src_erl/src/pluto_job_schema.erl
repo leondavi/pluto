@@ -20,6 +20,9 @@ check(R) ->
     end.
 
 valid(<<"timeout_s">>, V) -> is_number(V) andalso V > 0 andalso V < 1.0e12;
+valid(<<"from_offsets">>, M) ->
+    is_map(M) andalso lists:all(fun(N) -> is_integer(N) andalso N >= 0 end,
+                                maps:values(M));
 valid(K, V) ->
     Kinds = [{?JOB_STR_KEYS, fun str/1},
              {?JOB_INT_KEYS, fun(X) -> is_integer(X) andalso X >= 0 end},

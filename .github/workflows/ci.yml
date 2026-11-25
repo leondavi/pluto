@@ -50,6 +50,27 @@ jobs:
       - name: Run the Python test suite
         run: python -m pytest tests/ -v
 
+  smart-streams-live:
+    name: SmartStreams live tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '28'
+          rebar3-version: '3.24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt pytest
+      - name: Compile
+        working-directory: src_erl
+        run: rebar3 compile
+      - name: Private-server tests
+        env:
+          PLUTO_LIVE_TESTS: '1'
+        run: python -m pytest tests/test_smart_streams_live.py -v
+
   python-lint:
     name: Python Lint
     runs-on: ubuntu-24.04
@@ -63,4 +84,4 @@ jobs:
 
       - name: Check syntax
         working-directory: src_py
-        run: python -m compileall -q pluto_client.py pluto_client_def.py pluto_sdk
+        run: python -m compileall -q pluto_client.py pluto_client_def.py pluto_sdk agent_smart_streams ../src_erl/priv

@@ -107,6 +107,15 @@ init([]) ->
             type     => worker,
             modules  => [pluto_msg_hub]
         },
+        %% 5) Job manager — SmartStreams packages (needs the message hub)
+        #{
+            id       => pluto_job_mgr,
+            start    => {pluto_job_mgr, start_link, []},
+            restart  => permanent,
+            shutdown => 5000,
+            type     => worker,
+            modules  => [pluto_job_mgr]
+        },
         %% 5) Heartbeat sweeper — checks liveness on a timer
         #{
             id       => pluto_heartbeat,

@@ -145,7 +145,13 @@ serve(Sock, IdleMs) ->
                 false -> ok
             end,
             KeepAlive = wants_keep_alive(Vsn, Headers),
-            case route(Method, Path, Body, Sock) of
+            case dispatch(Method, Path, Headers, Body, Sock) of
+                {no_cors, Status, RespBody} ->
+                    send_http_response(Sock, Status, RespBody, KeepAlive, []),
+                    case KeepAlive of
+                        true  -> serve(Sock, IdleMs);
+                        false -> ok
+                    end;
                 {skip_response_, already_sent} ->
                     %% Long-poll wrote its own response with a
                     %% close-by-default header — terminate the conn.
@@ -166,6 +172,14 @@ serve(Sock, IdleMs) ->
                 Sock, 400,
                 #{<<"error">> => <<"bad_request">>}, false)
     end.
+
+%% @private /jobs/* runs commands: it needs the request headers for its
+%% key check and must never be readable cross-origin.
+dispatch(Method, <<"/jobs", _/binary>> = Path, Headers, Body, Sock) ->
+    {Status, RespBody} = pluto_job_http:handle(Method, Path, Headers, Body, Sock),
+    {no_cors, Status, RespBody};
+dispatch(Method, Path, _Headers, Body, Sock) ->
+    route(Method, Path, Body, Sock).
 
 %%====================================================================
 %% HTTP request parsing (minimal HTTP/1.1)
@@ -244,6 +258,12 @@ send_http_response(Sock, StatusCode, Body) ->
     send_http_response(Sock, StatusCode, Body, false).
 
 send_http_response(Sock, StatusCode, Body, KeepAlive) ->
+    send_http_response(Sock, StatusCode, Body, KeepAlive, [
+        <<"Access-Control-Allow-Origin: *\r\n">>,
+        <<"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n">>,
+        <<"Access-Control-Allow-Headers: Content-Type, Authorization\r\n">>]).
+
+send_http_response(Sock, StatusCode, Body, KeepAlive, ExtraHeaders) ->
     JsonBody = pluto_protocol_json:encode(Body),
     StatusLine = status_line(StatusCode),
     ConnHdr = case KeepAlive of
@@ -255,9 +275,7 @@ send_http_response(Sock, StatusCode, Body, KeepAlive) ->
         <<"HTTP/1.1 ">>, StatusLine, <<"\r\n">>,
         <<"Content-Type: application/json\r\n">>,
         <<"Content-Length: ">>, integer_to_binary(byte_size(JsonBody)), <<"\r\n">>,
-        <<"Access-Control-Allow-Origin: *\r\n">>,
-        <<"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n">>,
-        <<"Access-Control-Allow-Headers: Content-Type, Authorization\r\n">>,
+        ExtraHeaders,
         ConnHdr,
         <<"\r\n">>
     ],
@@ -285,6 +303,7 @@ route('OPTIONS', _Path, _Body, _Sock) ->
 route('GET', <<"/health">>, _Body, _Sock) ->
     {200, #{<<"status">> => <<"ok">>,
             <<"version">> => list_to_binary(?VERSION),
+            <<"capabilities">> => [<<"smartstreams">>],
             <<"server_epoch">> => pluto_app:server_epoch()}};
 
 route('GET', <<"/ping">>, _Body, _Sock) ->
@@ -1257,7 +1276,8 @@ known_routes() ->
         <<"GET  /admin/fencing_seq">>,
         <<"GET  /admin/deadlock_graph">>,
         <<"POST /admin/force_release">>,
-        <<"POST /selftest">>
+        <<"POST /selftest">>,
+        <<"POST /jobs/<op>  (PlutoSmartStreams; needs the user key)">>
     ].
 
 %% @private Format reclaimed locks for an HTTP register response.

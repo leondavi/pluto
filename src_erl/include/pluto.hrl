@@ -16,7 +16,7 @@
 -define(APP, pluto).
 
 %% ── Version ─────────────────────────────────────────────────────────────────
--define(VERSION, "0.5.1").
+-define(VERSION, "0.6.0").
 
 %% ── Default configuration values ────────────────────────────────────────────
 -define(DEFAULT_TCP_PORT,               9000).
@@ -54,6 +54,7 @@
 -define(ETS_MSG_INBOX,  pluto_msg_inbox).   %% {agent_id, seq} -> message map
 -define(ETS_HTTP_SESSIONS, pluto_http_sessions). %% token -> #http_session{}
 -define(ETS_LONG_POLL,    pluto_long_poll).     %% agent_id -> waiting pid
+-define(ETS_JOBS,         pluto_jobs).        %% job_id -> package map
 -define(ETS_GRACE_TIMERS, pluto_grace_timers). %% agent_id -> grace timer ref
 
 %% ── Signal file directory ───────────────────────────────────────────────────

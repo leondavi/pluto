@@ -113,6 +113,7 @@ json_decode(Bin) ->
 
 %% @private Apply recognised keys from the JSON map to the app env.
 apply_json_config(Map) ->
+    apply_smartstreams(Map),
     case maps:find(<<"pluto_server">>, Map) of
         {ok, ServerMap} when is_map(ServerMap) ->
             KeyMap = #{
@@ -132,6 +133,24 @@ apply_json_config(Map) ->
         _ ->
             ok
     end.
+
+%% @private Optional "smartstreams" section.
+apply_smartstreams(#{<<"smartstreams">> := M}) when is_map(M) ->
+    Keys = #{<<"home">>           => smartstreams_home,
+             <<"python">>         => smartstreams_python,
+             <<"max_running">>    => smartstreams_max_running,
+             <<"max_per_agent">>  => smartstreams_max_per_agent,
+             <<"idle_after_ms">>  => smartstreams_idle_after_ms,
+             <<"min_free_bytes">> => smartstreams_min_free_bytes,
+             <<"allow_remote">>   => smartstreams_allow_remote},
+    maps:foreach(fun(JsonKey, AppKey) ->
+        case M of
+            #{JsonKey := V} -> application:set_env(?APP, AppKey, convert_value(AppKey, V));
+            _ -> ok
+        end
+    end, Keys);
+apply_smartstreams(_) ->
+    ok.
 
 convert_value(_Key, Value) when is_integer(Value) -> Value;
 convert_value(_Key, Value) when is_binary(Value)  -> binary_to_list(Value);

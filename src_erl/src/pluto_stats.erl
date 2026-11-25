@@ -58,7 +58,10 @@
     agents_disconnected,
     agents_unregistered_clean,
     total_requests,
-    coordination_requests
+    coordination_requests,
+    jobs_started,
+    job_greps,
+    job_bytes_delivered
 ]).
 
 -record(state, {

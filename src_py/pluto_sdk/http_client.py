@@ -80,7 +80,8 @@ class PlutoHttpClient:
         )
 
     def _request(self, method: str, path: str, body: Optional[dict] = None,
-                 *, timeout: Optional[float] = None) -> dict:
+                 *, timeout: Optional[float] = None,
+                 extra_headers: Optional[Dict[str, str]] = None) -> dict:
         """Send one HTTP request over a pooled keep-alive connection.
 
         ``timeout`` overrides the pool's default for this call only
@@ -92,6 +93,8 @@ class PlutoHttpClient:
             "Connection": "keep-alive",
             "Accept-Encoding": "identity",
         }
+        if extra_headers:
+            headers.update(extra_headers)
         if body is not None:
             data: Optional[bytes] = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"

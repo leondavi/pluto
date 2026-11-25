@@ -7,6 +7,7 @@ This directory contains in-depth documentation for every way you can interact wi
 | Method | Best for | Guide |
 |--------|----------|-------|
 | [PlutoMCPFriend.sh](pluto-mcp-friend.md) | **Claude Code** — Pluto operations as native MCP tools | → [guide](pluto-mcp-friend.md) |
+| [PlutoSmartStreams.sh](pluto-smart-streams.md) | Long or noisy commands as durable, transferable jobs (Claude Code, Copilot CLI) | → [guide](pluto-smart-streams.md) |
 | [PlutoAgentFriend.sh](pluto-agent-friend.md) | Wrapping any other AI CLI via PTY injection (Cursor, Aider, Copilot, …) | → [guide](pluto-agent-friend.md) |
 | [PlutoClient.sh](pluto-client.md) | Inspecting the server, registering agents via script, generating guides | → [guide](pluto-client.md) |
 | [PlutoServer.sh](pluto-server.md) | Building, starting, and managing the Erlang server process | → [guide](pluto-server.md) |

@@ -50,14 +50,16 @@ class HTTPConnectionPool:
         except queue.Empty:
             conn = self._new_conn()
         # Per-call socket read timeout overrides the connection default.
-        # Only effective once the underlying socket exists (i.e. on
-        # reused connections); brand-new ones use the default until the
-        # first request completes.
-        if read_timeout is not None and conn.sock is not None:
-            try:
-                conn.sock.settimeout(read_timeout)
-            except OSError:
-                pass
+        # ``conn.timeout`` covers sockets not opened yet (brand-new
+        # connections, or ones http.client reopens); ``settimeout``
+        # covers the already-open socket of a reused connection.
+        if read_timeout is not None:
+            conn.timeout = read_timeout
+            if conn.sock is not None:
+                try:
+                    conn.sock.settimeout(read_timeout)
+                except OSError:
+                    pass
         bad = False
         try:
             yield conn
@@ -73,6 +75,7 @@ class HTTPConnectionPool:
             else:
                 # Restore the default timeout so the next consumer isn't
                 # surprised by a long-poll's relaxed deadline.
+                conn.timeout = self._default_timeout
                 if conn.sock is not None:
                     try:
                         conn.sock.settimeout(self._default_timeout)

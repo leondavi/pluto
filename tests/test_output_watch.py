@@ -50,6 +50,8 @@ def test_kinds_of_rules(reload):
     assert go(["v=1", "v=nan", "v=nan"], where=["v != prev"]) == [2]
     assert go(["s=1", "s=2", "s=4", "noise", "s=5"], match="s={s:int}",
               where=["s != prev + 1", "has s"]) == [3]
+    assert go(["v=1", "limit=2", "v=2", "v=3", "limit=9", "v=4"],
+              where=["v > last.limit"]) == [4]
     two = ["w=a v=1", "w=b v=9", "w=a v=2", "w=b v=8"]
     assert go(two, where=["v > prev"], by=["w"]) == [3]
     assert go(["E"] * 5, match="E", count=2) == [2, 4]

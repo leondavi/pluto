@@ -20,6 +20,8 @@ check(R) ->
     end.
 
 valid(<<"timeout_s">>, V) -> is_number(V) andalso V > 0 andalso V < 1.0e12;
+%% One way to read lines, or several in order.
+valid(<<"extract">>, V) -> str(V) orelse (is_list(V) andalso lists:all(fun str/1, V));
 %% A flag, or the fields to show.
 valid(<<"rows">>, V) when is_boolean(V) -> true;
 valid(<<"rows">>, V) -> is_list(V) andalso lists:all(fun str/1, V);

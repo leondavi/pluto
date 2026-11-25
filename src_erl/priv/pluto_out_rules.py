@@ -12,7 +12,7 @@ import pluto_job_defs as d
 from pluto_out_agg import hashable
 from pluto_out_fields import (PSEUDO, QueryError, auto, brace_regex, by_regex,
                               compiled, extractor, is_brace, pseudo, show)
-from pluto_out_where import Where, equal
+from pluto_out_where import Where, equal, new_memory
 
 _FIELDS = ("name", "match", "where", "by", "extract", "count", "window_s", "idle_s",
            "absent_s", "stalled", "stalled_n", "then", "once", "cooldown_s",
@@ -146,16 +146,16 @@ class Rule:
             return
         if self.pseudo:
             rec.update(pseudo(self.pseudo, job, text, n, offset))
-        if not self.where.matches(rec):
-            return
-        if self.where.related:
-            prev = self._slot("prev", rec, dict)
-            ok = self.where.relates(rec, prev)
-            self.where.remember(rec, prev)
-            for k, v in prev.items():       # it will become JSON
-                prev[k] = _plain(v)
+        if self.where.uses_memory:
+            memory = self._slot("memory", rec, new_memory)
+            ok = self.where.test(rec, memory)
+            for part in memory.values():     # it will become JSON
+                for k, v in part.items():
+                    part[k] = _plain(v)
             if not ok:
                 return
+        elif not self.where.test(rec):
+            return
         self._matched(rec, text, n, offset, c)
 
     def _matched(self, rec, text, n, offset, c):

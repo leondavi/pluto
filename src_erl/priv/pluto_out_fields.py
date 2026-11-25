@@ -309,8 +309,25 @@ def by_regex(rx):
     return fields
 
 
+def first_of(extractors):
+    """The record of the first extractor that knows a line. Lines of several
+    kinds, each with its template, so become one sequence of records."""
+    def fields(text):
+        for f in extractors:
+            rec = f(text)
+            if rec is not None:
+                return rec
+        return None
+    return fields
+
+
 def extractor(spec, head):
-    """Function for an ``extract`` argument."""
+    """Function for an ``extract`` argument, one or a list."""
+    if isinstance(spec, list):
+        if len(spec) > d.EXTRACTS_MAX:
+            raise QueryError("extract: more than %d templates" % d.EXTRACTS_MAX)
+        each = [extractor(s, head) for s in spec] or [auto(head)]
+        return each[0] if len(each) == 1 else first_of(each)
     if spec in (None, "", "auto"):
         return auto(head)
     if spec == "kv":

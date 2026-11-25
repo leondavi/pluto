@@ -80,6 +80,7 @@ MATCH_LINE_MAX = 16384             # characters a pattern ever sees of a line
 LINE_MAX = 65536                   # bytes kept of one line
 FIELDS_MAX = 200                   # per record
 CONDS_MAX = 20
+EXTRACTS_MAX = 12                  # templates of one query
 ANALYZE_BLOCK = 1 << 18
 ANALYZE_DEADLINE_S = 30            # then: partial result and where to resume
 ANALYZE_CPU_S = 45

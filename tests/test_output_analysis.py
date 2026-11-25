@@ -20,7 +20,7 @@ import pluto_out_agg as agg  # noqa: E402
 import pluto_out_fields as fields  # noqa: E402
 from pluto_out_fields import QueryError, num  # noqa: E402
 from pluto_out_outline import Outline  # noqa: E402
-from pluto_out_where import Condition, Where  # noqa: E402
+from pluto_out_where import Condition, Where, new_memory  # noqa: E402
 
 N = [0]
 
@@ -121,7 +121,38 @@ def test_pseudo_fields():
     ("ok == true", {"ok": True}, {}, True), ("v < 2", {"v": "inf"}, {}, False),
 ])
 def test_conditions(cond, rec, prev, want):
-    assert Condition(cond)(rec, prev) is want
+    assert Condition(cond)(rec, dict(new_memory(), prev=prev)) is want
+
+
+@pytest.mark.parametrize("cond,rec,last,want", [
+    ("probe > last.limit", {"probe": "48"}, {"limit": "47"}, True),
+    ("probe > last.limit", {"probe": "47"}, {"limit": "47"}, False),
+    ("probe > last.limit", {"probe": "48"}, {}, False),      # nothing in force yet
+    ("phase != last", {"phase": "b"}, {"phase": "a"}, True),
+    ("last.phase == warmup and v > 1", {"v": "2"}, {"phase": "warmup"}, True),
+    ("abs(live - 10) > 3", {"live": "6"}, {}, True),
+    ("abs(live - 10) > 3", {"live": "13"}, {}, False),
+    ("abs(live - 10) > 3", {}, {}, False),
+    ("abs == 1", {"abs": "1"}, {}, True)])                   # still a field name
+def test_remembered_values_and_abs(cond, rec, last, want):
+    assert Condition(cond)(rec, dict(new_memory(), last=last)) is want
+
+
+def test_last_is_an_earlier_record_of_any_kind(tmp_path):
+    log = "\n".join(["E1 probe=9", "E2 CAL limit=5", "E3 probe=5", "E4 probe=6",
+                     "E5 CAL limit=8", "E6 probe=7", "E7 probe=9 limit=20", "E8 probe=10"])
+    for extract in (["{e} probe={probe:int} limit={limit:int}", "{e} probe={probe:int}",
+                     "{e} CAL limit={limit:int}"], "kv"):
+        got = out(tmp_path, log, extract=extract, where=["probe > last.limit"], rows=True)
+        assert [r[:2] for r in got.splitlines() if r.startswith("L")] == ["L4", "L7"]
+
+
+def test_the_first_template_that_matches_gives_the_record(tmp_path):
+    got = out(tmp_path, "a=1\nb 2\nnoise\n", extract=["a={x:int}", "b {y:int}"],
+              agg=["sum:x", "sum:y"])
+    assert got.startswith("3 lines, 2 records")
+    r = run(tmp_path, "a", extract=["{x}"] * (d.EXTRACTS_MAX + 1))
+    assert "templates" in r["error"]
 
 
 @pytest.mark.parametrize("cond,why", [
@@ -138,25 +169,24 @@ def test_bad_conditions_name_the_term(cond, why):
 
 def test_conditions_never_crash():
     r = random.Random(3)
-    bits = ["a", "prev", "prev.x", "1", "2ms", "'q'", "(", ")", "==", "<", "+", "-", "*",
+    bits = ["a", "prev", "prev.x", "last", "last.b", "abs", "abs(", "1", "2ms", "'q'", "(", ")", "==", "<", "+", "-", "*",
             "/", "and", "or", "not", "has", "in", ",", "~", "contains", "$b", "`z`", "\\", "é"]
     for _ in range(20000):
         text = " ".join(r.choices(bits, k=r.randrange(1, 9)))
         try:
-            Condition(text)({"a": "1", "b": None, "x": float("nan")}, {"a": 2})
+            Condition(text)({"a": "1", "b": None, "x": float("nan")},
+                            {"prev": {"a": 2}, "last": {"b": "x"}})
         except QueryError:
             pass
 
 
 def test_prev_skips_records_that_do_not_match():
     w = Where(["kind == a", "v < prev"])
-    prev, hits = {}, []
+    memory, hits = new_memory(), []
     for rec in ({"kind": "a", "v": 5}, {"kind": "b", "v": 1}, {"kind": "a", "v": 6},
                 {"kind": "a"}, {"kind": "a", "v": 4}):
-        if w.matches(rec):
-            if w.relates(rec, prev):
-                hits.append(rec["v"])
-            w.remember(rec, prev)
+        if w.test(rec, memory):
+            hits.append(rec["v"])
     assert hits == [4]
 
 

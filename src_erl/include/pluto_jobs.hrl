@@ -230,7 +230,7 @@
                        <<"rerun_of">>, <<"path">>, <<"task_id">>, <<"signal">>,
                        <<"scope">>, <<"until">>, <<"status">>, <<"assignee">>,
                        <<"followup_id">>, <<"framework">>, <<"session_id">>,
-                       <<"extract">>, <<"sort">>, <<"match">>, <<"stalled">>,
+                       <<"sort">>, <<"match">>, <<"stalled">>,
                        <<"then">>, <<"rule">>]).
 -define(JOB_INT_KEYS, [<<"max_bytes">>, <<"from_offset">>, <<"to_offset">>,
                        <<"offset">>, <<"line">>, <<"lines">>, <<"tail">>,

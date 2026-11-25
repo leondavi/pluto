@@ -1,9 +1,14 @@
 """Conditions on fields: ``status >= 500``, ``msg contains timeout``,
-``loss > prev * 1.5``, ``has err and not (level == debug)``.
+``loss > prev * 1.5``, ``has err and not (level == debug)``,
+``used > last.limit``, ``abs(live - prev.live) > 3``.
 
 A small recursive-descent parser that builds closures; nothing is ever
-evaluated as code. A condition is a function ``(record, prev) -> bool``
-where prev maps a field to its value in the previous matching record.
+evaluated as code. A condition is a function ``(record, memory) -> bool``.
+
+A memory (see new_memory) has two parts. ``prev`` maps a field to its value
+in the previous *matching* record. ``last`` maps a field to the value it had
+in the latest earlier record that has it, matching or not: the setting in
+force, the phase a line belongs to.
 
 Words: left of an operator a name is a field. Right of it, a bare word is
 text for == and != ("level == ERROR") and a field for < <= > >= and in
@@ -28,6 +33,11 @@ _ORDER = ("<", "<=", ">", ">=")
 _LOGIC = {"and": "and", "&&": "and", "or": "or", "||": "or", "not": "not", "!": "not"}
 
 
+def new_memory():
+    """What conditions remember; plain data, so that it can be saved."""
+    return {"prev": {}, "last": {}}
+
+
 class _Tok:
     def __init__(self, m, end):
         self.start, self.end = m.end() - len(m[0].lstrip()), end
@@ -49,14 +59,14 @@ def _tokens(s):
 
 
 class Condition:
-    """One parsed condition: call it with (record, prev)."""
+    """One parsed condition: call it with (record, memory)."""
 
     def __init__(self, text):
         if len(text) > d.PATTERN_MAX:
             raise QueryError("where: condition longer than %d characters" % d.PATTERN_MAX)
         self.text = text
         self.fields = {}            # every field named, in order
-        self.prev_fields = {}
+        self.prev_fields, self.last_fields = {}, {}
         self.unitless = {}          # fields compared with a plain number
         self.subject = None
         self.depth = self.tries = 0
@@ -69,8 +79,8 @@ class Condition:
                        "quote text that contains spaces")
         self.uses_prev = bool(self.prev_fields)
 
-    def __call__(self, rec, prev):
-        return self.test(rec, prev)
+    def __call__(self, rec, memory):
+        return self.test(rec, memory)
 
     # ── tokens ──
     def _fail(self, why, hint=""):
@@ -283,14 +293,7 @@ class Condition:
         if t.kind == "op" and t.text == "-":
             return self._arith("-", lambda r, p: 0, self._term(True))
         if t.kind == "op" and t.text == "(":
-            self.depth += 1
-            if self.depth > 30:
-                self._fail("nested too deeply")
-            f = self._sum(True)
-            if self._next("\")\"").text != ")":
-                self._fail("missing \")\"")
-            self.depth -= 1
-            return f
+            return self._enclosed()
         if t.kind == "num":
             return self._number(t)
         if t.kind in ("dq", "sq", "lit"):
@@ -299,18 +302,43 @@ class Condition:
             return self._get(t)
         if t.kind != "word":
             self._fail("unexpected %r" % self.text[t.start:][:40])
-        if t.text == "prev" or t.text.startswith("prev."):
-            name = t.text[5:] or self.subject
-            if not name:
-                self._fail("prev has no field before it", "write prev.field")
-            self.fields[name] = self.prev_fields[name] = True
-            return lambda r, p: p.get(name) if p else None
+        for part, fields in (("prev", self.prev_fields), ("last", self.last_fields)):
+            if t.text == part or t.text.startswith(part + "."):
+                return self._recall(part, fields, t.text[len(part) + 1:])
+        if t.text == "abs" and self._is("("):
+            self.i += 1
+            f = self._enclosed()
+
+            def size(r, p):
+                v = num(f(r, p))
+                return None if v is None else abs(v)
+            return size
         if words_are_fields or t.text.startswith("$"):
             return self._get(t)
         # Arithmetic after it makes it a field after all: x == total - 1
         if self._is("+", "-", "*", "/"):
             return self._get(t)
         return lambda r, p: t.text
+
+    def _enclosed(self):
+        """The rest of "(sum)"."""
+        self.depth += 1
+        if self.depth > 30:
+            self._fail("nested too deeply")
+        f = self._sum(True)
+        if self._next("\")\"").text != ")":
+            self._fail("missing \")\"")
+        self.depth -= 1
+        return f
+
+    def _recall(self, part, fields, name):
+        name = name or self.subject
+        if not name:
+            self._fail("%s has no field before it" % part, "write %s.field" % part)
+        if self.subject is None:
+            self.subject = name
+        self.fields[name] = fields[name] = True
+        return lambda r, p: p[part].get(name)
 
     def _number(self, t):
         text = t.text
@@ -359,29 +387,40 @@ class Where:
         if len(conds or ()) > d.CONDS_MAX:
             raise QueryError("where: more than %d conditions" % d.CONDS_MAX)
         conds = [Condition(c) for c in conds or ()]
-        self.plain = [c for c in conds if not c.uses_prev]
-        self.related = [c for c in conds if c.uses_prev]
-        self.fields, self.prev_fields, self.unitless = {}, {}, {}
+        self.plain = [c for c in conds if not c.prev_fields]
+        self.related = [c for c in conds if c.prev_fields]
+        self.fields, self.unitless = {}, {}
+        self.prev_fields, self.last_fields = {}, {}
         for c in conds:
             self.fields.update(c.fields)
             self.prev_fields.update(c.prev_fields)
+            self.last_fields.update(c.last_fields)
             self.unitless.update(c.unitless)
+        self.uses_memory = bool(self.prev_fields or self.last_fields)
 
-    def matches(self, rec):
+    def test(self, rec, memory=None):
+        """Does the record match? Updates *memory*, which is needed only if
+        uses_memory. A field the record lacks keeps its remembered value."""
+        ok = True
         for c in self.plain:
-            if not c(rec, None):
-                return False
-        return True
+            if not c(rec, memory):
+                ok = False
+                break
+        if memory is None:
+            return ok
+        if ok and self.related:
+            for c in self.related:
+                if not c(rec, memory):
+                    ok = False
+                    break
+            _store(self.prev_fields, rec, memory["prev"])
+        if self.last_fields:
+            _store(self.last_fields, rec, memory["last"])
+        return ok
 
-    def relates(self, rec, prev):
-        for c in self.related:
-            if not c(rec, prev):
-                return False
-        return True
 
-    def remember(self, rec, prev):
-        """Update *prev*; a field the record lacks keeps its last value."""
-        for k in self.prev_fields:
-            v = rec.get(k)
-            if v is not None:
-                prev[k] = v
+def _store(names, rec, into):
+    for k in names:
+        v = rec.get(k)
+        if v is not None:
+            into[k] = v

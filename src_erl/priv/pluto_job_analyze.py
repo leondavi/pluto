@@ -22,7 +22,7 @@ import pluto_out_fields as fields  # noqa: E402
 import pluto_out_lines as lines  # noqa: E402
 from pluto_out_fields import QueryError, show  # noqa: E402
 from pluto_out_outline import Outline  # noqa: E402
-from pluto_out_where import Where  # noqa: E402
+from pluto_out_where import Where, new_memory  # noqa: E402
 
 
 class Job:
@@ -37,7 +37,7 @@ class Job:
         self.has_lines = spec.get("line") is not None
         self.n = spec.get("line") or 1
         self.head = lines.head_lines(self.path, self.hi)
-        self.prev = {}              # by-group -> last values
+        self.memory = {}            # by-group -> what conditions remember
         self.lines = self.records = self.matched = 0
         self.kept = []
         self.done = False
@@ -94,7 +94,7 @@ class Query:
 
     def block(self, job, block):
         extract, where, by = self.extract[job.i], self.where, self.by
-        pseudo, related, seen = self.pseudo, where.related, self.seen
+        pseudo, uses_memory, seen = self.pseudo, where.uses_memory, self.seen
         guard = self.guard
         groups, describe, compare, rows = (self.groups, self.describe,
                                            self.compare, self.rows)
@@ -120,22 +120,21 @@ class Query:
             for k in where.unitless:
                 if k not in self.units and fields.unit_of(rec.get(k)):
                     self.units[k] = fields.unit_of(rec[k])
-            if not where.matches(rec):
-                continue
-            if related:
+            before = None
+            if uses_memory:
                 key = tuple([agg.hashable(rec.get(b)) for b in by])
-                prev = job.prev.get(key)
-                if prev is None:
-                    if len(job.prev) >= d.GROUPS_MAX:
+                memory = job.memory.get(key)
+                if memory is None:
+                    if len(job.memory) >= d.GROUPS_MAX:
                         continue
-                    prev = job.prev[key] = {}
-                ok = where.relates(rec, prev)
-                before = dict(prev) if ok and rows else None
-                where.remember(rec, prev)
-                if not ok:
+                    memory = job.memory[key] = new_memory()
+                if rows:
+                    before = {"%s.%s" % (p, k): v for p, m in memory.items()
+                              for k, v in m.items()}
+                if not where.test(rec, memory):
                     continue
-            else:
-                before = None
+            elif not where.test(rec):
+                continue
             job.matched += 1
             at = "%s:%s" % (job.label, job.at(n, offset)) if len(self.jobs) > 1 \
                 else job.at(n, offset)
@@ -163,7 +162,7 @@ class Query:
         else:
             body = _clip(text.strip())
         if before:
-            body += "  [prev %s]" % ", ".join(
+            body += "  [%s]" % ", ".join(
                 "%s=%s" % (k, _clip(show(v))) for k, v in before.items())
         kept.append((key, job.i, job.at(n, offset), body))
 

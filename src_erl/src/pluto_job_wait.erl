@@ -57,6 +57,7 @@ default_mark(Id, ?WAIT_OUTPUT, R) ->
     opt(<<"from_offset">>, R,
         filelib:file_size(pluto_job_store:file(Id, ?JOB_FILE_OUTPUT)));
 default_mark(_, ?WAIT_WATCH, _) -> 0;
+default_mark(_, ?WAIT_FOLLOW, _) -> 0;
 default_mark(_, _, _) -> -1.
 
 enough(Hits, Ids, true)   -> map_size(Hits) =:= length(Ids);
@@ -86,7 +87,7 @@ hit(Id, Until, R, Mark) ->
             Done = pluto_job_registry:is_done(P),
             case condition(Until, P, R, Mark, Done) of
                 {true, _} = Hit -> Hit;
-                {false, Pos} when Done, Until =:= ?WAIT_WATCH ->
+                {false, Pos} when Done, Until =:= ?WAIT_WATCH; Done, Until =:= ?WAIT_FOLLOW ->
                     case last_hits_due(P) of
                         true  -> {false, Pos};
                         false -> {true, #{<<"reason">> => ?WAIT_EXIT}}
@@ -103,14 +104,9 @@ last_hits_due(#{<<"id">> := Id} = P) ->
 
 condition(?WAIT_EXIT, _, _, Mark, _) -> {false, Mark};
 condition(?WAIT_WATCH, #{<<"id">> := Id}, _, Mark, _) ->
-    case pluto_job_watch:hits(Id, Mark) of
-        [] -> {false, Mark};
-        Hits ->
-            {true, #{<<"reason">> => ?WAIT_WATCH, <<"total">> => length(Hits),
-                     <<"next">> => maps:get(<<"h">>, lists:last(Hits)),
-                     <<"watch">> => lists:nthtail(max(0, length(Hits) - ?WATCH_WAIT_HITS),
-                                                  Hits)}}
-    end;
+    hits(pluto_job_watch:hits(Id, Mark), Mark);
+condition(?WAIT_FOLLOW, #{<<"id">> := Id}, _, Mark, _) ->
+    hits([H || #{<<"then">> := <<"notify">>} = H <- pluto_job_watch:hits(Id, Mark)], Mark);
 condition(?WAIT_IDLE, #{<<"id">> := Id} = P, R, Mark, _) ->
     Size = filelib:file_size(pluto_job_store:file(Id, ?JOB_FILE_OUTPUT)),
     Last = opt(<<"last_output_at">>, pluto_job_registry:state(P)),
@@ -128,6 +124,12 @@ condition(Until, #{<<"id">> := Id} = P, R, Mark, Done) ->
             {true, #{<<"reason">> => ?WAIT_OUTPUT, <<"offset">> => Mark}};
         {?WAIT_PATTERN, true} -> pattern(Src, R, Mark, Done)
     end.
+
+hits([], Mark) -> {false, Mark};
+hits(Hits, _) ->
+    {true, #{<<"reason">> => ?WAIT_WATCH, <<"total">> => length(Hits),
+             <<"next">> => maps:get(<<"h">>, lists:last(Hits)),
+             <<"watch">> => lists:nthtail(max(0, length(Hits) - ?WATCH_WAIT_HITS), Hits)}}.
 
 %% Scan only new, complete lines.
 pattern(#{hi := Hi} = Src, R, Mark, Done) ->

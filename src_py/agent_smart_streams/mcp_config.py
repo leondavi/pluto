@@ -11,10 +11,12 @@ import sys
 #: Same inbox-socket pass-through PlutoMCPFriend.sh uses for wakeups.
 _CLAUDE_ENV = ("CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN")
 
+DEFAULT_TOOLS = "none"            # see TOOLSETS in constants.py
+
 
 def build(*, python: str, entry: str, agent_id: str, host: str, port: str,
           framework: str, pluto_entry: str | None = None,
-          home: str | None = None) -> dict:
+          home: str | None = None, tools: str = DEFAULT_TOOLS) -> dict:
     """With *pluto_entry* both adapters load; the Pluto one then owns the
     registration, so the agent id is never claimed twice."""
     common = ["--agent-id", agent_id, "--host", host, "--http-port", str(port)]
@@ -28,7 +30,8 @@ def build(*, python: str, entry: str, agent_id: str, host: str, port: str,
             out.update(type="local", tools=["*"])
         return out
 
-    extra = ["--framework", framework] + (["--attach"] if pluto_entry else [])
+    # Both CLIs have a shell, and there pss does everything without schemas.
+    extra = ["--framework", framework, "--tools", tools] + (["--attach"] if pluto_entry else [])
     servers = {"smartstreams": server([entry] + common + extra)}
     if pluto_entry:
         servers["pluto"] = server([pluto_entry] + common)
@@ -48,10 +51,11 @@ def main(argv=None) -> int:
                  "--port", "--framework"):
         p.add_argument(name, required=True)
     p.add_argument("--pluto-entry")
+    p.add_argument("--tools", default=os.environ.get("PSS_TOOLS") or DEFAULT_TOOLS)
     a = p.parse_args(argv)
     write(a.out, build(python=a.python, entry=a.entry, agent_id=a.agent_id,
                        host=a.host, port=a.port, framework=a.framework,
-                       pluto_entry=a.pluto_entry,
+                       pluto_entry=a.pluto_entry, tools=a.tools,
                        home=os.environ.get("PLUTO_SMARTSTREAMS_HOME")))
     print(a.out)
     return 0

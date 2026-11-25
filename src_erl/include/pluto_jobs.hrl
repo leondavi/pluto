@@ -65,7 +65,9 @@
 -define(WAIT_IDLE,    <<"idle">>).
 -define(WAIT_PATTERN, <<"pattern">>).
 -define(WAIT_WATCH,   <<"watch">>).
--define(WAIT_MODES, [?WAIT_EXIT, ?WAIT_OUTPUT, ?WAIT_IDLE, ?WAIT_PATTERN, ?WAIT_WATCH]).
+-define(WAIT_FOLLOW,  <<"follow">>).      %% watch hits meant to be told, if any
+-define(WAIT_MODES, [?WAIT_EXIT, ?WAIT_OUTPUT, ?WAIT_IDLE, ?WAIT_PATTERN, ?WAIT_WATCH,
+                     ?WAIT_FOLLOW]).
 
 %% ── Nested streams ──────────────────────────────────────────────────────────
 -define(STREAM_SPLIT,  <<"split">>).
@@ -251,10 +253,11 @@
                         <<"close">>, <<"all">>, <<"as_user">>, <<"dry_run">>,
                         <<"cursor">>, <<"once">>, <<"from_now">>]).
 -define(JOB_STRS_KEYS, [<<"argv">>, <<"tags">>, <<"job_ids">>, <<"states">>,
-                        <<"where">>, <<"by">>, <<"agg">>, <<"compare">>]).
+                        <<"where">>, <<"by">>, <<"agg">>, <<"compare">>,
+                        <<"columns">>]).
 -define(JOB_NUM_KEYS, [<<"window_s">>, <<"idle_s">>, <<"absent_s">>, <<"cooldown_s">>]).
 -define(ANALYZE_KEYS, [<<"extract">>, <<"where">>, <<"by">>, <<"agg">>, <<"sort">>,
-                       <<"limit">>, <<"rows">>, <<"compare">>]).
+                       <<"limit">>, <<"rows">>, <<"compare">>, <<"columns">>]).
 -define(WATCH_KEYS, [<<"name">>, <<"match">>, <<"where">>, <<"by">>, <<"extract">>,
                      <<"count">>, <<"window_s">>, <<"idle_s">>, <<"absent_s">>,
                      <<"stalled">>, <<"stalled_n">>, <<"then">>, <<"once">>,

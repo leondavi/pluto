@@ -95,11 +95,12 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None,
                 raise PlutoError("names and commands differ in length")
             if len(commands) > SUBMIT_MAX:
                 raise PlutoError(f"more than {SUBMIT_MAX} jobs in one call")
-            return list(zip(names or [name] * len(commands), commands))
+            return [{"name": n, "command": c} for n, c in
+                    zip(names or [name] * len(commands), commands)]
 
         def work():
             if each or commands:
-                out = submit.start_all(jobs, batch(), spec)
+                out = submit.start_all(jobs, batch(), spec, name if each else None)
                 handle = out["group"]
             else:
                 out = compact.started(jobs.start(command=command, argv=argv,

@@ -27,13 +27,14 @@ TOOLS = {
 }
 
 # What SmartStreams offers, per variant; like the native text it names means, not steps.
-_DURABLE = """Besides your normal Claude Code tools you have PlutoSmartStreams, which runs programs as durable jobs owned by a server: a job and its complete output survive your session, and any agent can read them by job id (only the owner may control a job; agent ids: {ids})."""
+# smartstreams is the product as shipped: pss in the shell, no MCP tools.
+_DURABLE = """Besides your normal Claude Code tools you have PlutoSmartStreams, which runs programs as durable jobs owned by a server: a job, its complete output and the rules you give it survive your session, and any agent can read them (only the owner may control a job; agent ids: {ids})."""
 _MCP = """ The smartstreams MCP tools start jobs (one, or a whole batch from a template, as one group handle that other calls accept), wait for them, list, stop, pause and transfer them, read and search their output, outline, query and compare it (job_analyze) and keep standing rules on it (job_watch)."""
-_CLI = """ The shell command pss does the same from Bash (pss help explains it), so one Bash call, a shell loop or a script can start, follow, query and stop many jobs at once, and a job may itself start jobs."""
+_CLI = """ The shell command pss starts jobs (one, or a named batch from a template), lets the server react to their output by rules given with the start (append to a file, write to stdin, stop, tell), waits for them, runs a program of yours on each or reports a record of each, hands them over, and searches and queries output; pss help shows it with an example. Pipes, loops and scripts work as usual."""
 _REST = """ Use your ordinary tools for everything else. Do not use any other agent or scheduling tool."""
-SS_MODES = {"smartstreams": "both", "ss_mcp": "core", "ss_cli": "none"}
-TOOLS.update(smartstreams=_DURABLE + _MCP + _CLI + _REST, ss_mcp=_DURABLE + _MCP + _REST,
-             ss_cli=_DURABLE + _CLI.replace("does the same from Bash", "starts jobs (one, or a whole batch from a template, as one group handle), waits for them, lists, stops, pauses and transfers them, reads and searches their output, outlines, queries and compares it and keeps standing rules on it") + _REST)
+SS_MODES = {"smartstreams": "none", "ss_mcp": "core", "ss_both": "both"}
+TOOLS.update(smartstreams=_DURABLE + _CLI + _REST, ss_mcp=_DURABLE + _MCP + _REST,
+             ss_both=_DURABLE + _MCP + _CLI + _REST)
 
 NO_OTHER = " Do not use any other agent or scheduling tool."
 TOOLS["native_sub"] = TOOLS["native"].replace(NO_OTHER, "") + """ You may also use Claude Code's own sub-agents (the Agent tool, also called Task), in the foreground or the background, at most four at a time, for parts of your work that you judge worth delegating; a sub-agent reports back once and does not see your conversation. All rules above hold for sub-agents too: they work inside the workspace only, share your wall time and budget, use the same model, and must not start further agents or use a worktree or remote isolation. A background sub-agent ends when your session ends. Do not use any other agent or scheduling tool."""

@@ -517,7 +517,7 @@ def test_mcp_stdio_session(srv):
             return tools, g, n, seen, err, agents, dup, many, jid, w8, job
     tools, g, n, seen, err, agents, dup, many, jid, w8, job = asyncio.run(go())
     assert len(tools) == 17 and g["lines"].splitlines() == ["100-100", "101@292:BAD"]
-    assert n["text"].endswith("BAD\n") and "bad_job_id" in err["error"]
+    assert n["text"].endswith("BAD\n") and "no job is called" in err["error"]
     assert "mcp1" in agents
     assert not dup and any(x["event"] == "job_finished" for x in seen)
     assert many[jid]["matches"] == 1 and "bad_job_id" in many["J-x"]["error"]
@@ -795,13 +795,13 @@ def test_fleet_tools_over_mcp(srv):
             assert g[ids[3]]["matches"] == 1 and set(g["no_match"]) == set(ids) - {ids[3]}
             t = await call("job_start", command="echo r {n} {k} | awk '{print $3}'",
                            each={"n": "08-10", "k": ["a", "b"]}, wait_s=30)
-            assert t["n"] == 6 and t["jobs"].startswith("08-a=")
+            assert t["n"] == 6 and t["jobs"].startswith("08:a=")
             last = {j["name"]: j["last"] for j in t["waited"]["jobs"]}
-            assert last["08-a"] == "a" and last["10-b"] == "b"
+            assert last["08:a"] == "a" and last["10:b"] == "b"
             assert len(glob.glob(t["output"].replace("{id}", "??????"))) >= 18
             # Another agent can use the handle, and a wait reports it once.
             assert (await call("job_wait", job_id=t["group"], timeout_s=1))["jobs"]
-            assert "no such group" in (await call("job_wait", job_id="gffffff"))["error"]
+            assert "no job is called" in (await call("job_wait", job_id="gffffff"))["error"]
             for bad in (dict(command="x", each={"n": "1"}),
                         dict(command="x {n}", each={"n": "1-900"}),
                         dict(command="{n}", each={"n": ""}, names=["q"]),

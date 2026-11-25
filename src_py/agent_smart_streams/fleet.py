@@ -6,17 +6,16 @@ job, nor be told the same event twice.
 
 from __future__ import annotations
 
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from agent_smart_streams import compact
 from agent_smart_streams.compact import short
 from agent_smart_streams.constants import (
-    ACTION_ALIASES, FLEET_THREADS, GREP_MATCHES_CALL, GREP_MATCHES_MANY, GROUP_RE,
+    ACTION_ALIASES, FLEET_THREADS, GREP_MATCHES_CALL, GREP_MATCHES_MANY,
     LAST_LINE_BYTES, WAIT_TOTAL_MAX_S,
 )
-from agent_smart_streams.submit import members
+from agent_smart_streams.names import is_name, members
 from pluto_jobs_def import ERR_FINISHED, FINAL_STATES, GREP_MATCHES, WAIT_MAX_S
 from pluto_sdk import PlutoError, PlutoJobsClient
 
@@ -43,7 +42,7 @@ def each(fn, keys: list) -> dict:
 def one_or_many(jobs: PlutoJobsClient, fn, job_id, job_ids):
     """Plain result for one job, a map for several."""
     ids = ids_of(jobs, job_id, job_ids)
-    one = job_id and not job_ids and not re.fullmatch(GROUP_RE, job_id)
+    one = job_id and not job_ids and not is_name(job_id)
     return fn(ids[0]) if one else each(fn, ids)
 
 
@@ -159,6 +158,24 @@ class Waiter:
                 self._remember(r, until, pattern)
                 return self._with_last_lines(r)
 
+    def follow(self, ids: list, timeout_s: float) -> dict:
+        """Until all jobs ended, or a rule wants attention: {"ended": {short
+        id: last line}, "hits": {short id: [hit]}, "timed_out": bool}. Jobs
+        that end one by one do not end the wait."""
+        end = time.monotonic() + timeout_s
+        left, ended, hits = [short(j) for j in ids], {}, {}
+        while left and not hits and time.monotonic() < end - 0.5:
+            wait_s = max(0.001, min(end - time.monotonic(), WAIT_MAX_S))
+            r = self._once(left, "follow", None, False, None, timeout_ms=int(wait_s * 1000))
+            self._remember(r, "follow", None)
+            for jid, h in self._with_last_lines(r)["hits"].items():
+                if h["reason"] != "watch":
+                    ended[short(jid)] = h.get("last", "")
+                else:
+                    hits[short(jid)] = h["watch"]
+            left = [j for j in left if j not in ended]
+        return {"ended": ended, "hits": hits, "timed_out": bool(left) and not hits}
+
     def state(self) -> dict:
         """What was told so far, for a waiter that outlives this process."""
         return {"marks": [[*k, v] for k, v in self._marks.items()],
@@ -188,7 +205,7 @@ class Waiter:
         fresh = [j for j in ids if j not in self._finished]
         # Naming only finished jobs is a question about them, not a wait.
         ask = ids if wait_all or not fresh else fresh
-        if until == "watch":
+        if until in ("watch", "follow"):
             # Hits have their own numbering; offsets do not apply to it.
             return self.jobs.wait(
                 job_ids=ask, until=until, all=wait_all or None, **kw,

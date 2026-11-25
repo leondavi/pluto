@@ -307,13 +307,26 @@ file name does not tell what they do. Differences of a few percent between arms 
   was renamed and did not own its predecessor's jobs. That is fixed in the product
   before any E4 agent run, so E4 was not blind to this defect. The SmartStreams prompt paragraph
   now names means instead of one tool per step.
-* Three SmartStreams variants (MCP `ss_mcp`, shell `ss_cli`, both `smartstreams`) are
+* In pilot 2, three SmartStreams variants (MCP `ss_mcp`, shell `ss_cli`, both `smartstreams`) were
   compared on E1-E3 in pilot 2, one rep each, and the cheapest whose mean score is
   within 0.05 of the best is frozen. E1-E3 cost results are therefore tuned;
   E4 and E5 are run by no agent before the main run.
 * Pilot 2 go/no-go against pilot 1 (fixed in advance): total SS cost on E1-E3
   at least 25 % lower, turns at least 25 % lower, mean score at most .05 lower,
   no protocol failure, every peak at least 8, the new means used.
+* **v4.** Pilot 2 was stopped by its owner after ten runs (E1, E3). It showed agents writing
+  watchers, id tables, wait loops and per-job collectors by hand in every arm, and never using
+  `analyze` or `watch` from the shell. The product then got rules that act, names, `each`,
+  `report`, `brief` and terse listings. They were designed from E1 and E3 transcripts, so
+  E1-E3 are *tuned for A*, E3 most. E6 was written by an author who saw neither the plan nor
+  the product code, and was not opened by the implementer before the product was frozen.
+  The arm `smartstreams` is now `pss` without MCP tools, as shipped; `ss_mcp` and `ss_both`
+  remain as variants.
+* Pilot 3 pass mark, fixed before the code: E3 + E6 together cost less than same-day native with
+  a mean score at most .05 lower, and E1 + E2 cost at most 1.25 times native with no lower score.
+* The pilot 2 detector flagged agents that read raw output of their own run's jobs, which the
+  product points them to, and `cd` inside here-documents. Both are fixed; the transcripts of a
+  run's agents are now matched explicitly.
 * Pilot 1's E3 SS run overlapped other work on the machine (pacing lag up to .62 s
   against .02 s for native).
 * Scores are coarse: one E2 podium entry is .058 and one E1 livelock .031, against

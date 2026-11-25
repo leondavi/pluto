@@ -8,7 +8,6 @@ Standard library only, so that it runs without the adapter's venv.
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import fcntl
 import json
@@ -20,87 +19,14 @@ if _SRC_PY not in sys.path:
     sys.path.insert(0, _SRC_PY)
 
 from agent_friend.frameworks import load_pluto_config  # noqa: E402
-from agent_smart_streams import compact, fleet, submit  # noqa: E402
+from agent_smart_streams import (  # noqa: E402
+    brief, cli_parser, compact, each, fleet, names, render, report, submit,
+)
 from agent_smart_streams.constants import (  # noqa: E402
-    CLI_AGENT_ENV, CLI_HOST_ENV, CLI_PORT_ENV, CLI_WAIT_S,
-    GROUP_MAX, WAIT_FOREVER_S,
+    CLI_AGENT_ENV, CLI_HOST_ENV, CLI_PORT_ENV, GROUP_MAX, WAIT_FOREVER_S,
 )
 from agent_smart_streams.lease import state_path  # noqa: E402
-from pluto_jobs_def import FINAL_STATES  # noqa: E402
 from pluto_sdk import PlutoError, PlutoHttpClient, PlutoJobsClient  # noqa: E402
-from pluto_sdk.jobs import smartstreams_home  # noqa: E402
-
-HELP = """pss - run and follow many durable jobs. IDS are job ids or group handles.
-
-  pss run [-e k=1-12]... [-n NAME] [-C DIR] [-w S] 'cmd {k}'   start one job, or
-        one per combination (k=1-4,8 or k=a,b); prints the id or group. -q: only that
-  pss wait IDS... [-t S] [--any]      until all (or any) exit: state, code, last line
-  pss wait IDS... --match RE | --idle S | --watch     until that happens to one
-  pss ps [IDS...] [--all] [--live] [--owner A] [--name TEXT]
-  pss analyze IDS... [-x EXTRACT] [-w COND]... [-b FIELDS] [-a AGGS] [-c FIELDS]
-        [--rows] [-s SORT] [-l N]     alone: an outline of the output, no pattern needed
-  pss watch IDS... [--match M] [-w COND]... [--idle S] [--stalled FIELD] [--then
-        notify|cancel|pause] [--once] | --list | --remove [RULE]
-  pss grep [-C N] [-m N] [-i] RE IDS...       pss tail [-n N] IDS...    pss cat ID
-  pss log IDS...                      paths of the raw logs (read only)
-  pss stop|pause|resume IDS... [--tree]       pss give AGENT IDS...
-  pss call OP ['{json}']              any other server operation
-Exit status: wait is 1 if a job did not succeed, 124 on timeout."""
-
-
-def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pss", add_help=False)
-    sub = p.add_subparsers(dest="op", metavar="OP")
-
-    def op(name, *flags, ids="+"):
-        s = sub.add_parser(name)
-        if ids:
-            s.add_argument("ids", nargs=ids)
-        for f, kw in flags:
-            s.add_argument(*f, **kw)
-        return s
-
-    many = dict(action="append", default=[])
-    yes = dict(action="store_true")
-    run = op("run", (["-e", "--each"], many), (["-n", "--name"], {}),
-             (["-C", "--cwd"], {}), (["-w", "--wait"], dict(type=int, default=0)),
-             (["-q", "--quiet"], yes), (["--timeout"], dict(type=float)),
-             (["--tag"], many), (["--parent"], {}), (["--stdin"], yes), ids=None)
-    run.add_argument("command")
-    op("wait", (["-t", "--timeout"], dict(type=int, default=CLI_WAIT_S)),
-       (["--any"], yes), (["--match"], {}), (["--idle"], dict(type=float)),
-       (["--watch"], yes))
-    op("ps", (["--all"], yes), (["--live"], yes), (["--owner"], {}),
-       (["--name"], {}), (["-l", "--limit"], dict(type=int, default=GROUP_MAX)), ids="*")
-    op("analyze", (["-x", "--extract"], {}), (["-w", "--where"], many),
-       (["-b", "--by"], {}), (["-a", "--agg"], {}), (["-c", "--compare"], {}),
-       (["--rows"], yes), (["-s", "--sort"], {}), (["-l", "--limit"], dict(type=int)))
-    op("watch", (["--match"], {}), (["-w", "--where"], many), (["-b", "--by"], {}),
-       (["-x", "--extract"], {}), (["--idle"], dict(type=float)),
-       (["--absent"], dict(type=float)), (["--stalled"], {}),
-       (["--stalled-n"], dict(type=int)), (["--count"], dict(type=int)),
-       (["--window"], dict(type=float)), (["--then"], dict(default="notify")),
-       (["--once"], yes), (["--from-now"], yes), (["-n", "--name"], {}),
-       (["--list"], yes), (["--remove"], dict(nargs="?", const="")))
-    g = op("grep", (["-C", "--context"], dict(type=int, default=0)),
-           (["-m", "--max"], dict(type=int, default=20)), (["-i"], yes),
-           (["-F", "--fixed"], yes), ids=None)
-    g.add_argument("pattern")
-    g.add_argument("ids", nargs="+")
-    op("tail", (["-n"], dict(type=int, default=10)))
-    for name in ("cat", "log"):
-        op(name)
-    for name in ("stop", "pause", "resume"):
-        op(name, (["--tree"], yes))
-    give = op("give", ids=None)
-    give.add_argument("to")
-    give.add_argument("ids", nargs="+")
-    call = op("call", ids=None)
-    call.add_argument("what")
-    call.add_argument("args", nargs="?", default="{}")
-    sub.add_parser("help")
-    return p
-
 
 # ── Once-only events across invocations ───────────────────────────────────────
 
@@ -135,71 +61,84 @@ def fields(text):
 
 def do_run(jobs, a, waiter):
     cwd = os.path.abspath(a.cwd or os.getcwd())
-    spec = dict(cwd=cwd, tags=a.tag or None, timeout_s=a.timeout,
-                parent=a.parent, stdin=a.stdin or None)
+    spec = dict(cwd=cwd, tags=a.tag or None, timeout_s=a.timeout, parent=a.parent,
+                stdin=a.stdin or any(r.get("then") == "input" for r in a.rules or ()) or None,
+                watch=a.rules or None)
     if a.each:
-        each = dict(e.partition("=")[::2] for e in a.each)
-        r = submit.start_all(jobs, submit.expand(a.command, each), spec)
-        handle, text = r["group"], f"{r['group']} {r['n']} jobs: {r['jobs']}"
+        params = dict(e.partition("=")[::2] for e in a.each)
+        r = submit.start_all(jobs, submit.expand(a.command, params), spec, a.name)
+        handle = a.name or r["group"]
+        text = f"{handle}/{r['jobs']}: {r['n']} started" if a.name else \
+            f"{handle} {r['n']} jobs: {r['jobs']}"
         for name, why in r.get("failed", {}).items():
             print(f"pss: {name}: {why}", file=sys.stderr)
     else:
-        r = jobs.start(command=a.command, name=a.name, **spec)
-        handle = text = compact.short(r["job_id"])
+        r = submit.start_one(jobs, spec | {"command": a.command}, a.name)
+        handle = text = a.name or compact.short(r["job_id"])
     print(handle if a.quiet else text, flush=True)
     if a.wait:
-        return wait_for(jobs, waiter, [handle], a.wait, wait_all=True)
+        return follow(jobs, waiter, names.cards(jobs, [r.get("group") or r["job_id"]]), a.wait)
     return 1 if a.each and r.get("failed") else 0
 
 
-def job_line(j: dict) -> str:
-    code = f" exit={j['exit_code']}" if j.get("exit_code") not in (None, 0) else ""
-    return (f"{j['job_id']} {j.get('name', '-')} {j['state']}{code} "
-            f"{j['elapsed_s']}s {j.get('size', 0)}B")
-
-
-def wait_for(jobs, waiter, ids, timeout, *, wait_all=False, forever=True, **kw) -> int:
+def follow(jobs, waiter, cards, timeout, verbose=False) -> int:
+    """Until all jobs ended or a rule tells something."""
+    ids = [c["job_id"] for c in cards]
     with remembered(waiter, jobs.agent_id):
-        r = compact.waited(waiter.wait(None, ids, wait_all=wait_all, limit_s=WAIT_FOREVER_S,
-                                       timeout_s=timeout, **kw))
-    for j in r["jobs"]:
-        extra = [x for x in (j.get("hit"), j.get("last")) if x]
-        print(job_line(j) + (": " + " | ".join(map(str, extra)) if extra else ""))
-    if r.get("others"):
-        print("others: " + ", ".join(f"{n} {s}" for s, n in r["others"].items()))
-    if r.get("timed_out"):
+        r = waiter.follow(ids, timeout)
+    cards = current(jobs, cards)
+    by_id = {compact.short(c["job_id"]): c for c in cards}
+    for jid, hits in r["hits"].items():
+        for h in hits:
+            print(f"{names.label(by_id[jid])}: {compact.watch_hit(h)}")
+    print("\n".join(render.rows(cards, jobs.agent_id, r["ended"], verbose)))
+    if r["timed_out"]:
         print("timed out")
         return 124
-    return int(any(j["state"] in FINAL_STATES and j["state"] != "succeeded"
-                   for j in r["jobs"]))
+    return int(any(render.ended(c) and c["state"] != "succeeded" for c in cards))
+
+
+def current(jobs, cards) -> list:
+    """The cards as they are now, in the same order."""
+    return jobs.wait(job_ids=[c["job_id"] for c in cards], timeout_ms=1,
+                     until="exit", all=True)["jobs"]
 
 
 def do_wait(jobs, a, waiter):
+    cards = names.cards(jobs, a.ids)
+    if not (a.any or a.match is not None or a.idle is not None):
+        return follow(jobs, waiter, cards, a.timeout, a.v)
     kw = {}
     if a.match is not None:
         kw = dict(until="pattern", pattern=a.match)
     elif a.idle is not None:
         kw = dict(until="idle", idle_ms=int(a.idle * 1000))
-    elif a.watch:
-        kw = dict(until="watch")
-    return wait_for(jobs, waiter, a.ids, a.timeout, wait_all=not (a.any or kw), **kw)
+    with remembered(waiter, jobs.agent_id):
+        r = waiter.wait(None, [c["job_id"] for c in cards], limit_s=WAIT_FOREVER_S,
+                        timeout_s=a.timeout, **kw)
+    seen = {compact.short(j): str(h.get("text") or h.get("last") or h["reason"])
+            for j, h in r["hits"].items()}
+    hit = [c for c in r["jobs"] if c["job_id"] in r["hits"]]
+    print("\n".join(render.rows(hit, jobs.agent_id, seen, verbose=True)
+                    + (["timed out"] if r["timed_out"] else [])))
+    return 124 if r["timed_out"] else int(any(
+        render.ended(c) and c["state"] != "succeeded" for c in hit))
 
 
 def do_ps(jobs, a, _w):
     if a.ids:
-        rows = [jobs.call("status", job_id=j) for j in submit.members(jobs, a.ids)]
+        rows = names.cards(jobs, a.ids)
     else:
         scope = "all" if a.all or a.owner else "mine"
         rows = jobs.call("list", scope=scope, limit=a.limit)["jobs"]
     rows = fleet.filtered(rows, owner=a.owner, name=a.name, live=a.live)
-    for r in rows:
-        own = f" {r['owner']}" if r.get("owner") != jobs.agent_id else ""
-        print(job_line(compact.brief(r)) + own
-              + (" idle" if r.get("activity") == "idle" else ""))
+    for line in render.rows(rows, jobs.agent_id, verbose=a.v):
+        print(line)
 
 
 def do_analyze(jobs, a, _w):
-    r = fleet.analyze(jobs, None, a.ids, extract=a.extract, where=a.where,
+    extract = a.extract[0] if len(a.extract) == 1 else a.extract or None
+    r = fleet.analyze(jobs, None, a.ids, extract=extract, where=a.where,
                       by=fields(a.by), agg=fields(a.agg), compare=fields(a.compare),
                       rows=a.rows or None, sort=a.sort, limit=a.limit)
     print(r["out"])
@@ -207,15 +146,38 @@ def do_analyze(jobs, a, _w):
         print("resume: " + json.dumps(r["resume"]))
 
 
+def do_report(jobs, a, _w):
+    r = report.records(jobs, names.cards(jobs, a.ids), a.extract, a.field)
+    for note in r["notes"]:
+        print("note: " + note)
+    if a.o:
+        print(report.save(r["records"], a.o))
+    else:
+        for label, (_, rec) in r["records"].items():
+            print(f"{label} {compact.dumps(rec)}")
+
+
+def do_each(jobs, a, _w):
+    r = each.run(jobs, names.cards(jobs, a.ids), a.command, out=a.o, workers=a.j,
+                 now=a.now, timeout_s=a.timeout)
+    print("\n".join(each.report(r)))
+    return 1 if r["failed"] else 124 if r["left"] else 0
+
+
 def do_watch(jobs, a, _w):
-    action = "list" if a.list else "remove" if a.remove is not None else "add"
-    r = fleet.watch(
-        jobs, action, None, a.ids, name=a.name, match=a.match, where=a.where,
-        by=fields(a.by), extract=a.extract, count=a.count, window_s=a.window,
-        idle_s=a.idle, absent_s=a.absent, stalled=a.stalled,
-        stalled_n=a.stalled_n, then=a.then if action == "add" else None,
-        once=a.once or None, from_now=a.from_now or None, rule=a.remove or None)
-    print(compact.dumps(r))
+    more = dict(by=fields(a.by), extract=a.extract, count=a.count, window_s=a.window,
+                stalled=a.stalled, stalled_n=a.stalled_n, name=a.name)
+    more = {k: v for k, v in more.items() if v}
+    if a.remove is not None:
+        r = [fleet.watch(jobs, "remove", None, a.ids, rule=a.remove or None, where=None, by=None)]
+    elif a.list or not (a.rules or more):
+        r = [fleet.watch(jobs, "list", None, a.ids, where=None, by=None)]
+    else:
+        first, *others = a.rules or [{}]
+        r = [fleet.watch(jobs, "add", None, a.ids, from_now=a.from_now or None,
+                         **{"where": None, "by": None, **rule})
+             for rule in ({**more, **first}, *others)]
+    print("\n".join(compact.dumps(x) for x in r))
 
 
 def do_grep(jobs, a, _w):
@@ -238,49 +200,51 @@ def do_grep(jobs, a, _w):
 
 
 def do_tail(jobs, a, _w):
-    ids = submit.members(jobs, a.ids)
-    for jid in ids:
-        if len(ids) > 1:
-            print(f"==> {jid}")
-        print(jobs.call("window", job_id=jid, tail=a.n, strip_ansi=True)["text"], end="")
-
-
-def paths(jobs, ids):
-    for jid in submit.members(jobs, ids):
-        full = jobs.call("status", job_id=jid)["job_id"]
-        yield os.path.join(smartstreams_home(), "jobs", full, "output.log")
+    cards = names.cards(jobs, a.ids)
+    for c in cards:
+        if len(cards) > 1:
+            print(f"==> {names.label(c)}")
+        print(jobs.call("window", job_id=c["job_id"], tail=a.n, strip_ansi=True)["text"], end="")
 
 
 def do_log(jobs, a, _w):
-    print("\n".join(paths(jobs, a.ids)))
+    print("\n".join(each.facts(c)["log"] for c in names.cards(jobs, a.ids)))
 
 
 def do_cat(jobs, a, _w):
-    for path in paths(jobs, a.ids):
-        with open(path, "rb") as f:
+    for c in names.cards(jobs, a.ids):
+        with open(each.facts(c)["log"], "rb") as f:
             while data := f.read(1 << 20):
                 sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
 
 
 def do_control(jobs, a, _w):
-    r = fleet.control(jobs, None, a.ids, action=a.op, tree=a.tree or None)
+    cards = names.cards(jobs, a.ids, strict=jobs.as_user)
+    label = {compact.short(c["job_id"]): names.label(c) for c in cards}
+    r = fleet.control(jobs, None, list(label), action=a.op, tree=a.tree or None)
     for k in ("ok", "finished"):
         if r.get(k):
-            print(f"{k}: {' '.join(r[k])}")
+            print(f"{k}: {' '.join(label.get(x, x) for x in r[k])}")
     for jid, why in r.get("errors", {}).items():
-        print(f"{jid}: {why}", file=sys.stderr)
+        print(f"{label.get(jid, jid)}: {why}", file=sys.stderr)
     return int("errors" in r)
 
 
 def do_give(jobs, a, _w):
-    r = fleet.each(lambda j: jobs.call("transfer", job_id=j, to=a.to),
-                   submit.members(jobs, a.ids))
-    bad = {j: x["error"] for j, x in r.items() if "error" in x}
-    print(f"{len(r) - len(bad)} given to {a.to}")
-    for j, why in bad.items():
-        print(f"{j}: {why}", file=sys.stderr)
-    return int(bool(bad))
+    given, failed = brief.give(jobs, a.to, names.cards(jobs, a.ids, strict=jobs.as_user))
+    print(f"{len(given)} given to {a.to}")
+    for name, why in failed.items():
+        print(f"{name}: {why}", file=sys.stderr)
+    return int(bool(failed))
+
+
+def do_brief(jobs, a, _w):
+    cards = names.cards(jobs, a.ids) if a.ids else jobs.call(
+        "list", scope="mine", limit=GROUP_MAX)["jobs"]
+    if not cards:
+        raise PlutoError("you have no jobs; name some (pss ps --all)")
+    print(brief.text(jobs, cards))
 
 
 def do_call(jobs, a, _w):
@@ -296,7 +260,8 @@ def do_call(jobs, a, _w):
 DO = {"run": do_run, "wait": do_wait, "ps": do_ps, "analyze": do_analyze,
       "watch": do_watch, "grep": do_grep, "tail": do_tail, "cat": do_cat,
       "log": do_log, "stop": do_control, "pause": do_control,
-      "resume": do_control, "give": do_give, "call": do_call}
+      "resume": do_control, "give": do_give, "brief": do_brief, "each": do_each,
+      "report": do_report, "call": do_call}
 
 
 def connect() -> PlutoJobsClient:
@@ -314,13 +279,20 @@ def connect() -> PlutoJobsClient:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if not argv or argv[0] in ("help", "-h", "--help"):
-        print(HELP)
+    if not argv or argv[0] in ("help", "-h", "--help") or argv[-1] in ("-h", "--help"):
+        topic = next((x for x in argv if x in cli_parser.MORE), None)
+        print(cli_parser.MORE[topic] if topic else cli_parser.HELP)
         return 0
-    a = parser().parse_args(argv)
+    a = cli_parser.build().parse_args(argv)
     try:
         jobs = connect()
-        return DO[a.op](jobs, a, fleet.Waiter(jobs)) or 0
+        code = DO[a.op](jobs, a, fleet.Waiter(jobs)) or 0
+        sys.stdout.flush()
+        return code
+    except BrokenPipeError:
+        # The reader (head, grep -q) has seen enough.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
     except (PlutoError, OSError) as exc:
         print(f"pss: {exc}", file=sys.stderr)
         return 1

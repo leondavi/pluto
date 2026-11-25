@@ -224,3 +224,50 @@ request_schema_of_analyze_and_watch_test() ->
      || M <- [#{<<"rows">> => 1}, #{<<"where">> => <<"a">>}, #{<<"by">> => [1]},
               #{<<"idle_s">> => -1}, #{<<"idle_s">> => <<"x">>}, #{<<"count">> => 1.5},
               #{<<"match">> => <<0>>}]].
+
+%%====================================================================
+%% watch.json
+%%====================================================================
+
+hit(Rule) -> #{<<"rule">> => Rule, <<"name">> => Rule, <<"line">> => 1,
+               <<"then">> => <<"notify">>, <<"text">> => <<"t">>}.
+act(Text) -> (hit(<<"R1">>))#{<<"then">> := <<"append">>,
+                              <<"act">> => #{<<"kind">> => <<"append">>,
+                                             <<"text">> => Text}}.
+
+actions_wait_in_order_and_are_not_told_test() ->
+    D = pluto_job_watch_doc:add([act(<<"x">>), hit(<<"R2">>), act(<<"y">>)], 0,
+                                pluto_job_watch_doc:empty()),
+    ?assertMatch(#{<<"a">> := 2, <<"h">> := 1,
+                   <<"acts">> := [#{<<"a">> := 1, <<"text">> := <<"x">>},
+                                  #{<<"a">> := 2, <<"text">> := <<"y">>}],
+                   <<"hits">> := [#{<<"rule">> := <<"R2">>}]}, D),
+    D1 = pluto_job_watch_doc:done(1, ok, 0, D),
+    ?assertMatch(#{<<"acts">> := [#{<<"a">> := 2}], <<"h">> := 1}, D1),
+    ?assertEqual(unknown, pluto_job_watch_doc:done(1, ok, 0, D1)),
+    ?assertMatch(#{<<"acts">> := [], <<"h">> := 2,
+                   <<"hits">> := [_, #{<<"text">> := <<"action failed: full">>}]},
+                 pluto_job_watch_doc:done(2, {error, <<"full">>}, 0, D1)).
+
+last_action_of_a_rule_is_told_test() ->
+    D = pluto_job_watch_doc:add([(act(<<"x">>))#{<<"last">> => true}], 0,
+                                pluto_job_watch_doc:empty()),
+    ?assertMatch(#{<<"a">> := 1, <<"hits">> := [#{<<"last">> := true}]}, D),
+    #{<<"hits">> := [H]} = D,
+    ?assertNot(is_map_key(<<"act">>, H)).
+
+hits_are_kept_until_told_test() ->
+    Many = [hit(<<"R1">>) || _ <- lists:seq(1, 40)],
+    Add = fun(Told, D) -> pluto_job_watch_doc:add(Many, Told, D) end,
+    D = Add(0, Add(0, Add(0, pluto_job_watch_doc:empty()))),
+    ?assertEqual(120, length(maps:get(<<"hits">>, D))),
+    ?assertEqual(50, length(maps:get(<<"hits">>, Add(120, D)))).
+
+parameters_become_placeholders_test() ->
+    Ok = fun(P) -> pluto_job_schema:check(#{<<"params">> => P}) end,
+    ?assertEqual(ok, Ok(#{<<"k">> => <<"1">>})),
+    ?assertMatch({error, _}, Ok(#{<<"_k">> => <<"1">>})),
+    ?assertMatch({error, _}, Ok(#{<<"a/b">> => <<"1">>})),
+    ?assertMatch({error, _}, Ok(#{<<"k">> => 1})),
+    ?assertMatch({error, _}, pluto_job_schema:check(#{<<"watch">> => [#{<<"match">> => 1}]})),
+    ?assertEqual(ok, pluto_job_schema:check(#{<<"extract">> => [<<"a">>, <<"b">>]})).

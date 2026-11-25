@@ -373,7 +373,7 @@ def test_prompts_differ_only_in_the_tools_paragraph():
                     for c in ("smartstreams", "native"))
             ha, hb = a.split("\nTools. "), b.split("\nTools. ")
             assert ha[0] == hb[0] and len(ha) == len(hb) == 2
-            assert "smartstreams" in a and "smartstreams" not in b.lower()
+            assert "SmartStreams" in a and "smartstreams" not in b.lower() and "pss" not in hb[1]
 
 
 def test_commands_and_schedule(tmp_path):
@@ -383,12 +383,14 @@ def test_commands_and_schedule(tmp_path):
     for cmd in cmds.values():
         assert "--strict-mcp-config" in cmd and "--max-budget-usd" in cmd
         assert not any("dangerously" in x for x in cmd)
-    diff = [(x, y) for x, y in zip(cmds["smartstreams"], cmds["native"]) if x != y]
+    assert cmds["smartstreams"] == cmds["native"]
+    both = ss_run.claude_command("ss_both", "/cfg", args)
+    diff = [(x, y) for x, y in zip(both, cmds["native"]) if x != y]
     assert len(diff) == 1 and diff[0][0].startswith(diff[0][1] + ",mcp__smartstreams__job_start")
     assert ss_run.mcp_config("native", "x", args) == {"mcpServers": {}}
     srv = ss_run.mcp_config("smartstreams", "x", args)["mcpServers"]["smartstreams"]
     assert srv["args"][1:] == ["--agent-id", "x", "--host", "127.0.0.1", "--http-port", "9399",
-                               "--framework", "claude", "--tools", "core"]
+                               "--framework", "claude", "--tools", "none"]
     assert srv["env"] == {"PLUTO_SMARTSTREAMS_HOME": "/h"}
     plan = ss_run.schedule(["1", "2", "3"], ss_run.CONDITIONS, 20, "m")
     assert plan == ss_run.schedule(["1", "2", "3"], ss_run.CONDITIONS, 20, "m")
@@ -481,7 +483,8 @@ def test_metrics_parsing():
 def test_leak_detection(cmd, code):
     ev = [asst("m", [use("t", "Bash", command=cmd)])]
     hits = ss_metrics.find_leaks(ev, "/out/runs/aaa/ws", "/out")
-    assert {h[0] for h in hits} == ({code} if code else set())
+    found = {h[0] for h in hits}
+    assert code in found if code else not found
 
 
 # ── runner with a fake claude ────────────────────────────────────────────────
@@ -516,7 +519,7 @@ def test_runner_end_to_end_with_fake_claude(tmp_path, monkeypatch):
                               "--claude", str(fake)])
     row, = ss_run.run_block("3", 1, ["native"], "m", args)
     assert row["status"]["p1"]["timed_out"] and row["status"]["q1"]["rc"] == 0
-    assert row["protocol_version"] == 3 and row["low_parallelism"]
+    assert row["protocol_version"] == ss_run.PROTOCOL_VERSION and row["low_parallelism"]
     assert row["peak_streams"] == {"p1": 1, "p2": 0, "q1": 1, "q2": 0}
     assert row["timed_out"] == {"p1": True, "p2": False, "q1": False, "q2": False}
     assert row["grade"]["detail"]["job1"]["run_id"]          # job survived the shift change

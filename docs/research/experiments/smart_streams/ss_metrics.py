@@ -223,7 +223,8 @@ def leak_patterns(ws, out_dir):
     out = re.escape(out_dir.rstrip("/"))
     rel = ws.rstrip("/")[len(out_dir.rstrip("/")):]
     # a job's own output in this run's SmartStreams home is legitimate to read
-    own = f"(?:{re.escape(rel)}|{re.escape(os.path.dirname(rel))}/pluto/home/jobs)"
+    run = re.escape(os.path.dirname(rel))
+    own = f"(?:{re.escape(rel)}|{run}/pluto/home/jobs|{run}/?(?![\\w/]))"
     return [
         ("harness", re.compile(r"experiments/smart_streams|pluto-v0\.6\.0|exp[1-5]_\w+\.py|wl_\w+\.py\b")),
         ("other_run", re.compile(out + r"(?!" + own + r")(?:/|\b)")),
@@ -232,22 +233,26 @@ def leak_patterns(ws, out_dir):
                                  r"\bunseal\b")),
         ("program_internals", re.compile(r"bin/img|\.img\b|\b(?:strings|xxd|hexdump|od|cp|cat)\b[^;|&<>\n]*\.pyc|"
                                          r"\.runs\b")),
-        ("transcripts", re.compile(r"\.claude/projects")),
+        ("transcripts", re.compile(r"\.claude/projects|\blogs/\w+\.jsonl|\bresult\.json\b")),
     ]
 
 
 def outside_by_parent(command, cwd, ws):
     """(path reached through '..' that lies outside ws or None, new cwd).
 
-    Follows cd in textual order; subshells and variables are not modelled."""
+    Follows cd in textual order; subshells and variables are not modelled, and
+    here-documents are text. A job's own output in this run is fair to read."""
     hit = None
+    command = re.sub(r"<<-?\s*(['\"]?)(\w+)\1.*?^\s*\2$", "", command, flags=re.S | re.M)
+    jobs = os.path.join(os.path.dirname(ws), "pluto", "home", "jobs")
     for mt in re.finditer(r"(?:^|[;&|(\n])\s*cd\s+([^\s;&|)]+)|(?<![\w./*-])((?:~?/)?(?:[\w.*-]+/)*\.\.(?:/[\w.*-]*)*)(?=[\s;&|)'\"]|$)",
                           command):
         target = (mt.group(1) or mt.group(2)).strip("'\"")
         if "$" in target:
             continue
         path = os.path.normpath(os.path.join(cwd, os.path.expanduser(target)))
-        if ".." in target.split("/") and path != ws and not path.startswith(ws + "/"):
+        if ".." in target.split("/") and path != ws and \
+                not path.startswith((ws + "/", jobs)):
             hit = hit or mt
         if mt.group(1):
             cwd = path

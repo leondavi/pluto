@@ -291,6 +291,15 @@ def _literal(s):
     return re.sub(r"(?:\\?\s)+", lambda _: r"\s+", re.escape(s))
 
 
+def number_fields(spec):
+    """Names of the fields that templates declare to be numbers."""
+    out = set()
+    for s in spec if isinstance(spec, list) else [spec or ""]:
+        if not s.startswith("re:"):
+            out |= {m[1] for m in _BRACE.finditer(s) if m[2] in ("int", "float", "num")}
+    return out
+
+
 def compiled(pattern, what):
     if len(pattern) > d.PATTERN_MAX:
         raise QueryError("%s: longer than %d characters" % (what, d.PATTERN_MAX))

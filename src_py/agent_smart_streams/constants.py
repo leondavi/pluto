@@ -13,6 +13,16 @@ GREP_MATCHES_CALL = 600           # ceiling of one call
 SUBMIT_MAX = 64                   # jobs per job_start
 GROUP_RE = r"g[0-9a-f]{6}"        # handle of a batch
 GROUP_MAX = 500
+SHORT_RE = r"[0-9a-f]{6}"
+NAME_RE = r"[A-Za-z][A-Za-z0-9_.\-]{0,59}"
+NAME_TAG = "="                    # tag of a named batch: "=soak"
+BRIEF_JOBS = 50                   # whose rules are counted
+BRIEF_SHAPES = 8
+BRIEF_TEXT = 3000
+EACH_WORKERS = 4                  # pss each, programs at once
+EACH_TEXT = 1500                  # characters shown of one program's output
+EACH_TOTAL = 12_000               # and of all of them together
+EACH_BYTES = 16 << 20             # of one program's output kept for a file
 LAST_LINE_BYTES = 240             # of an exited job, in job_wait
 WAIT_TOTAL_MAX_S = 300            # job_wait: repeated server-side waits
 WAIT_FOREVER_S = 86_400           # pss wait
@@ -41,12 +51,11 @@ CORE_TOOLS = ("job_start", "job_wait", "job_analyze", "job_watch", "job_grep",
 TOOLSETS = ("core", "all", "none")     # none: pss only, wakeups stay
 
 CLI_INSTRUCTIONS = (
-    "The shell command pss runs and follows durable jobs (pss help). Combine "
-    "steps in one shell call, and put result-driven work in a script (which "
-    "may itself be a job): g=$(pss run -q -e n=1-12 'prog {n}'); pss wait $g; "
-    "pss analyze $g outlines any output without patterns, and extracts, "
-    "filters, aggregates and compares across jobs; pss watch adds rules that "
-    "notify, pause or cancel as output arrives."
+    "The shell command pss runs and supervises durable jobs; the server keeps "
+    "their rules, so no watcher scripts, ids or log paths are needed: "
+    "pss run -n t -e k=1-12 'prog {k}' --on 'need {x}' --append 'ack/{k}' '{x}' "
+    "--idle 60 --stop; pss wait t -t 540; "
+    "pss each t 'python3 parse.py {log}' -o 'out/{k}.json'. See pss help."
 )
 
 #: Words agents try for an action, and what they mean.

@@ -22,6 +22,7 @@ import pluto_out_fields as fields  # noqa: E402
 import pluto_out_lines as lines  # noqa: E402
 from pluto_out_fields import QueryError, show  # noqa: E402
 from pluto_out_outline import Outline  # noqa: E402
+from pluto_out_report import Report  # noqa: E402
 from pluto_out_where import Where, new_memory  # noqa: E402
 
 
@@ -343,6 +344,22 @@ def outline(jobs, limit, deadline, guard):
     return out, slow
 
 
+def report(req):
+    """{"records": [one per job]}; all of it or an error, for files are
+    written from it."""
+    jobs = [Job(i, s) for i, s in enumerate(req["jobs"])]
+    guard = lines.CpuGuard(d.SLOW_LINE_S)
+    r = Report(req, jobs)
+    slow = scan(jobs, lambda job, block: r.block(job, block, guard),
+                time.monotonic() + d.ANALYZE_DEADLINE_S, guard)
+    guard.stop()
+    if slow:
+        raise QueryError("pattern too slow on lines %s" % ", ".join(slow))
+    if any(not j.done and j.reader.pos < j.hi for j in jobs):
+        raise QueryError("too much output for one report; ask for fewer jobs")
+    return dict(r.result(), out="")
+
+
 def analyze(req):
     started = time.monotonic()
     limit = max(1, min(req.get("limit") or d.ANALYZE_LIMIT, d.ANALYZE_LIMIT_MAX))
@@ -395,7 +412,7 @@ def main(argv):
         else:
             lines.confine(d.ANALYZE_MEMORY, d.ANALYZE_CPU_S,
                           d.ANALYZE_DEADLINE_S + 5)
-            res = analyze(req)
+            res = report(req) if req.get("columns") else analyze(req)
     except QueryError as exc:
         res = {"error": str(exc)}
     except OSError as exc:

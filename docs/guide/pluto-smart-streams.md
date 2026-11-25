@@ -15,6 +15,55 @@ run concurrently without the LLM managing the underlying process.
 ./PlutoSmartStreams.sh --manage                                  # you, not the agent
 ```
 
+## The `pss` command
+
+`PlutoSmartStreams.sh` puts `pss` on the agent's `PATH`; with it an agent needs
+no MCP tools, so by default the adapter shows none and only wakes the agent
+(`PSS_TOOLS=core` or `all` shows them). One declaration replaces the launcher,
+watcher and collector scripts an agent would otherwise write:
+
+```
+pss run -n soak -e k=1-12 'bin/soak --job {k}' \
+    --on 'CKPT request token={t}' --append 'control/{k}.ack' '{t}' \
+    --idle 60 --stop
+pss wait soak -t 540                             # until all ended, or a rule tells
+pss each soak 'python3 parse.py {log} {exit}' -o 'out/{k}.json'
+pss give other-agent soak; pss brief soak        # handover
+```
+
+- **Names.** `soak`, `soak/3`, `soak/1-6,9`: the key is the parameter the job was
+  started with (`soak/1:a` with two). A name means jobs whose directory is the
+  current one or that you own, and of each agent's rounds the newest. Ids and
+  group handles (`g3f09ac`, `g3f09ac/3`) always work.
+- **Rules** are a condition (`--on`, `--where`, `--idle`, `--absent`) and what to do
+  (`--append FILE TEXT`, `--input TEXT`, `--stop`, `--pause`, `--tell`). They come
+  with the start request and are stored before the job can run, so the shortest job
+  cannot outrun them; they stay with the job when the session ends or it is given
+  away, and `rerun_of` repeats them. `pss watch JOBS RULES` adds them later.
+- **Placeholders** are what the line captured, then the job's parameters, then
+  `_job _name _line`. An unknown one is refused when the rule is added.
+- **`each`** runs your own program once per job when it ends. `{log} {key} {id}
+  {state} {exit}` and the parameters are filled in, shell-quoted (and in the
+  environment as `PSS_LOG` ...); `-o` keeps its output, completely or not at all,
+  and checks that a `.json` file is JSON.
+- **`report`** makes a record per job without a program:
+  `-x 'E{e:int} probe={p:int}' -x 'E{e:int} CAL limit={limit:int}'
+  -f 'bad=first:e where p > last.limit' -f 'code=_exit' -o 'out/{k}.json'`.
+- `ps` and `wait` put jobs in the same state on one line; `-v` lists them.
+
+Without `PSS_AGENT` it acts as you (`user:<name>`), who may change every job; a name
+then changes jobs of the current directory only.
+
+### Delivery of actions
+
+Actions of one job happen in order. They wait in `watch.json`, fully expanded, until
+carried out, so `kill -9` of the server loses none; one is repeated if the server dies
+between doing it and recording that. Success is silent, failure is a notice. Output is
+untrusted: a captured value in a file name must be `[A-Za-z0-9._-]`, 100 characters at
+most, not starting with a dot or dash; the file must be a regular one below the job's
+directory, reached without links; control characters become spaces; what is too long
+is refused, not cut. There is no rule that runs a command built from output.
+
 ## Tools
 
 | Tool | Purpose |
@@ -35,6 +84,7 @@ run concurrently without the LLM managing the underlying process.
 | `job_review` | Verdict and note pinned to a hashed byte range |
 | `job_open`, `job_export` | Open or import a package; write a `.pjob` |
 
+These are shown with `PSS_TOOLS=core` (ten, `job_more` reaches the rest) or `all`.
 `job_start(commands=[...])` starts many jobs in one call; `job_status`,
 `job_grep`, `job_wait`, `job_control` and `job_transfer` take `job_ids`.
 `job_wait` reports each event once per session, so an agent can follow a
@@ -69,6 +119,9 @@ needs to be known about the format. Anything else is one query:
   and `` `odd name` `` quotes one. Text with spaces needs quotes unless it ends
   the condition. Units compare (`dur > 500ms`); sums and means are then in
   seconds or bytes. NaN equals NaN and is left out of numbers.
+- `last.f` is the latest earlier value of `f` in the job, on whatever kind of line:
+  `probe > last.limit`. `abs(v - prev.v) > 3` works. Several templates (a list, or
+  `-x` repeated) read several kinds of lines as one sequence of records.
 - `prev` is the previous record of the same job and `by` group that satisfied
   the conditions without `prev`; `prev.f` is another field of it.
 - Fields of every line: `_job _name _n _offset _line _level _time`.
@@ -102,8 +155,7 @@ output from its start (`from_now` skips it) to its end, including an
 unfinished last line. Matches within `cooldown_s` (30) are counted and told
 together when it is over; after `max_hits` (20) the rule is done. Times are
 the job's own: pauses do not count. A transfer hands rules and unseen hits to
-the new owner. Exports carry the rules as inert data; `rerun_of` does not
-copy them.
+the new owner. Exports carry the rules as inert data.
 
 Delivery: rules, positions, states and hits are saved with fsync and rename
 before anything is announced, so after a `kill -9` of the server every hit
@@ -161,7 +213,7 @@ every hash and never runs anything.
 ## Configuration
 
 Optional `smartstreams` section in `config/pluto_config.json`: `home`,
-`python`, `max_running` (16), `max_per_agent` (8), `idle_after_ms` (30000),
+`python`, `max_running` (64), `max_per_agent` (16), `idle_after_ms` (30000),
 `min_free_bytes` (256 MiB; below it jobs are stopped), `allow_remote` (false).
 `PLUTO_SMARTSTREAMS_HOME` overrides the storage directory and must match for
 server and clients; a directory is used by one server at a time. The server
@@ -174,8 +226,10 @@ otherwise.
 includes `agent_id`: `start status list open window next grep analyze watch wait control
 input transfer stream review manifest export import notices history stats
 prune`. Errors are `{"status":"error","reason":"..."}`. Send a `request_id`
-with changing calls to make retries safe. `wait` takes `until` = `exit`,
-`output`, `idle` (`idle_ms`), `pattern` or `watch`, for `job_id` or `job_ids`, with
+with changing calls to make retries safe. `start` takes `watch` (rules), `params` and, for
+many jobs, `batch`: a list of `{name, command, params}`. `wait` takes `until` = `exit`,
+`output`, `idle` (`idle_ms`), `pattern`, `watch` or `follow` (hits meant to be told, or
+exit), for `job_id` or `job_ids`, with
 `all` and `timeout_ms` (max 55000).
 
 ## Limits
@@ -194,29 +248,13 @@ cancelled, and line numbers far past the last manifest chunk are null.
 (cd src_erl && rebar3 compile && rebar3 eunit)
 python -m pytest tests/
 PLUTO_LIVE_TESTS=1 python -m pytest tests/test_smart_streams_live.py \
-    tests/test_smart_streams_output_live.py
+    tests/test_smart_streams_output_live.py tests/test_smart_streams_cli.py \
+    tests/test_smart_streams_actions_live.py
 ```
 
 The live tests start their own server on free ports.
 
-## The `pss` command
-
-`PlutoSmartStreams.sh` puts `pss` on the agent's `PATH`. It offers the same jobs,
-owners and watches as the MCP tools, but steps combine in one shell call and a
-script, or a job, can drive other jobs. `pss help` lists everything.
-
-```
-g=$(pss run -q -e n=1-12 'prog --seed {n}')      # one group handle for 12 jobs
-pss wait $g                                      # states, exit codes, last lines
-pss analyze $g                                   # outline, no pattern needed
-pss analyze $g -a p95:latency -b endpoint        # query
-pss watch $g -w 'loss > prev*3' --then cancel    # standing rule
-pss give other-agent $g
-```
-
-Without `PSS_AGENT` it acts as you (`user:<name>`). The MCP server shows ten tools
-by default; `job_more` reaches the rest, `--tools all` shows every tool and
-`--tools none` leaves only wakeups.
+## Agent identity
 
 An agent restarted under the same id on the same machine, also after `kill -9`,
 owns its predecessor's jobs. The launcher may still refuse an id whose crashed

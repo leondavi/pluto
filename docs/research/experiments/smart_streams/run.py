@@ -310,7 +310,7 @@ def run_block(exp, rep, conds, master, args):
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--exp", default="all", help="all or a comma list of 1,2,3,4,5,6")
+    p.add_argument("--exp", default="all", help="all or a comma list of 1,2,3,4,5,6,8")
     p.add_argument("--condition", "--conditions", default="all",
                    help="all or a comma list of " + ", ".join(CONDITIONS))
     p.add_argument("--reps", type=int, default=1)
@@ -336,7 +336,7 @@ def parse_args(argv=None):
     a.out = os.path.realpath(a.out)
     a.exps = list(ss_prompts.EXPS) if a.exp == "all" else a.exp.split(",")
     if set(a.exps) - set(ss_prompts.EXPS):
-        p.error("--exp takes 1 to 6")
+        p.error("--exp takes " + ", ".join(ss_prompts.EXPS))
     a.conditions = list(CONDITIONS) if a.condition == "all" else a.condition.split(",")
     if set(a.conditions) - set(CONDITIONS + VARIANTS) or len(set(a.conditions)) < len(a.conditions):
         p.error("--condition takes " + ", ".join(CONDITIONS))

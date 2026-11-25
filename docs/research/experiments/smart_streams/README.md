@@ -125,6 +125,34 @@ Scripted results for E6, seed 12345, `verify_e6.py`: rules followed with an inde
 promote at every gate, ignore outages .144; error rates over all lines, ignore outages .056 (both 376 s). Program CPU is
 0.02 of a core per 12 streams.
 
+**E8 phase_transitions** (w1..w4, 48 nodes, 12 per agent, launches for 420 s, runs of 90 s, about 0.27 MB
+each). Added as a further held-out task by an LLM agent that read E1 to E5, the runner, the prompts (including the tools
+paragraphs in `ss_prompts.py`), parts of this README and the tests, but no product code, product guide, article notes, results, E6
+or E7 sources. No LLM has run it yet.
+
+*The physics.* The Ising model is a lattice of magnets that point up or down and prefer to agree with
+their neighbours; in the q-state Potts model each site has one of q colours. Below a critical temperature T_c
+the lattice orders. Ising and q = 3 change continuously: fluctuations and correlation times diverge, and their growth with
+the lattice size is described by exponents (1/nu = 1 and 6/5). For q > 4 the transition is of first order: two phases coexist,
+the energy jumps by the latent heat, and runs stay in the wrong phase (hysteresis). An external field removes the
+transition. Finite lattices have no sharp transition, so T_c is found by finite-size scaling, for example where
+the Binder cumulants of two sizes cross. Exact results serve as truth: Onsager's sinh(2 Jx/T) sinh(2 Jy/T) = 1 (2/ln(1 + sqrt 2) for
+equal couplings), T_c = J/ln(1 + sqrt q), and Baxter's latent heat. Couplings, q and field are hidden and drawn from the seed.
+
+*The task.* Each agent has two samples and twelve nodes and chooses sizes and temperatures. Runs are real Metropolis
+simulations (eight replicas in one Python integer per spin bit, own PRNG per run, output a function of arguments, launch number and
+the agent's answers). 16 of the 48 nodes are faulty in one of four ways, visible only in comparison with other nodes, in
+fluctuations or in correlations. While they run, programs ask for replica-exchange decisions (the run waits up to
+60 s) and single replicas get stuck and have to be reset within 60 s. The wrong reactions cost points. The formats are
+documented and regular; preparation before the first launch is allowed.
+
+Tolerances follow repeated reference simulation at run length: Binder crossings of L = 8/16 to 16/32 were within 0.1 to 0.9 % of
+T_c (one of six 16/32 pairs 1.2 %), specific-heat peaks of L = 8, 16 extrapolate within 0.6 %, phase energies at L = 16, 24 give the latent heat within 5 %; the
+local 1/nu from cumulant slopes scatters by about 0.1 for q = 3. Hence T_c full within 1 %, zero at 4 %.
+Scripted results (`verify_e8.py`, reads only program output): reference 0.997 (seed 12345, 369 s)
+and 0.997 (seed 777, 369 s), lazy 0.199 (184 s); 12 streams per agent, 48 in total, 46 MB, programs 1.2 cores on average
+(machine 25 %, short peaks 74 % include the solver's own analysis), largest lag 0.05 s (lazy 0.10 s).
+
 **Arm C `native_sub`.** B's tools, prompt and limits plus Claude Code's Agent/Task tool. Its
 paragraph is B's plus a neutral offer (foreground or background, at most four at a time). Rules: the same
 Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`), depth 1 and 4 in parallel
@@ -154,6 +182,9 @@ is not matched against leak patterns (it may repeat the rules).
   anomaly), 0.15 x (questions answered in time minus wrong codes), 0.10 x pairwise F1 of the cause groups.
 * E6: decisions in time 0.50 (right +1, wrong -1, none 0, good and bad builds weighted equally, floor 0; first
   launch of a lane only), build reports 0.40 (reason .4, p95 .3, errors .3; outages reason only), culprits 0.10.
+* E8: samples 0.50 (order .30, T_c .35, honest error bar .10, 1/nu or latent heat .25 each; without a transition order .6, null
+  T_c .4), faulty nodes 0.25 (F1, kind counts half), exchange answers 0.10 (right minus wrong, of 96), resets 0.15 (right
+  minus wrong, of 48).
 
 Largest single item: E4 .0075, E5 about .005 (v2: up to .058).
 Missing shards or jobs in `final.json` fall back to the per-shard/job file.
@@ -378,11 +409,12 @@ file name does not tell what they do. Differences of a few percent between arms 
     PY=<python with the mcp package>; H=docs/research/experiments/smart_streams
     (cd src_erl && rebar3 compile)
     $PY -m pytest tests/test_experiment_smart_streams.py tests/test_experiment_smart_streams_e45.py \
-        tests/test_experiment_smart_streams_e6.py
+        tests/test_experiment_smart_streams_e6.py tests/test_experiment_smart_streams_e8.py
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style plain     # full size, no LLM
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style jobs      # real server and client
     $PY $H/verify_e45.py SCRATCH --exp 4,5 --style plain|jobs [--policy naive]
     $PY $H/verify_e6.py SCRATCH [--policy wise|lazy|errors]
+    $PY $H/verify_e8.py SCRATCH [--policy wise|lazy]
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --dry-run
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --budget-usd 5 \
         [--exp 4,5] [--conditions smartstreams,native,native_sub]

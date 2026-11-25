@@ -8,7 +8,7 @@ from agent_mcp_friend.socket_notifier import SocketNotifier
 from agent_smart_streams.compact import short
 from agent_smart_streams.constants import WAKE_GRACE_S, WAKE_POLL_S
 from agent_smart_streams.notices import NoticeBoard
-from pluto_jobs_def import EVENT_FINISHED, JOB_EVENTS
+from pluto_jobs_def import EVENT_FINISHED, EVENT_WATCH, JOB_EVENTS
 
 
 class JobNotifier(SocketNotifier):
@@ -37,8 +37,13 @@ class JobNotifier(SocketNotifier):
         while self.board and self.board.busy:
             await asyncio.sleep(WAKE_POLL_S)
         news = [e for e in events
-                if not (self.board and self.board.knows(e["event"], e.get("job_id")))]
+                if not (self.board and self.board.knows(
+                    e["event"], e.get("job_id"), e.get("h", 0)))]
         for e in news:
+            if e["event"] == EVENT_WATCH:
+                name = " ".join(str(e.get("watch", "")).split())[:60]
+                self._news[short(e.get("job_id") or "?") + " watch"] = name
+                continue
             self._news[short(e.get("job_id") or "?")] = (
                 e.get("state", "") if e["event"] == EVENT_FINISHED
                 else "transferred to you")

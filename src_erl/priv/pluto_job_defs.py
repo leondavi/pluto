@@ -23,6 +23,7 @@ FILE_MANIFEST = "manifest.jsonl"
 FILE_CURSORS = "cursors.json"
 FILE_REVIEWS = "reviews.jsonl"
 FILE_STREAMS = "streams.json"
+FILE_WATCH = "watch.json"
 FILE_HB = "hb"
 FILE_ABORT = "abort"
 FILE_RUNNER_LOG = "runner.log"
@@ -60,7 +61,7 @@ EXIT_CANNOT_START = 127
 MEMBER_CAPS = {
     FILE_PACKAGE: 1 << 20, FILE_STATE: 1 << 20, FILE_OUTPUT: 16 << 30,
     FILE_MANIFEST: 128 << 20, FILE_REVIEWS: 16 << 20, FILE_STREAMS: 16 << 20,
-    FILE_CURSORS: 1 << 20, FILE_SUMS: 1 << 20,
+    FILE_CURSORS: 1 << 20, FILE_WATCH: 4 << 20, FILE_SUMS: 1 << 20,
 }
 STREAM_LOG_MAX = 64 << 20
 STREAM_MAX = 1000
@@ -72,6 +73,46 @@ INT_MAX = (1 << 63) - 1
 LIST_MAX = 10000
 # Process identity never leaves the host it belongs to.
 LOCAL_STATE = ("runner_pid", "runner_ident", "pid", "pgid", "child_ident")
+
+# ── Output analysis and watches ─────────────────────────────────────────────
+PATTERN_MAX = 4096                 # characters of one template or regex
+MATCH_LINE_MAX = 16384             # characters a pattern ever sees of a line
+LINE_MAX = 65536                   # bytes kept of one line
+FIELDS_MAX = 200                   # per record
+CONDS_MAX = 20
+ANALYZE_BLOCK = 1 << 18
+ANALYZE_DEADLINE_S = 30            # then: partial result and where to resume
+ANALYZE_CPU_S = 45
+ANALYZE_MEMORY = 768 << 20
+ANALYZE_LIMIT = 50                 # rows or groups shown
+ANALYZE_LIMIT_MAX = 500
+ANALYZE_TEXT = 16000               # characters of one result
+ANALYZE_CELL = 200
+ANALYZE_KEEP = 500                 # matching records kept per job
+GROUPS_MAX = 100000
+VALUES_MAX = 4000000               # numbers kept for percentiles, in all
+DISTINCT_MAX = 200000              # values kept for distinct, in all
+CELLS_MAX = 2000000                # compare: keys x fields
+TEMPLATES_MAX = 4000
+SLOW_LINE_S = 1                    # CPU on one line before it is skipped
+SLOW_LINES_MAX = 3
+
+WATCH_TICK_S = 0.25
+WATCH_BLOCK = 1 << 18              # per job and turn
+WATCH_CHECKPOINT_S = 5
+WATCH_RULE_CPU_S = 1.0             # on one block before a rule is disabled
+EXIT_MEMORY = 99
+WATCH_MEMORY = 512 << 20
+WATCH_HEARTBEAT_S = 1.0
+WATCH_RULES_MAX = 16               # per job
+WATCH_TEXT = 300                   # characters of a hit
+WATCH_COOLDOWN_S = 30
+WATCH_HITS = 20                    # per rule and job, then it is done
+WATCH_HITS_MAX = 1000
+WATCH_KEYS_MAX = 2000              # by-groups remembered per rule
+WATCH_COUNT_MAX = 10000
+WATCH_SECONDS_MAX = 86400 * 30
+WATCH_THEN = ("notify", "cancel", "pause", "halt")
 
 
 def encode_record(seq, start, end, first_line, newlines, sha256, chain):

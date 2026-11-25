@@ -21,9 +21,13 @@ INSTRUCTIONS = (
     "Run long or noisy commands as jobs: job_start, then job_wait, then read "
     "only what you need with job_grep / job_window / job_next_chunk. Start "
     "many at once with each=, then use the returned group handle wherever a "
-    "job id is accepted. `output` is the raw log (a shell glob, read only): "
-    "to analyse many jobs, run one script over it. Jobs and cursors survive "
-    "this session; job_list finds earlier ones."
+    "job id is accepted. To understand output use job_analyze first: alone it "
+    "outlines any log without patterns, and it extracts, filters, aggregates "
+    "and compares across jobs in one call. To learn of something as it "
+    "happens (errors, stalls, thresholds) add a job_watch rule instead of "
+    "polling. `output` is the raw log (a shell glob, read only) for scripts "
+    "that do anything else. Jobs and cursors survive this session; job_list "
+    "finds earlier ones."
 )
 
 #: Host CLIs whose inbox socket may be written to wake the agent.

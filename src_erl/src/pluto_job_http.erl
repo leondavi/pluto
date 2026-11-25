@@ -114,6 +114,8 @@ op(<<"open">>, R)     -> {ok, pluto_job_view:open(job(R), agent(R))};
 op(<<"window">>, R)   -> window(R);
 op(<<"next">>, R)     -> next(R);
 op(<<"grep">>, R)     -> grep(R);
+op(<<"analyze">>, R)  -> pluto_job_analyze:analyze(jobs(R), R);
+op(<<"watch">>, R)    -> pluto_job_watch:request(jobs(R), actor(R), R);
 op(<<"wait">>, R)     -> {ok, pluto_job_wait:wait(jobs(R), R)};
 op(<<"control">>, R)  -> _ = job(R), pluto_job_mgr:control(actor(R), R);
 op(<<"input">>, R)    -> _ = job(R), pluto_job_mgr:input(actor(R), R);

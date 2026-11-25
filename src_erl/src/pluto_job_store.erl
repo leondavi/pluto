@@ -13,7 +13,7 @@
 -export([home/0, jobs_dir/0, dir/1, file/2, valid_id/1, new_id/0, origin/0,
          ensure_home/0, key/0, host_id/0, lock_home/0,
          read_json/1, write_json/2, write_json/3, append_jsonl/2, read_jsonl/1,
-         run/2, run/4, ident/1, hex/1, opt/2, opt/3, now_ms/0]).
+         run/2, run/4, python/0, script/1, ident/1, hex/1, opt/2, opt/3, now_ms/0]).
 
 -ifdef(TEST).
 -define(DEFAULT_HOME, "/tmp/pluto/test_smartstreams").
@@ -220,16 +220,11 @@ run(Script, Args) -> run(Script, Args, <<>>, ?JOB_SCRIPT_MS).
 -spec run(file:filename(), [iodata()], binary(), pos_integer()) ->
     {ok, integer(), binary()} | {error, term()}.
 run(Script, Args, Input, Timeout) ->
-    Py = case pluto_config:get(smartstreams_python, undefined) of
-             undefined -> os:find_executable("python3");
-             Path      -> Path
-         end,
-    case Py of
+    case python() of
         false -> {error, python3_not_found};
-        _ ->
+        Py ->
             try open_port({spawn_executable, Py},
-                          [{args, ["-I", "-B", filename:join(code:priv_dir(pluto), Script)
-                                   | Args]},
+                          [{args, script(Script) ++ Args},
                            binary, exit_status, use_stdio, hide]) of
                 Port ->
                     Input =:= <<>> orelse port_command(Port, Input),
@@ -237,6 +232,18 @@ run(Script, Args, Input, Timeout) ->
             catch error:R -> {error, R}
             end
     end.
+
+%% @doc The interpreter for the bundled scripts.
+-spec python() -> file:filename_all() | false.
+python() ->
+    case pluto_config:get(smartstreams_python, undefined) of
+        undefined -> os:find_executable("python3");
+        Path      -> Path
+    end.
+
+%% @doc Interpreter arguments that run a bundled script.
+-spec script(file:filename()) -> [string()].
+script(Name) -> ["-I", "-B", filename:join(code:priv_dir(pluto), Name)].
 
 collect(Port, Acc, Deadline) ->
     Left = max(0, Deadline - erlang:monotonic_time(millisecond)),

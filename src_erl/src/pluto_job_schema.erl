@@ -20,12 +20,16 @@ check(R) ->
     end.
 
 valid(<<"timeout_s">>, V) -> is_number(V) andalso V > 0 andalso V < 1.0e12;
+%% A flag, or the fields to show.
+valid(<<"rows">>, V) when is_boolean(V) -> true;
+valid(<<"rows">>, V) -> is_list(V) andalso lists:all(fun str/1, V);
 valid(<<"from_offsets">>, M) ->
     is_map(M) andalso lists:all(fun(N) -> is_integer(N) andalso N >= 0 end,
                                 maps:values(M));
 valid(K, V) ->
     Kinds = [{?JOB_STR_KEYS, fun str/1},
              {?JOB_INT_KEYS, fun(X) -> is_integer(X) andalso X >= 0 end},
+             {?JOB_NUM_KEYS, fun(X) -> is_number(X) andalso X >= 0 andalso X < 1.0e12 end},
              {?JOB_BOOL_KEYS, fun is_boolean/1},
              {?JOB_STRS_KEYS, fun(X) -> is_list(X) andalso lists:all(fun str/1, X) end},
              {?JOB_ENV_KEYS, fun env/1}],

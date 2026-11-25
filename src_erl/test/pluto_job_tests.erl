@@ -153,3 +153,74 @@ cursor_plan_test() ->
     ?assertEqual({read, 9}, pluto_job_cursor:plan(C, #{}, 0)),
     ?assertEqual({read, 2}, pluto_job_cursor:plan(C, #{<<"from_offset">> => 2}, 0)),
     ?assertEqual({read, 3}, pluto_job_cursor:plan(#{<<"pos">> => <<"x">>}, #{}, 3)).
+
+%%====================================================================
+%% notices of watch rules
+%%====================================================================
+
+with_home(Fun) ->
+    Home = filename:join(?DIR, "home"),
+    _ = file:del_dir_r(Home),
+    ok = filelib:ensure_path(Home),
+    Old = os:getenv("PLUTO_SMARTSTREAMS_HOME", ""),
+    os:putenv("PLUTO_SMARTSTREAMS_HOME", Home),
+    Tabs = [T || T <- [?ETS_JOBS], ets:info(T) =:= undefined],
+    [ets:new(T, [named_table, public]) || T <- Tabs],
+    try Fun()
+    after
+        os:putenv("PLUTO_SMARTSTREAMS_HOME", Old),
+        [ets:delete(T) || T <- Tabs]
+    end.
+
+moved_hits_keep_their_order_and_survive_a_restart_test() ->
+    with_home(fun() ->
+        Id = <<"J-20260101-0123456789abcdef">>,
+        ets:insert(?ETS_JOBS, {Id, #{<<"id">> => Id}, undefined}),
+        P = #{<<"id">> => Id},
+        B1 = lists:foldl(fun(H, B) ->
+            pluto_job_notice:notify(<<"a">>, ?EVT_JOB_WATCH, P, <<"running">>,
+                                    #{<<"h">> => H, <<"text">> => <<"t">>}, B)
+        end, #{}, [1, 2, 3]),
+        %% the first hit was seen before the transfer
+        {[#{<<"seq">> := S1} | _], _} = pluto_job_notice:page(<<"a">>, 0, B1),
+        {_, B2} = pluto_job_notice:page(<<"a">>, S1, B1),
+        B3 = pluto_job_notice:move(Id, <<"a">>, <<"b">>, B2),
+        ?assertEqual({[], B3}, pluto_job_notice:page(<<"a">>, 0, B3)),
+        Hs = fun(B) -> [H || #{<<"h">> := H} <- maps:get(<<"b">>, B)] end,
+        ?assertEqual([2, 3], Hs(B3)),
+        {B4, Told} = pluto_job_notice:load(),
+        ?assertEqual([2, 3], Hs(B4)),
+        ?assertEqual(#{Id => 3}, Told),
+        %% what was announced outlives acknowledged notices and compaction
+        #{<<"b">> := Ns} = B4,
+        {[], _} = pluto_job_notice:page(<<"b">>, maps:get(<<"seq">>, lists:last(Ns)), B4),
+        {B5, Told} = pluto_job_notice:load(),
+        ?assertEqual(#{}, B5),
+        ?assertEqual({#{}, Told}, pluto_job_notice:load()),
+        %% and goes with the job
+        ets:delete(?ETS_JOBS, Id),
+        ?assertEqual({#{}, #{}}, pluto_job_notice:load())
+    end).
+
+a_flood_of_hits_keeps_the_end_of_a_job_test() ->
+    with_home(fun() ->
+        P = #{<<"id">> => <<"J-20260101-0123456789abcdef">>},
+        B0 = pluto_job_notice:notify(<<"a">>, ?EVT_JOB_FINISHED, P, <<"failed">>, #{}),
+        B = lists:foldl(fun(H, Acc) ->
+            pluto_job_notice:notify(<<"a">>, ?EVT_JOB_WATCH, P, <<"running">>,
+                                    #{<<"h">> => H}, Acc)
+        end, B0, lists:seq(1, ?JOB_NOTICE_KEEP + 50)),
+        L = maps:get(<<"a">>, B),
+        ?assertEqual(?JOB_NOTICE_KEEP, length(L)),
+        ?assertMatch([#{<<"event">> := ?EVT_JOB_FINISHED}, #{<<"h">> := 52} | _], L)
+    end).
+
+request_schema_of_analyze_and_watch_test() ->
+    Ok = fun(M) -> pluto_job_schema:check(M) end,
+    ?assertEqual(ok, Ok(#{<<"rows">> => true, <<"where">> => [<<"a > 1">>],
+                          <<"idle_s">> => 1.5, <<"once">> => false})),
+    ?assertEqual(ok, Ok(#{<<"rows">> => [<<"a">>]})),
+    [?assertMatch({error, <<"bad_value_for_", _/binary>>}, Ok(M))
+     || M <- [#{<<"rows">> => 1}, #{<<"where">> => <<"a">>}, #{<<"by">> => [1]},
+              #{<<"idle_s">> => -1}, #{<<"idle_s">> => <<"x">>}, #{<<"count">> => 1.5},
+              #{<<"match">> => <<0>>}]].

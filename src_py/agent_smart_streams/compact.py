@@ -66,6 +66,10 @@ def waited(r: dict) -> dict:
             out["last"] = h["last"]
         if h["reason"] == "pattern":
             out["hit"] = f"{h['line']}@{h['offset']}:{h['text']}"
+        if h["reason"] == "watch":
+            out["hit"] = [watch_hit(x) for x in h["watch"]]
+            if h["total"] > len(h["watch"]):
+                out["hits_total"] = h["total"]
         hits.append(out)
     out = {"jobs": hits}
     if rest:
@@ -73,6 +77,26 @@ def waited(r: dict) -> dict:
     if r["timed_out"]:
         out["timed_out"] = True
     return out
+
+
+def watch_hit(h: dict) -> str:
+    """"oom L120: text (+3 more)" """
+    at = f" L{h['line']}" if h.get("line") else ""
+    also = f" (+{h['also']} more)" if h.get("also") else ""
+    end = " (last, max_hits reached)" if h.get("last") else ""
+    name = h.get("watch") or h["name"]
+    return f"{name}{at}: {h['text']}{also}{end}"
+
+
+def watch_rules(rules: list) -> list[str]:
+    def row(r: dict) -> str:
+        spec = " ".join(f"{k}={v}" for k, v in r["spec"].items()
+                        if k not in ("name", "cooldown_s", "max_hits") and v
+                        and (k, v) not in (("count", 1), ("then", "notify")))
+        state = "inert" if r["inert"] else "active" if r["active"] else \
+            f"done ({r['why']})" if r.get("why") else "done"
+        return f"{r['id']} {r['spec']['name']}: {spec}; {state}, fired {r['fired']}x"
+    return [row(r) for r in rules]
 
 
 def listed(r: dict) -> dict:

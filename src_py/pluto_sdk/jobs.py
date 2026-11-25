@@ -95,6 +95,15 @@ class PlutoJobsClient:
         return self.call("wait", timeout=timeout_ms / 1000 + defs.WAIT_SLACK_S,
                          timeout_ms=timeout_ms, **fields)
 
+    def analyze(self, **query) -> dict:
+        """{"out": text}; with "resume" (positions per job, to be passed as
+        from_offsets) when the time limit cut the scan."""
+        return self.call("analyze", timeout=defs.ANALYZE_TIMEOUT_S, **query)
+
+    def watch(self, action: str = "add", **fields) -> dict:
+        """Add, remove or list standing rules on the output of live jobs."""
+        return self.call("watch", action=action, **fields)
+
     def export(self, job_id: str, path: Optional[str] = None) -> dict:
         return self.call("export", timeout=defs.PACKAGE_TIMEOUT_S, job_id=job_id, path=path)
 

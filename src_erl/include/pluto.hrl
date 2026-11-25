@@ -57,6 +57,7 @@
 -define(ETS_LONG_POLL,    pluto_long_poll).     %% agent_id -> waiting pid
 -define(ETS_JOBS,         pluto_jobs).        %% {job_id, package, final state}
 -define(ETS_JOBS_SHORT,   pluto_jobs_short).  %% {short id, job_id}, bag
+-define(ETS_JOB_WATCH,    pluto_job_watch).   %% {job_id, watch.json contents}
 -define(ETS_JOBS_LIVE,    pluto_jobs_live).   %% {job_id} of unfinished jobs
 -define(ETS_GRACE_TIMERS, pluto_grace_timers). %% agent_id -> grace timer ref
 

@@ -516,7 +516,7 @@ def test_mcp_stdio_session(srv):
             agents = srv.jobs().http.list_agents()
             return tools, g, n, seen, err, agents, dup, many, jid, w8, job
     tools, g, n, seen, err, agents, dup, many, jid, w8, job = asyncio.run(go())
-    assert len(tools) == 15 and g["lines"].splitlines() == ["100-100", "101@292:BAD"]
+    assert len(tools) == 17 and g["lines"].splitlines() == ["100-100", "101@292:BAD"]
     assert n["text"].endswith("BAD\n") and "bad_job_id" in err["error"]
     assert "mcp1" in agents
     assert not dup and any(x["event"] == "job_finished" for x in seen)

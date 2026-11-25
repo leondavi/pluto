@@ -19,7 +19,8 @@
 -include("pluto.hrl").
 
 -export([start_link/0, activate/0, start/1, control/2, input/2, transfer/2,
-         review/2, stream/2, commit/5, notices/2, adopt/3, prune/2]).
+         review/2, stream/2, commit/5, notices/2, adopt/3, prune/2,
+         is_active/0, watch_hits/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -import(pluto_job_store, [opt/2, opt/3, now_ms/0]).
@@ -34,6 +35,7 @@
     probes  = #{}   :: #{job_id() => integer()},  %% last probe (ms)
     aborted = #{}   :: #{job_id() => integer()},  %% abort written at (ms)
     board   = #{}   :: map(),                     %% see pluto_job_notice
+    told    = #{}   :: #{job_id() => integer()},  %% last watch hit announced
     seen    = #{}   :: map(),                     %% request id -> reply
     seen_old = #{}  :: map()                      %% previous generation
 }).
@@ -49,12 +51,16 @@ start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 %% active: it does not go through the manager.
 -spec activate() -> ok | {error, term()}.
 activate() ->
+    case is_active() of
+        true  -> ok;
+        false -> call(activate)
+    end.
+
+-spec is_active() -> boolean().
+is_active() ->
     case persistent_term:get(?ACTIVE, undefined) of
-        undefined -> call(activate);
-        Pid -> case is_process_alive(Pid) of
-                   true  -> ok;
-                   false -> call(activate)
-               end
+        undefined -> false;
+        Pid       -> is_process_alive(Pid)
     end.
 
 -spec start(map()) -> {ok, pkg()} | {error, binary()}.
@@ -75,6 +81,10 @@ stream(Actor, R) -> call({stream, Actor, R}).
 commit(Id, Key, Old, R, Out) -> call({commit, Id, Key, Old, R, Out}).
 -spec notices(agent_id(), non_neg_integer()) -> {ok, [map()]} | {error, binary()}.
 notices(Agent, Ack) -> call({notices, Agent, Ack}).
+%% @doc Act on and announce hits of watch rules; each is announced once,
+%% however often it is reported.
+-spec watch_hits(job_id(), [map()]) -> ok | {error, binary()}.
+watch_hits(Id, Hits) -> call({watch_hits, Id, Hits}).
 -spec adopt(file:filename(), agent_id(), binary()) ->
     {ok, job_id(), binary()} | {error, binary()}.
 adopt(Staging, Agent, User) -> call({adopt, Staging, Agent, User}, ?JOB_PACKAGE_MS).
@@ -162,6 +172,8 @@ handle({notices, Agent, Ack}, S) ->
     {{ok, Page}, S#state{board = B}};
 handle({adopt, Staging, Agent, User}, S) ->
     {pluto_job_import:adopt(Staging, Agent, User), S};
+handle({watch_hits, Id, Hits}, S) -> {ok, lists:foldl(fun(H, Acc) ->
+                                          watch_hit(Id, H, Acc) end, S, Hits)};
 handle({prune, BeforeMs, Dry}, S) -> {{ok, pluto_job_import:prune(BeforeMs, Dry)}, S};
 handle(_, S) -> {{error, <<"unknown_request">>}, S}.
 
@@ -195,9 +207,10 @@ do_activate(S) ->
         ok = ok(pluto_job_store:lock_home()),
         pluto_job_import:sweep(),
         pluto_job_registry:load_all(),
-        Board = pluto_job_notice:load(),
+        {Board, Told} = pluto_job_notice:load(),
         persistent_term:put(?ACTIVE, self()),
-        {ok, S#state{active = true, board = Board}}
+        pluto_job_watch:activated(),
+        {ok, S#state{active = true, board = Board, told = Told}}
     catch
         throw:{inactive, R} -> {{error, R}, S};
         C:R:St ->
@@ -409,6 +422,34 @@ finish(#{<<"id">> := Id, <<"owner">> := O} = P, St, S) ->
             probes = maps:remove(Id, S#state.probes),
             env = maps:remove(Id, S#state.env)}.
 
+%% The owner of the moment is told, and acts. The action comes first: if
+%% we die before the notice is written, both are done again.
+watch_hit(Id, #{<<"h">> := N, <<"then">> := Then} = H, #state{told = Told} = S) ->
+    case pkg(Id) of
+        {ok, #{<<"owner">> := O} = P} ->
+            case maps:get(Id, Told, 0) of
+                T when T >= N -> S;
+                _ ->
+                    {Done, S1} = watch_action(P, Then, S),
+                    #{<<"state">> := St} = state(P),
+                    Extra = (maps:with([<<"h">>, <<"rule">>, <<"line">>, <<"text">>,
+                                        <<"also">>, <<"last">>], H))
+                            #{<<"watch">> => maps:get(<<"name">>, H), <<"did">> => Done},
+                    pluto_job_notice:event(job_watch, P, St),
+                    B = pluto_job_notice:notify(O, ?EVT_JOB_WATCH, P, St, Extra,
+                                                S1#state.board),
+                    S1#state{board = B, told = (S1#state.told)#{Id => N}}
+            end;
+        _ -> S
+    end.
+
+watch_action(_, <<"notify">>, S) -> {null, S};
+watch_action(P, Action, S) ->
+    case control_one(P, #{<<"action">> => Action}, S) of
+        {ok, S1}         -> {Action, S1};
+        {{error, W}, S1} -> {<<Action/binary, " failed: ", W/binary>>, S1}
+    end.
+
 %%====================================================================
 %% Control
 %%====================================================================
@@ -514,7 +555,8 @@ do_transfer({By, _} = Actor, #{<<"job_id">> := Id, <<"to">> := To}, S) ->
             pluto_job_notice:event(job_transferred, P1, St),
             Board = lists:foldl(fun(A, B) ->
                 pluto_job_notice:notify(A, ?EVT_JOB_TRANSFERRED, P1, St, B)
-            end, S#state.board, lists:usort([From, To])),
+            end, pluto_job_notice:move(Id, From, To, S#state.board),
+            lists:usort([From, To])),
             {{ok, #{<<"job_id">> => Id, <<"from">> => From, <<"to">> => To}},
              S#state{board = Board}};
         E -> {E, S}

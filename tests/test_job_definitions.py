@@ -46,6 +46,13 @@ def test_formats_and_limits():
                        ("JOB_WAIT_MAX_MS", client.WAIT_MAX_S * 1000),
                        ("JOB_WAIT_DEFAULT_MS", client.WAIT_DEFAULT_S * 1000)):
         assert int(ERL[erl]) == value, erl
+    # The server waits a little longer than the helper, the client longer still.
+    assert int(ERL["ANALYZE_DEADLINE_MS"]) == priv.ANALYZE_DEADLINE_S * 1000
+    assert client.ANALYZE_TIMEOUT_S * 1000 > sum(int(ERL[f"ANALYZE_{k}_MS"]) for k in
+                                                 ("DEADLINE", "SLACK", "QUEUE"))
+    assert int(ERL["WATCH_RULES_MAX"]) == priv.WATCH_RULES_MAX
+    assert int(ERL["WATCH_EXIT_MEMORY"]) == priv.EXIT_MEMORY
+    assert int(ERL["WATCH_SILENT_MS"]) > 5000 * priv.WATCH_HEARTBEAT_S
     unescape = lambda s: s.replace("\\\\", "\\").lower()  # noqa: E731
     assert unescape(text("JOB_ID_RE")) == priv.JOB_ID.lower()
     assert unescape(text("STREAM_ID_RE")) == priv.STREAM_ID.lower()
@@ -53,7 +60,7 @@ def test_formats_and_limits():
 
 def test_file_names():
     for name in ("PACKAGE", "STATE", "OUTPUT", "MANIFEST", "CURSORS", "REVIEWS",
-                 "STREAMS", "HB", "ABORT"):
+                 "STREAMS", "WATCH", "HB", "ABORT"):
         assert text(f"JOB_FILE_{name}") == getattr(priv, f"FILE_{name}")
     assert text("JOB_DIR_CONTROL") == priv.DIR_CONTROL
     assert text("JOB_DIR_STREAMS") == priv.DIR_STREAMS
@@ -75,8 +82,16 @@ def test_enumerations():
         == set(priv.STREAM_STATES)
     assert text("EVT_JOB_FINISHED") == client.EVENT_FINISHED
     assert text("EVT_JOB_TRANSFERRED") == client.EVENT_TRANSFERRED
+    assert text("EVT_JOB_WATCH") == client.EVENT_WATCH
     assert text("ERR_BAD_KEY") == client.ERR_BAD_KEY
     assert text("CAP_SMARTSTREAMS") == client.CAPABILITY
+
+
+def test_watch_fields():
+    import pluto_job_package as package
+    import pluto_out_rules as rules
+    assert strings("WATCH_KEYS") == rules._FIELDS
+    assert set(rules._FIELDS) == set(package.WATCH_SPEC)
 
 
 def test_mcp_config_shapes():

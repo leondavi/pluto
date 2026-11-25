@@ -18,4 +18,7 @@ init([]) ->
     {ok, {#{strategy => one_for_one, intensity => 20, period => 60},
           [#{id => pluto_job_mgr, start => {pluto_job_mgr, start_link, []},
              restart => permanent, shutdown => 5000, type => worker,
-             modules => [pluto_job_mgr]}]}}.
+             modules => [pluto_job_mgr]},
+           #{id => pluto_job_watch, start => {pluto_job_watch, start_link, []},
+             restart => permanent, shutdown => 5000, type => worker,
+             modules => [pluto_job_watch]}]}}.

@@ -64,7 +64,8 @@
 -define(WAIT_OUTPUT,  <<"output">>).
 -define(WAIT_IDLE,    <<"idle">>).
 -define(WAIT_PATTERN, <<"pattern">>).
--define(WAIT_MODES, [?WAIT_EXIT, ?WAIT_OUTPUT, ?WAIT_IDLE, ?WAIT_PATTERN]).
+-define(WAIT_WATCH,   <<"watch">>).
+-define(WAIT_MODES, [?WAIT_EXIT, ?WAIT_OUTPUT, ?WAIT_IDLE, ?WAIT_PATTERN, ?WAIT_WATCH]).
 
 %% ── Nested streams ──────────────────────────────────────────────────────────
 -define(STREAM_SPLIT,  <<"split">>).
@@ -82,6 +83,7 @@
 -define(JOB_FILE_CURSORS,  "cursors.json").     %% server
 -define(JOB_FILE_REVIEWS,  "reviews.jsonl").    %% server
 -define(JOB_FILE_STREAMS,  "streams.json").     %% server
+-define(JOB_FILE_WATCH,    "watch.json").       %% server; rules, states, hits
 -define(JOB_FILE_HB,       "hb").               %% runner heartbeat (mtime)
 -define(JOB_FILE_ABORT,    "abort").            %% server: do not start any more
 -define(JOB_DIR_CONTROL,   "control").
@@ -94,10 +96,13 @@
 -define(HOME_FILE_HOST_ID, "host_id").
 -define(HOME_FILE_LOCK,    "server.lock").
 -define(HOME_FILE_NOTICES, "notices.jsonl").
+-define(HOME_FILE_MARKER,  "watch.at").         %% rule being evaluated
 -define(HOME_FILE_HISTORY, "history.jsonl").
 -define(JOB_OLD_SUFFIX,    ".old").             %% package being replaced
 -define(JOB_RUNNER_SCRIPT,  "pluto_job_runner.py").
 -define(JOB_PACKAGE_SCRIPT, "pluto_job_package.py").
+-define(JOB_ANALYZE_SCRIPT, "pluto_job_analyze.py").
+-define(JOB_WATCH_SCRIPT,   "pluto_job_watch.py").
 -define(MODE_DIR,  8#700).
 -define(MODE_FILE, 8#600).
 
@@ -138,6 +143,21 @@
 -define(GREP_DEFAULT_HITS, 50).
 -define(GREP_MAX_HITS,    500).
 -define(GREP_MAX_CONTEXT, 20).
+
+%% ── Analysis and watches (limits of the helpers: priv/pluto_job_defs.py) ────
+-define(ANALYZE_DEADLINE_MS, 30000).
+-define(ANALYZE_SLACK_MS,    8000).   %% then the helper is killed
+-define(ANALYZE_QUEUE_MS,    10000).  %% waiting for a free slot
+-define(ANALYZE_SLOTS,       3).      %% helpers at once, if there are cores
+-define(ANALYZE_MAX_OUT,     1048576).
+-define(WATCH_RULES_MAX,     16).     %% active, per job
+-define(WATCH_HITS_KEEP,     50).     %% per job, for job_wait
+-define(WATCH_WAIT_HITS,     20).     %% per job and job_wait
+-define(WATCH_TICK_MS,       1000).
+-define(WATCH_SILENT_MS,     10000).  %% helper hangs: kill it
+-define(WATCH_SETTLE_MS,     15000).  %% job_wait stops waiting for last hits
+-define(WATCH_EXIT_MEMORY,   99).     %% exit status of a helper over its limit
+-define(WATCH_BACKOFF_MS,    60000).
 
 %% ── Waits, lists, misc limits ───────────────────────────────────────────────
 -define(JOB_WAIT_MAX_MS,      55000).
@@ -209,18 +229,29 @@
                        <<"encoding">>, <<"verdict">>, <<"note">>, <<"parent">>,
                        <<"rerun_of">>, <<"path">>, <<"task_id">>, <<"signal">>,
                        <<"scope">>, <<"until">>, <<"status">>, <<"assignee">>,
-                       <<"followup_id">>, <<"framework">>, <<"session_id">>]).
+                       <<"followup_id">>, <<"framework">>, <<"session_id">>,
+                       <<"extract">>, <<"sort">>, <<"match">>, <<"stalled">>,
+                       <<"then">>, <<"rule">>]).
 -define(JOB_INT_KEYS, [<<"max_bytes">>, <<"from_offset">>, <<"to_offset">>,
                        <<"offset">>, <<"line">>, <<"lines">>, <<"tail">>,
                        <<"before">>, <<"after">>, <<"limit">>, <<"from">>,
                        <<"ack">>, <<"from_line">>, <<"to_line">>,
                        <<"max_matches">>, <<"timeout_ms">>, <<"idle_ms">>,
-                       <<"max_output_bytes">>, <<"older_than_ms">>]).
+                       <<"max_output_bytes">>, <<"older_than_ms">>, <<"count">>,
+                       <<"max_hits">>, <<"stalled_n">>]).
 -define(JOB_BOOL_KEYS, [<<"stdin">>, <<"tree">>, <<"verify">>, <<"strip_ansi">>,
                         <<"fixed">>, <<"invert">>, <<"ignore_case">>,
                         <<"close">>, <<"all">>, <<"as_user">>, <<"dry_run">>,
-                        <<"cursor">>]).
--define(JOB_STRS_KEYS, [<<"argv">>, <<"tags">>, <<"job_ids">>, <<"states">>]).
+                        <<"cursor">>, <<"once">>, <<"from_now">>]).
+-define(JOB_STRS_KEYS, [<<"argv">>, <<"tags">>, <<"job_ids">>, <<"states">>,
+                        <<"where">>, <<"by">>, <<"agg">>, <<"compare">>]).
+-define(JOB_NUM_KEYS, [<<"window_s">>, <<"idle_s">>, <<"absent_s">>, <<"cooldown_s">>]).
+-define(ANALYZE_KEYS, [<<"extract">>, <<"where">>, <<"by">>, <<"agg">>, <<"sort">>,
+                       <<"limit">>, <<"rows">>, <<"compare">>]).
+-define(WATCH_KEYS, [<<"name">>, <<"match">>, <<"where">>, <<"by">>, <<"extract">>,
+                     <<"count">>, <<"window_s">>, <<"idle_s">>, <<"absent_s">>,
+                     <<"stalled">>, <<"stalled_n">>, <<"then">>, <<"once">>,
+                     <<"cooldown_s">>, <<"max_hits">>, <<"from_now">>]).
 -define(JOB_ENV_KEYS,  [<<"env">>, <<"base_env">>]).
 
 -endif. %% PLUTO_JOBS_HRL

@@ -24,6 +24,7 @@ from pluto_jobs_def import (
 )
 from pluto_sdk import PlutoError, PlutoJobsClient
 
+Strs = Union[str, list[str]]
 READ = ToolAnnotations(readOnlyHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 RUNS = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
@@ -32,6 +33,7 @@ RUNS = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> NoticeBoard:
     board = NoticeBoard(jobs)
     waiter = fleet.Waiter(jobs)
+    board.watch_seen = waiter.watch_seen
 
     async def _run(fn, *args, shape=None, **kwargs) -> str:
         def work():
@@ -156,6 +158,66 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> Notic
             invert=invert or None, from_offset=from_offset, to_offset=to_offset,
             from_line=from_line, to_line=to_line, stream=stream)
 
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def job_analyze(
+        job_id: Optional[str] = None, job_ids: Optional[list[str]] = None,
+        extract: Optional[str] = None, where: Optional[Strs] = None,
+        by: Optional[Strs] = None, agg: Optional[Strs] = None,
+        compare: Optional[Strs] = None, rows: Union[bool, list[str]] = False,
+        sort: Optional[str] = None, limit: Optional[int] = None,
+        stream: Optional[str] = None, from_line: Optional[int] = None,
+        to_line: Optional[int] = None, from_offset: Optional[int] = None,
+        to_offset: Optional[int] = None, resume: Optional[dict[str, int]] = None,
+    ) -> str:
+        """Understand output without scripts. With only job ids: an outline
+        (line templates with counts, number ranges, likely errors, rare lines,
+        which jobs deviate). Otherwise a query; L123 is a line for job_window.
+        extract: "auto" (default: key=value, JSON, CSV/TSV, access log), a
+        template "epoch {e:int} loss={loss:float} {rest}", csv:a,b,c or
+        re:(?P<x>..); alone it summarises the fields.
+        where (all must hold): "status >= 500", "msg contains timed out",
+        "x ~ regex", "has err", "dur > 2s", "loss > prev*1.5", "seq != prev+1"
+        (prev: previous matching record of the job and by group).
+        by: fields; also _job _name _level _time _line _n.
+        agg: count, min:f max: sum: mean: p95: first: last: distinct: argmin:.
+        rows: true or fields, to list matching lines. sort: "-p95:dur".
+        compare: fields; aligns records of the jobs by the by keys and reports
+        where jobs disagree and who is odd. After INCOMPLETE pass resume."""
+        return await _run(
+            fleet.analyze, jobs, job_id, job_ids, extract=extract, where=where,
+            by=by, agg=agg, compare=compare, rows=rows or None, sort=sort,
+            limit=limit, stream=stream, from_line=from_line, to_line=to_line,
+            from_offset=from_offset, to_offset=to_offset, resume=resume)
+
+    @mcp.tool(annotations=RUNS, structured_output=False)
+    async def job_watch(
+        action: str = "add", job_id: Optional[str] = None,
+        job_ids: Optional[list[str]] = None, name: Optional[str] = None,
+        match: Optional[str] = None, where: Optional[Strs] = None,
+        by: Optional[Strs] = None, extract: Optional[str] = None,
+        count: Optional[int] = None, window_s: Optional[float] = None,
+        idle_s: Optional[float] = None, absent_s: Optional[float] = None,
+        stalled: Optional[str] = None, stalled_n: Optional[int] = None,
+        then: str = "notify", once: bool = False,
+        cooldown_s: Optional[float] = None, max_hits: Optional[int] = None,
+        from_now: bool = False, rule: Optional[str] = None,
+    ) -> str:
+        """Standing rule on live jobs' output; hits come as notices, wake you,
+        and end job_wait(until="watch"). Fires on lines with match (text, a
+        {field} template or re:..) and/or where (as in job_analyze, with prev,
+        by, extract), or each count matches [within window_s]; or after idle_s
+        without output, absent_s without a matching line, or when field
+        stalled keeps its value for stalled_n matches. then: notify, cancel
+        or pause the job. Repeats after cooldown_s up to max_hits (defaults
+        30, 20) unless once. Reads existing output too unless from_now.
+        action: add, list, remove (rule = id or name; default all)."""
+        return await _run(
+            fleet.watch, jobs, action, job_id, job_ids, name=name, match=match,
+            where=where, by=by, extract=extract, count=count, window_s=window_s,
+            idle_s=idle_s, absent_s=absent_s, stalled=stalled, stalled_n=stalled_n,
+            then=then, once=once or None, cooldown_s=cooldown_s,
+            max_hits=max_hits, from_now=from_now or None, rule=rule)
+
     @mcp.tool(annotations=WRITE, structured_output=False)
     async def job_next_chunk(
         job_id: str, max_bytes: int = READ_DEFAULT, stream: Optional[str] = None,
@@ -196,7 +258,8 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> Notic
         from_offset: Optional[int] = None, idle_ms: Optional[int] = None,
     ) -> str:
         """Block (max 300 s) until a job exits, or until="output", "idle"
-        (idle_ms), or "pattern" (regex appears in output). Give job_ids to
+        (idle_ms), "pattern" (regex appears in output) or "watch" (a job_watch
+        rule fired). Give job_ids to
         watch many; returns when one has news, or with wait_all when all do.
         An exited job comes with its last line. Each event is reported once, so just call again with the same ids;
         from_offset searches again. Use this instead of polling."""

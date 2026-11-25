@@ -36,6 +36,7 @@ LIVE_SERVER_MODULES = {
     "test_404_hints.py",
     "test_http_keepalive.py",
     "test_smart_streams_live.py",
+    "test_smart_streams_output_live.py",
     "test_v021_http_sessions.py",
     "test_v023_features.py",
 }

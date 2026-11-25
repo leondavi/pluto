@@ -80,6 +80,36 @@ def grep(jobs: PlutoJobsClient, job_id, job_ids, *, max_matches: int, **kw):
     return {**out, "no_match": empty} if empty else out
 
 
+def analyze(jobs: PlutoJobsClient, job_id, job_ids, *, resume=None, **kw) -> dict:
+    """One query over all the jobs; positions are per job."""
+    ids = ids_of(jobs, job_id, job_ids)
+    lists = {k: _list(kw.pop(k)) for k in ("where", "by", "agg", "compare")}
+    r = jobs.analyze(job_ids=ids, from_offsets=resume, **lists, **kw)
+    return {k: r[k] for k in ("out", "resume") if k in r}
+
+
+def watch(jobs: PlutoJobsClient, action, job_id, job_ids, **kw) -> dict:
+    ids = ids_of(jobs, job_id, job_ids)
+    lists = {k: _list(kw.pop(k)) for k in ("where", "by")}
+    r = jobs.watch(action, job_ids=ids, **lists, **kw)
+    if action == "list":
+        return {short(j): compact.watch_rules(v) for j, v in r["jobs"].items()}
+    # The same rule has the same id almost everywhere: say it once.
+    by_rule: dict[str, list] = {}
+    for jid, rule in r["jobs"].items():
+        key = rule if isinstance(rule, str) else ",".join(rule)
+        by_rule.setdefault(key, []).append(short(jid))
+    out = {"removed" if action == "remove" else "added":
+           {k: v if len(v) < 5 else f"{len(v)} jobs" for k, v in by_rule.items()}}
+    if r["errors"]:
+        out["errors"] = {short(j): e for j, e in r["errors"].items()}
+    return out
+
+
+def _list(v):
+    return [v] if isinstance(v, str) else v or None
+
+
 class Waiter:
     """job_wait that reports each event once per session.
 
@@ -93,6 +123,7 @@ class Waiter:
         self.jobs = jobs
         self._marks: dict[tuple, int] = {}
         self._finished: set[str] = set()
+        self.watch_seen: dict[str, int] = {}     # job -> last hit told
 
     def wait(self, job_id, job_ids, *, until="exit", pattern=None,
              wait_all=False, from_offset=None, timeout_s=0, **kw) -> dict:
@@ -123,6 +154,12 @@ class Waiter:
         fresh = [j for j in ids if j not in self._finished]
         # Naming only finished jobs is a question about them, not a wait.
         ask = ids if wait_all or not fresh else fresh
+        if until == "watch":
+            # Hits have their own numbering; offsets do not apply to it.
+            return self.jobs.wait(
+                job_ids=ask, until=until, all=wait_all or None, **kw,
+                from_offsets={j: self.watch_seen[j] for j in ask
+                              if j in self.watch_seen} or None)
         marks = {} if from_offset is not None else {
             j: self._marks[j, until, pattern] for j in ask
             if (j, until, pattern) in self._marks}
@@ -140,5 +177,7 @@ class Waiter:
         for jid, h in r["hits"].items():
             if h["reason"] == "pattern":
                 self._marks[short(jid), until, pattern] = h["next"]
+            elif h["reason"] == "watch":
+                self.watch_seen[short(jid)] = h["next"]
             elif h["reason"] in ("idle", "output"):
                 self._marks[short(jid), until, pattern] = size.get(jid, 0)

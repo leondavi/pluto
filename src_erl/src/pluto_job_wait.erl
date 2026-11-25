@@ -22,6 +22,9 @@ wait(Jobs, R) ->
     lists:member(Until, ?WAIT_MODES) orelse throw({bad, <<"bad_value_for_until">>}),
     Until =:= ?WAIT_PATTERN andalso check_pattern(opt(<<"pattern">>, R)),
     Ids = lists:usort([maps:get(<<"id">>, P) || P <- Jobs]),
+    Until =:= ?WAIT_WATCH andalso
+        (lists:any(fun pluto_job_watch:watched/1, Ids) orelse
+            throw({bad, <<"no_watch_rules_on_these_jobs">>})),
     Marks = maps:from_list([{Id, mark(Id, Until, R)} || Id <- Ids]),
     Deadline = now_ms() + min(opt(<<"timeout_ms">>, R, ?JOB_WAIT_DEFAULT_MS),
                               ?JOB_WAIT_MAX_MS),
@@ -53,6 +56,7 @@ default_mark(_, ?WAIT_PATTERN, R) -> opt(<<"from_offset">>, R, 0);
 default_mark(Id, ?WAIT_OUTPUT, R) ->
     opt(<<"from_offset">>, R,
         filelib:file_size(pluto_job_store:file(Id, ?JOB_FILE_OUTPUT)));
+default_mark(_, ?WAIT_WATCH, _) -> 0;
 default_mark(_, _, _) -> -1.
 
 enough(Hits, Ids, true)   -> map_size(Hits) =:= length(Ids);
@@ -82,12 +86,31 @@ hit(Id, Until, R, Mark) ->
             Done = pluto_job_registry:is_done(P),
             case condition(Until, P, R, Mark, Done) of
                 {true, _} = Hit -> Hit;
+                {false, Pos} when Done, Until =:= ?WAIT_WATCH ->
+                    case last_hits_due(P) of
+                        true  -> {false, Pos};
+                        false -> {true, #{<<"reason">> => ?WAIT_EXIT}}
+                    end;
                 _ when Done     -> {true, #{<<"reason">> => ?WAIT_EXIT}};
                 {false, Pos}    -> {false, Pos}
             end
     end.
 
+%% The last output of a job that just ended is still being evaluated.
+last_hits_due(#{<<"id">> := Id} = P) ->
+    not pluto_job_watch:settled(Id) andalso
+        now_ms() - opt(<<"ended_at">>, pluto_job_registry:state(P), 0) < ?WATCH_SETTLE_MS.
+
 condition(?WAIT_EXIT, _, _, Mark, _) -> {false, Mark};
+condition(?WAIT_WATCH, #{<<"id">> := Id}, _, Mark, _) ->
+    case pluto_job_watch:hits(Id, Mark) of
+        [] -> {false, Mark};
+        Hits ->
+            {true, #{<<"reason">> => ?WAIT_WATCH, <<"total">> => length(Hits),
+                     <<"next">> => maps:get(<<"h">>, lists:last(Hits)),
+                     <<"watch">> => lists:nthtail(max(0, length(Hits) - ?WATCH_WAIT_HITS),
+                                                  Hits)}}
+    end;
 condition(?WAIT_IDLE, #{<<"id">> := Id} = P, R, Mark, _) ->
     Size = filelib:file_size(pluto_job_store:file(Id, ?JOB_FILE_OUTPUT)),
     Last = opt(<<"last_output_at">>, pluto_job_registry:state(P)),

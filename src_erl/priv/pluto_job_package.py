@@ -155,6 +155,35 @@ REVIEW_FIELDS = {
 CURSOR_FIELDS = {"pos": is_int, "at": is_int, "delivered": is_int}
 
 
+def is_secs(v):
+    return (type(v) is int or isinstance(v, float)) and 0 <= v < 1e12
+
+
+# Watch rules are only ever shown after an import, never evaluated.
+WATCH_SPEC = dict.fromkeys(("name", "match", "extract", "stalled", "then"), is_str)
+WATCH_SPEC.update(dict.fromkeys(("where", "by"), is_strs))
+WATCH_SPEC.update(dict.fromkeys(("window_s", "idle_s", "absent_s", "cooldown_s"), is_secs))
+WATCH_SPEC.update(dict.fromkeys(("count", "max_hits", "stalled_n"), is_int))
+WATCH_SPEC.update(dict.fromkeys(("once", "from_now"), lambda v: isinstance(v, bool)))
+WATCH_FIELDS = {
+    "id": lambda v: is_str(v, 20), "by": is_agent, "at": is_int,
+    "spec": lambda v: isinstance(v, dict),
+}
+
+
+def inert_rules(doc):
+    """What travels of watch.json: the rules, without states and hits."""
+    rules = doc.get("rules")
+    if not isinstance(rules, list) or len(rules) > d.LIST_MAX:
+        raise PackageError("bad watch.json")
+    out = []
+    for r in rules:
+        r = checked(r, WATCH_FIELDS, tuple(WATCH_FIELDS), "watch rule")
+        r["spec"] = checked(r["spec"], WATCH_SPEC, ("name",), "watch rule")
+        out.append(r)
+    return {"schema": d.SCHEMA, "inert": True, "rules": out}
+
+
 def is_stream_id(v):
     return isinstance(v, str) and bool(STREAM_ID.match(v))
 
@@ -384,6 +413,9 @@ def export_notes(w, job_dir, pkg, size):
             if s["kind"] == "push" and os.path.exists(path):
                 with open(path, "rb") as f:
                     w.blob("%s/%s.log" % (d.DIR_STREAMS, s["id"]), f.read())
+    watch = os.path.join(job_dir, d.FILE_WATCH)
+    if os.path.exists(watch):
+        w.blob(d.FILE_WATCH, json.dumps(inert_rules(load(watch))).encode())
     cursors = os.path.join(job_dir, d.FILE_CURSORS)
     if os.path.exists(cursors):
         cur = load(cursors).get(pkg["owner"])
@@ -485,6 +517,8 @@ def import_notes(at, sums, size):
         save(at(d.FILE_STREAMS), check_streams(load(at(d.FILE_STREAMS)), size, logs))
     elif logs:
         raise PackageError("stream log without a stream")
+    if d.FILE_WATCH in sums:
+        save(at(d.FILE_WATCH), inert_rules(load(at(d.FILE_WATCH))))
     if d.FILE_CURSORS in sums:
         doc = load(at(d.FILE_CURSORS))
         if len(doc) > 1 or not all(map(is_agent, doc)):

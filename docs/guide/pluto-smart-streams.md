@@ -21,9 +21,11 @@ run concurrently without the LLM managing the underlying process.
 |---|---|
 | `job_start` | Launch a command; `parent` nests it, `rerun_of` repeats it |
 | `job_status`, `job_list` | State, active/idle, elapsed, owner, unread bytes; earlier sessions included |
-| `job_wait` | Block up to 55 s for exit, output, idle or a regex, on one or many jobs |
+| `job_wait` | Block for exit, output, idle, a regex or a watch hit, on one or many jobs |
 | `job_next_chunk` | Next unread output; the cursor is durable and per agent |
 | `job_window` | Bounded read at an offset, line, tail or cursor |
+| `job_analyze` | Outline any output; extract, filter, aggregate, compare across jobs |
+| `job_watch` | Standing rules on live output: notify, cancel or pause |
 | `job_grep` | Regex on the server, with context, lines and offsets |
 | `job_control` | `cancel`/`halt`, `pause`, `resume`, `signal` (INT TERM HUP USR1 USR2 QUIT KILL STOP CONT); `tree` includes children |
 | `job_input` | Write to stdin |
@@ -37,6 +39,82 @@ run concurrently without the LLM managing the underlying process.
 `job_grep`, `job_wait`, `job_control` and `job_transfer` take `job_ids`.
 `job_wait` reports each event once per session, so an agent can follow a
 dozen jobs by repeating the same call.
+
+## Understanding output
+
+`job_analyze` with only job ids (or a group) outlines the output: lines grouped
+into templates with counts, line numbers, an example and number ranges, then
+likely errors, rare lines and, for several jobs, which jobs deviate. Nothing
+needs to be known about the format. Anything else is one query:
+
+| Question | Arguments |
+|---|---|
+| What fields are there? | `extract="auto"` |
+| Error rate and latency per route | `by="path"`, `agg=["count","p95:dur"]`, `where="status >= 500"` |
+| Slowest requests | `rows=["path","dur"]`, `sort="-dur"`, `limit=10` |
+| Best epoch of each run | `extract="epoch {e:int} val={v:float}"`, `agg=["min:v","argmin:v"]` |
+| Where did the loss jump? | `where="loss > prev*1.5"`, `rows=true` |
+| Lost or repeated records | `by="worker"`, `where="seq != prev+1"`, `rows=true` |
+| Gaps of a minute | `where="_time > prev+60"`, `rows=true` |
+| Which replica disagrees? | `by="step"`, `compare="checksum"` |
+
+- `extract`: `auto` (the default) reads `key=value`, `key: 1.5`, JSON (nested
+  keys dotted, with or without a prefix), CSV/TSV with a header and access
+  logs; or `kv`, `json`, `csv`, `tsv`, `csv:a,b,c` (no header); or a template,
+  whose untyped fields are one word (`:int :float :word :hex :text`; `{rest}`
+  is text; `{{` is a brace); or `re:` and a regex with named groups.
+- `where`: `== != < <= > >=`, `contains`, `startswith`, `endswith`, `~` and
+  `!~` (regex), `in (a, b)`, `has f`, `missing f`, `and or not ( )`, `+ - * /`.
+  Right of `==` a bare word is text, elsewhere a field; `$f` is always a field
+  and `` `odd name` `` quotes one. Text with spaces needs quotes unless it ends
+  the condition. Units compare (`dur > 500ms`); sums and means are then in
+  seconds or bytes. NaN equals NaN and is left out of numbers.
+- `prev` is the previous record of the same job and `by` group that satisfied
+  the conditions without `prev`; `prev.f` is another field of it.
+- Fields of every line: `_job _name _n _offset _line _level _time`.
+- Several jobs without `by` give a row per job and a total. `limit` applies
+  per job for rows and to groups as a whole; totals are always stated.
+  Percentiles interpolate linearly and are exact up to 4 million values (`~`
+  marks a sample). Records compare with `compare` n-th to n-th within a key.
+- A call scans for 30 s at most, about 20 to 80 MB/s. `INCOMPLETE` results
+  cover the part they name; pass their `resume` to look at the rest.
+
+Over HTTP: `POST /jobs/analyze` with `job_ids`, lists for `where by agg
+compare`, and `from_offsets` (`{job: offset}`) for `resume`.
+
+## Watching output
+
+```
+job_watch(job_id=g, match="Traceback")
+job_watch(job_id=g, where="loss > prev*3", name="spike", then="pause", once=true)
+job_watch(job_id=g, stalled="step", stalled_n=20)
+job_watch(job_id=g, idle_s=120)                    # no output
+job_watch(job_id=g, match="heartbeat", absent_s=60)
+job_watch(job_id=g, match="retrying", count=5, window_s=30)
+job_watch(action="list", job_id=g); job_watch(action="remove", job_id=g, rule="spike")
+```
+
+Rules belong to live jobs, at most 16 each; only the owner adds or removes
+them, and they act with the authority of whoever owns the job at that moment.
+Hits arrive as durable notices with line and text, wake the agent, and end
+`job_wait(until="watch")`, which also ends when the job does. A rule reads the
+output from its start (`from_now` skips it) to its end, including an
+unfinished last line. Matches within `cooldown_s` (30) are counted and told
+together when it is over; after `max_hits` (20) the rule is done. Times are
+the job's own: pauses do not count. A transfer hands rules and unseen hits to
+the new owner. Exports carry the rules as inert data; `rerun_of` does not
+copy them.
+
+Delivery: rules, positions, states and hits are saved with fsync and rename
+before anything is announced, so after a `kill -9` of the server every hit
+still becomes exactly one notice. At least once remains: a notice is shown
+again if the result that carried it got lost, and a `pause` or `cancel` is
+requested again if the server died between requesting and recording it. Lines
+written while the server was down are taken to have been written evenly, which
+`count` within `window_s` can notice.
+
+One helper process evaluates all rules, only while there are any. A rule that
+burns a second of CPU on one block of output is disabled, and says so.
 
 A job ends when its whole process group has ended, so background children
 (`server &`) keep it running, under limits and cancellable. The exit code is
@@ -93,11 +171,11 @@ otherwise.
 ## HTTP
 
 `POST /jobs/<op>` with `Authorization: Bearer <key>` and a JSON body that
-includes `agent_id`: `start status list open window next grep wait control
+includes `agent_id`: `start status list open window next grep analyze watch wait control
 input transfer stream review manifest export import notices history stats
 prune`. Errors are `{"status":"error","reason":"..."}`. Send a `request_id`
 with changing calls to make retries safe. `wait` takes `until` = `exit`,
-`output`, `idle` (`idle_ms`) or `pattern`, for `job_id` or `job_ids`, with
+`output`, `idle` (`idle_ms`), `pattern` or `watch`, for `job_id` or `job_ids`, with
 `all` and `timeout_ms` (max 55000).
 
 ## Limits
@@ -115,7 +193,8 @@ cancelled, and line numbers far past the last manifest chunk are null.
 ```bash
 (cd src_erl && rebar3 compile && rebar3 eunit)
 python -m pytest tests/
-PLUTO_LIVE_TESTS=1 python -m pytest tests/test_smart_streams_live.py
+PLUTO_LIVE_TESTS=1 python -m pytest tests/test_smart_streams_live.py \
+    tests/test_smart_streams_output_live.py
 ```
 
 The live tests start their own server on free ports.

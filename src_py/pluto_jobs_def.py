@@ -24,7 +24,8 @@ SIGNALS = ("INT", "TERM", "HUP", "USR1", "USR2", "QUIT", "KILL", "STOP", "CONT")
 # ── Events and error reasons matched by clients ───────────────────────────────
 EVENT_FINISHED = "job_finished"
 EVENT_TRANSFERRED = "job_transferred"
-JOB_EVENTS = (EVENT_FINISHED, EVENT_TRANSFERRED)
+EVENT_WATCH = "job_watch"
+JOB_EVENTS = (EVENT_FINISHED, EVENT_TRANSFERRED, EVENT_WATCH)
 ERR_BAD_KEY = "bad_key"
 ERR_UNKNOWN_ROUTE = "unknown_route"
 CAPABILITY = "smartstreams"
@@ -43,6 +44,7 @@ HISTORY_ALL = 10000               # --history
 CALL_TIMEOUT_S = 30.0
 WAIT_SLACK_S = 15                 # beyond the server-side wait
 PACKAGE_TIMEOUT_S = 900
+ANALYZE_TIMEOUT_S = 60            # server: queueing, scan, slack
 
 #: Environment a job needs to behave like the agent's own shell. The values
 #: are stored in the package on this host, so nothing secret goes here.

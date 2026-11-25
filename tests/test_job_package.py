@@ -134,3 +134,23 @@ def test_symlink_truncated_and_garbage(job, tmp_path):
     assert call("import", tmp_path / "t.pjob", tmp_path / "b")["error"]
     (tmp_path / "g.pjob").write_bytes(b"nope")
     assert call("import", tmp_path / "g.pjob", tmp_path / "c")["error"]
+
+
+def test_watch_rules_are_rewritten_as_inert(job, tmp_path):
+    def add(doc):
+        return lambda f: f.__setitem__("watch.json", json.dumps(doc).encode())
+    rule = {"id": "R1", "by": "a", "at": 1, "spec": {"name": "x", "match": "y", "evil": 1}}
+    doc = {"schema": 1, "inert": False, "rules": [rule], "states": {"R1": {"offset": 0}},
+           "hits": [{"h": 1}], "final": False}
+    dest = tmp_path / "ok"
+    dest.mkdir()
+    assert "id" in call("import", rewrite(job, tmp_path / "a", add(doc)), dest)
+    got = json.loads((dest / "watch.json").read_text())
+    assert got == {"schema": 1, "inert": True, "rules": [
+        dict(rule, spec={"name": "x", "match": "y"})]}
+    for n, bad in enumerate(({"rules": 1}, {"rules": [dict(rule, spec=[])]}, {"rules": [{}]},
+                             {"rules": [dict(rule, spec={"name": 5})]},
+                             {"rules": [dict(rule, spec={"name": "x", "idle_s": "1"})]})):
+        at = tmp_path / f"bad{n}"
+        at.mkdir()
+        assert "watch" in call("import", rewrite(job, tmp_path / f"b{n}", add(bad)), at)["error"]

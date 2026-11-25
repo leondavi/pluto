@@ -388,7 +388,7 @@ def test_commands_and_schedule(tmp_path):
     assert ss_run.mcp_config("native", "x", args) == {"mcpServers": {}}
     srv = ss_run.mcp_config("smartstreams", "x", args)["mcpServers"]["smartstreams"]
     assert srv["args"][1:] == ["--agent-id", "x", "--host", "127.0.0.1", "--http-port", "9399",
-                               "--framework", "claude"]
+                               "--framework", "claude", "--tools", "core"]
     assert srv["env"] == {"PLUTO_SMARTSTREAMS_HOME": "/h"}
     plan = ss_run.schedule(["1", "2", "3"], ss_run.CONDITIONS, 20, "m")
     assert plan == ss_run.schedule(["1", "2", "3"], ss_run.CONDITIONS, 20, "m")

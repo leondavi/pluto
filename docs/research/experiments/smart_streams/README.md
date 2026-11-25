@@ -149,7 +149,9 @@ documented and regular; preparation before the first launch is allowed.
 Tolerances follow repeated reference simulation at run length: Binder crossings of L = 8/16 to 16/32 were within 0.1 to 0.9 % of
 T_c (one of six 16/32 pairs 1.2 %), specific-heat peaks of L = 8, 16 extrapolate within 0.6 %, phase energies at L = 16, 24 give the latent heat within 5 %; the
 local 1/nu from cumulant slopes scatters by about 0.1 for q = 3. Hence T_c full within 1 %, zero at 4 %.
-Scripted results (`verify_e8.py`, reads only program output): RESULTS_HERE
+Scripted results (`verify_e8.py`, reads only program output): reference 0.997 (seed 12345, 369 s)
+and 0.997 (seed 777, 369 s), lazy 0.199 (184 s); 12 streams per agent, 48 in total, 46 MB, programs 1.2 cores on average
+(machine 25 %, short peaks 74 % include the solver's own analysis), largest lag 0.05 s (lazy 0.10 s).
 
 **Arm C `native_sub`.** B's tools, prompt and limits plus Claude Code's Agent/Task tool. Its
 paragraph is B's plus a neutral offer (foreground or background, at most four at a time). Rules: the same

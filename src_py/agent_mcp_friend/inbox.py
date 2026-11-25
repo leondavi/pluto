@@ -21,16 +21,16 @@ import os
 import time
 from typing import Any
 
+from pluto_jobs_def import JOB_EVENTS
 from pluto_client import PlutoError, PlutoHttpClient
 
 logger = logging.getLogger("pluto_mcp_friend.inbox")
 
 # Mirror agent_friend.pluto_connection: events the agent must never see.
 _NOISE_PAYLOAD_EVENTS = {"delivery_ack", "status_update", "heartbeat"}
+# JOB_EVENTS: a PlutoSmartStreams job this agent owns changed.
 _ACTIONABLE_EVENTS = {"message", "broadcast", "task_assigned", "topic_message",
-                      "lock_granted", "wait_timeout",
-                      # PlutoSmartStreams: a job this agent owns changed.
-                      "job_finished", "job_transferred"}
+                      "lock_granted", "wait_timeout", *JOB_EVENTS}
 
 
 # Envelope fields the agent actually needs. Server messages also carry

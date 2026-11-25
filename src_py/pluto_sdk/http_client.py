@@ -121,6 +121,15 @@ class PlutoHttpClient:
         # Unreachable — the loop either returns or raises.
         raise last_exc if last_exc is not None else RuntimeError("unreachable")
 
+    def request(self, method: str, path: str, body: Optional[dict] = None, *,
+                timeout: Optional[float] = None,
+                extra_headers: Optional[Dict[str, str]] = None) -> dict:
+        """One raw call, for API layers built on this client. A dropped
+        keep-alive connection is retried once, so non-idempotent calls must
+        carry their own request id."""
+        return self._request(method, path, body, timeout=timeout,
+                             extra_headers=extra_headers)
+
     def _require_token(self) -> str:
         """Return the session token, or raise if :meth:`register` has not
         succeeded (or :meth:`unregister` already ran)."""

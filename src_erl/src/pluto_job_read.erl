@@ -11,16 +11,15 @@
 %%%-------------------------------------------------------------------
 -module(pluto_job_read).
 
--export([read/4, bytes/3, line_of/2, offset_of_line/2, tail_start/3,
-         records/3, verify/2, sanitize/1, strip_ansi/1]).
+-include("pluto.hrl").
 
--define(CHUNK, 65536).
--define(REC, 256).
--define(BLOCK, 262144).
+-export([read/4, bytes/3, line_of/2, offset_of_line/2, tail_start/3,
+         last_line_end/2, records/3, verify/2, sanitize/1]).
 
 %% @doc Read up to Max bytes at Off. Mode `cut' ends on a line boundary
 %% when the byte limit (not the end of data) stopped the read; `raw'
 %% ends exactly at the limit.
+-spec read(src(), integer(), non_neg_integer(), map()) -> map().
 read(#{lo := Lo, hi := Hi, closed := Closed} = Src, Off0, Max, Opts) ->
     Off = max(Lo, min(Off0, Hi)),
     Raw0 = bytes(Src, Off, min(Max, Hi - Off)),
@@ -37,17 +36,13 @@ read(#{lo := Lo, hi := Hi, closed := Closed} = Src, Off0, Max, Opts) ->
           end,
     End = Off + byte_size(Raw),
     First = line_of(Src, Off),
-    NLs = count_nl(Raw),
-    Last = case ends_nl(Raw) of
-               true  -> First + NLs - 1;
-               false -> First + NLs
-           end,
+    Last = last_line(First, Raw),
     Base = #{<<"start">> => Off, <<"end">> => End,
-             <<"first_line">> => First, <<"last_line">> => max(First, Last),
+             <<"first_line">> => First, <<"last_line">> => Last,
              <<"size">> => Hi,
              <<"eof">> => Closed andalso End =:= Hi,
              <<"ends_mid_line">> => Raw =/= <<>> andalso not ends_nl(Raw),
-             <<"sha256">> => hex(crypto:hash(sha256, Raw))},
+             <<"sha256">> => pluto_job_store:hex(crypto:hash(sha256, Raw))},
     Text = case maps:get(strip_ansi, Opts, false) of
                true  -> strip_ansi(Raw);
                false -> Raw
@@ -57,6 +52,8 @@ read(#{lo := Lo, hi := Hi, closed := Closed} = Src, Off0, Max, Opts) ->
         _            -> Base#{<<"text">> => sanitize(Text)}
     end.
 
+%% @doc Raw bytes; <<>> beyond the end or when the file is unreadable.
+-spec bytes(map(), non_neg_integer(), integer()) -> binary().
 bytes(_Src, _Off, N) when N =< 0 -> <<>>;
 bytes(#{path := Path}, Off, N) ->
     case file:open(Path, [read, raw, binary]) of
@@ -69,10 +66,24 @@ bytes(#{path := Path}, Off, N) ->
         _ -> <<>>
     end.
 
-%% @doc 1-based line number containing byte offset Off.
+last_line(null, _) -> null;
+last_line(First, Raw) ->
+    Last = First + count_nl(Raw),
+    case ends_nl(Raw) of
+        true  -> Last - 1;
+        false -> Last
+    end.
+
+%% @doc 1-based line containing byte Off. Normally at most one chunk is
+%% scanned. null when the manifest is too far behind (its runner died),
+%% because counting gigabytes would stall the reader.
+-spec line_of(src(), non_neg_integer()) -> pos_integer() | null.
 line_of(Src, Off) ->
-    {Start, Line} = anchor(Src, Off div ?CHUNK, Off),
-    Line + count_between(Src, Start, Off).
+    {Start, Line} = anchor(Src, Off div ?JOB_CHUNK_BYTES, Off),
+    case Off - Start > ?JOB_LINE_SCAN_MAX andalso maps:get(man, Src) =/= undefined of
+        true  -> null;
+        false -> Line + count_between(Src, Start, Off)
+    end.
 
 %% Best known {Offset, LineAtOffset} at or before Off.
 anchor(#{man := undefined}, _, _) -> {0, 1};
@@ -95,12 +106,13 @@ rec_anchor(#{<<"start">> := S, <<"end">> := E, <<"first_line">> := L,
 
 count_between(_Src, A, B) when A >= B -> 0;
 count_between(Src, A, B) ->
-    case bytes(Src, A, min(?BLOCK, B - A)) of
+    case bytes(Src, A, min(?JOB_READ_BLOCK, B - A)) of
         <<>> -> 0;
         D    -> count_nl(D) + count_between(Src, A + byte_size(D), B)
     end.
 
 %% @doc Byte offset where 1-based Line starts (hi if beyond the data).
+-spec offset_of_line(src(), integer()) -> non_neg_integer().
 offset_of_line(_Src, Line) when Line =< 1 -> 0;
 offset_of_line(#{man := Man} = Src, Line) ->
     {Off, AtLine} =
@@ -125,7 +137,7 @@ search(Man, Line, A, B) ->
 
 skip_lines(_Src, Off, 0) -> Off;
 skip_lines(#{hi := Hi} = Src, Off, N) ->
-    case bytes(Src, Off, min(?BLOCK, Hi - Off)) of
+    case bytes(Src, Off, min(?JOB_READ_BLOCK, Hi - Off)) of
         <<>> -> Hi;
         D ->
             NLs = binary:matches(D, <<"\n">>),
@@ -137,6 +149,7 @@ skip_lines(#{hi := Hi} = Src, Off, N) ->
     end.
 
 %% @doc Start of the last N lines, bounded by Max bytes.
+-spec tail_start(src(), pos_integer(), pos_integer()) -> non_neg_integer().
 tail_start(#{lo := Lo, hi := Hi} = Src, N, Max) ->
     From = max(Lo, Hi - Max),
     D = bytes(Src, From, Hi - From),
@@ -153,15 +166,24 @@ tail_start(#{lo := Lo, hi := Hi} = Src, N, Max) ->
              end,
     From + lists:nth(max(1, length(Starts) - N + 1), Starts).
 
+%% @doc End of the last complete line after Mark (Mark if there is none).
+-spec last_line_end(src(), non_neg_integer()) -> non_neg_integer().
+last_line_end(#{hi := Hi} = Src, Mark) ->
+    From = max(Mark, Hi - ?JOB_CHUNK_BYTES),
+    case binary:matches(bytes(Src, From, Hi - From), <<"\n">>) of
+        [] -> From;
+        Ms -> {P, _} = lists:last(Ms), From + P + 1
+    end.
+
 %%====================================================================
 %% Manifest
 %%====================================================================
 
-rec_count(Man) -> filelib:file_size(Man) div ?REC.
+rec_count(Man) -> filelib:file_size(Man) div ?JOB_RECORD_BYTES.
 
 rec(Man, Seq) ->
-    case bytes(#{path => Man}, Seq * ?REC, ?REC) of
-        B when byte_size(B) =:= ?REC ->
+    case bytes(#{path => Man}, Seq * ?JOB_RECORD_BYTES, ?JOB_RECORD_BYTES) of
+        B when byte_size(B) =:= ?JOB_RECORD_BYTES ->
             case pluto_protocol_json:decode(string:trim(B)) of
                 {ok, M} -> {ok, M};
                 _       -> none
@@ -170,22 +192,24 @@ rec(Man, Seq) ->
     end.
 
 %% @doc {Total, [Record]} page.
+-spec records(file:filename_all(), non_neg_integer(), non_neg_integer()) ->
+    {non_neg_integer(), [map()]}.
 records(Man, From, Limit) ->
     N = rec_count(Man),
-    Seqs = lists:seq(From, min(N, From + Limit) - 1),
+    Seqs = [S || From < N, S <- lists:seq(From, min(N, From + Limit) - 1)],
     {N, [R || S <- Seqs, {ok, R} <- [rec(Man, S)]]}.
 
 %% @doc Re-hash chunks; [] or a list of bad sequence numbers.
+-spec verify(file:filename_all(), [map()]) -> [non_neg_integer()].
 verify(Path, Recs) ->
     [maps:get(<<"seq">>, R) ||
         #{<<"start">> := S, <<"end">> := E, <<"sha256">> := H} = R <- Recs,
-        hex(crypto:hash(sha256, bytes(#{path => Path}, S, E - S))) =/= H].
+        pluto_job_store:hex(crypto:hash(sha256, bytes(#{path => Path}, S, E - S))) =/= H].
 
 %%====================================================================
 %% Bytes and text
 %%====================================================================
 
-hex(B) -> string:lowercase(binary:encode_hex(B)).
 count_nl(B) -> length(binary:matches(B, <<"\n">>)).
 ends_nl(<<>>) -> false;
 ends_nl(B)    -> binary:last(B) =:= $\n.
@@ -211,6 +235,8 @@ trim_utf8(B) ->
         T    -> T
     end.
 
+%% Walk back over continuation bytes to the last lead byte; if it promises
+%% more bytes than are there, cut before it.
 trim_utf8(B, Size, Back) when Back =< 3, Back =< Size ->
     case binary:at(B, Size - Back) of
         C when C band 16#C0 =:= 16#80 -> trim_utf8(B, Size, Back + 1);
@@ -225,6 +251,7 @@ trim_utf8(B, Size, Back) when Back =< 3, Back =< Size ->
 trim_utf8(B, _, _) -> B.
 
 %% @doc Make any binary safe for JSON: bad bytes become U+FFFD.
+-spec sanitize(binary()) -> binary().
 sanitize(B) -> iolist_to_binary(sanitize(B, [])).
 
 sanitize(B, Acc) ->

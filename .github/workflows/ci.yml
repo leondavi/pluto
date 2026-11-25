@@ -84,4 +84,4 @@ jobs:
 
       - name: Check syntax
         working-directory: src_py
-        run: python -m compileall -q pluto_client.py pluto_client_def.py pluto_sdk agent_smart_streams ../src_erl/priv
+        run: python -m compileall -q pluto_client.py pluto_client_def.py pluto_jobs_def.py pluto_sdk agent_smart_streams ../src_erl/priv

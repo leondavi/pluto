@@ -1,10 +1,12 @@
-"""Prompt assembly. The core is identical in both conditions; only TOOLS differs."""
+"""Prompt assembly. The core is identical in all conditions; only TOOLS differs."""
 
 import exp1_shards
 import exp2_sssp
 import exp3_relay
+import exp4_crash
+import exp5_probe
 
-EXPS = {"1": exp1_shards, "2": exp2_sssp, "3": exp3_relay}
+EXPS = {"1": exp1_shards, "2": exp2_sssp, "3": exp3_relay, "4": exp4_crash, "5": exp5_probe}
 
 CORE = """You are agent {me} in a team of four equal agents: {team}. {phase_note}Every agent works in the same directory: {ws}
 Agents coordinate only through files there: use board/ for notes (one file per author, so nobody overwrites another) and answers/ for results. Write a JSON answer to a temporary name and rename it when complete.
@@ -24,6 +26,9 @@ TOOLS = {
     "native": """Use your normal Claude Code tools. Start long programs with Bash run_in_background or with nohup, with stdout and stderr redirected to a log file in the workspace, and inspect the logs with grep, awk, python, tail, Grep or bounded Read (shell loops, xargs or one Bash call can start, check or search many at once); Monitor and background-task output can tell you when something happens. A process started by run_in_background ends when your session ends; a detached one (nohup ... &, with a small wrapper that saves the exit code to a file) survives it. Do not use any other agent or scheduling tool.""",
     "smartstreams": """Besides your normal Claude Code tools you have the smartstreams MCP tools, which run programs as durable jobs owned by a server: the job and its complete output survive your session, and any agent can read them by job id. Start the long programs with job_start (cwd = the workspace; a command may be a shell pipeline), follow them with job_wait, job_status and job_list, read bounded pieces with job_grep, job_window and job_next_chunk (job_start accepts a commands list, and job_wait, job_grep, job_status, job_control and job_transfer a job_ids list, for many jobs at once), stop them with job_control, and hand them over with job_transfer (only the owner may control a job; agent ids: {ids}). Use your ordinary tools for everything else. Do not use any other agent or scheduling tool.""",
 }
+
+NO_OTHER = " Do not use any other agent or scheduling tool."
+TOOLS["native_sub"] = TOOLS["native"].replace(NO_OTHER, "") + """ You may also use Claude Code's own sub-agents (the Agent tool, also called Task), in the foreground or the background, at most four at a time, for parts of your work that you judge worth delegating; a sub-agent reports back once and does not see your conversation. All rules above hold for sub-agents too: they work inside the workspace only, share your wall time and budget, use the same model, and must not start further agents or use a worktree or remote isolation. A background sub-agent ends when your session ends. Do not use any other agent or scheduling tool."""
 
 
 def roster(exp):
@@ -47,5 +52,6 @@ def agent_prompt(exp, condition, me, ws, ids, limit, cutoff=None):
     tools = TOOLS[condition]
     if condition == "smartstreams":
         tools = tools.format(ids=", ".join(f"{n}={ids[n]}" for n in names))
+    tools += getattr(mod, "TOOLS_EXTRA", {}).get(condition, "")
     return CORE.format(me=me, team=", ".join(names), phase_note=note, ws=ws, task=task,
                        limit=int(limit), tools=tools)

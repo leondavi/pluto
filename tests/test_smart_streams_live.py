@@ -502,16 +502,24 @@ def test_mcp_stdio_session(srv):
             w8 = await call("job_wait", job_id=jid)
             g = await call("job_grep", job_id=jid, pattern="BAD", before=1)
             n = await call("job_next_chunk", job_id=jid)
-            seen = [x for r_ in (w8, g, n, await call("job_status", job_id=jid))
-                    for x in r_.get("_job_notices", [])]
+            # job_wait already told the agent, so no notice repeats it ...
+            dup = [x for r_ in (w8, g, n) for x in r_.get("_job_notices", [])]
+            two = await call("job_start", command="true")
+            await asyncio.sleep(2)
+            many = await call("job_grep", job_ids=[jid, "J-x"], pattern="BAD")
+            # ... but a finish nobody reported does arrive.
+            seen = many.get("_job_notices", []) + (await call(
+                "job_grep", job_id=jid, pattern="x")).get("_job_notices", [])
+            seen = [x for x in seen if x["job_id"] == two["job_id"]]
             err = await call("job_status", job_id="nope")
             agents = srv.jobs().http.list_agents()
-            return tools, g, n, seen, err, agents
-    tools, g, n, seen, err, agents = asyncio.run(go())
-    assert len(tools) == 15 and g["groups"][0][0]["text"] == "100"
+            return tools, g, n, seen, err, agents, dup, many, jid
+    tools, g, n, seen, err, agents, dup, many, jid = asyncio.run(go())
+    assert len(tools) == 15 and g["lines"].splitlines() == ["100-100", "101@292:BAD"]
     assert n["text"].endswith("BAD\n") and "bad_job_id" in err["error"]
     assert "mcp1" in agents
-    assert any(x["event"] == "job_finished" for x in seen)
+    assert not dup and any(x["event"] == "job_finished" for x in seen)
+    assert many[jid]["matches"] == 1 and "bad_job_id" in many["J-x"]["error"]
 
 
 def test_cli_reports(srv, tmp_path):

@@ -56,7 +56,11 @@ class SmartStreamsServer:
 
     async def _piggyback(self, result):
         # Looked up per call: the inbox is replaced after a server restart.
-        return await self.inbox.piggyback(result)
+        result = await self.inbox.piggyback(result)
+        # Job events are wakeups only; the durable _job_notices carry them.
+        mail = [m for m in result.pop("_pluto_inbox", [])
+                if not str(m.get("event", "")).startswith("job_")]
+        return dict(result, _pluto_inbox=mail) if mail else result
 
     def _register(self) -> bool:
         try:

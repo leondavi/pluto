@@ -16,23 +16,22 @@ from mcp.server.fastmcp import FastMCP
 
 from agent_mcp_friend.inbox import InboxManager
 from agent_mcp_friend.socket_notifier import SocketNotifier
+from agent_smart_streams.constants import (
+    DRAIN_HINT, EPOCH_CHECK_S, INBOX_KEY, INSTRUCTIONS, SERVER_NAME,
+    SESSION_TTL_MS, WAKEABLE_FRAMEWORKS,
+)
 from agent_smart_streams.tools import register_tools
+from pluto_jobs_def import JOB_EVENTS
 from pluto_sdk import PlutoHttpClient, PlutoJobsClient
 
 logger = logging.getLogger("pluto_smart_streams")
 
-EPOCH_CHECK_S = 15.0
-
-INSTRUCTIONS = (
-    "Run long or noisy commands as jobs: job_start, then job_wait, then read "
-    "only what you need with job_grep / job_window / job_next_chunk. Jobs and "
-    "cursors survive this session; job_list finds earlier ones."
-)
-
 
 class SmartStreamsServer:
+    """Wires client, inbox, wakeups and tools into one FastMCP server."""
+
     def __init__(self, *, agent_id: str, host: str, http_port: int,
-                 ttl_ms: int = 600_000, attach: bool = False,
+                 ttl_ms: int = SESSION_TTL_MS, attach: bool = False,
                  framework: str | None = None):
         self.attach = attach
         self.client = PlutoHttpClient(
@@ -45,11 +44,11 @@ class SmartStreamsServer:
         # started from inside Claude inherits that session's socket, and
         # pushing there would wake a session this agent is not part of.
         self.push = (SocketNotifier.from_env(agent_id)
-                     if framework in (None, "claude") and not attach
+                     if framework in WAKEABLE_FRAMEWORKS and not attach
                      else SocketNotifier(None, None, agent_id, enabled=False))
-        self.push.drain_tool = "any job_* tool"
+        self.push.drain_tool = DRAIN_HINT
         self.inbox.set_push_notifier(self.push)
-        self.mcp = FastMCP(name="smartstreams", instructions=INSTRUCTIONS,
+        self.mcp = FastMCP(name=SERVER_NAME, instructions=INSTRUCTIONS,
                            lifespan=self._lifespan)
         register_tools(self.mcp, self.jobs,
                        None if attach else self._piggyback)
@@ -58,9 +57,9 @@ class SmartStreamsServer:
         # Looked up per call: the inbox is replaced after a server restart.
         result = await self.inbox.piggyback(result)
         # Job events are wakeups only; the durable _job_notices carry them.
-        mail = [m for m in result.pop("_pluto_inbox", [])
-                if not str(m.get("event", "")).startswith("job_")]
-        return dict(result, _pluto_inbox=mail) if mail else result
+        mail = [m for m in result.pop(INBOX_KEY, [])
+                if m.get("event") not in JOB_EVENTS]
+        return dict(result, **{INBOX_KEY: mail}) if mail else result
 
     def _register(self) -> bool:
         try:

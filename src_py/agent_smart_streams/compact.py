@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 
-FINAL = {"succeeded", "failed", "cancelled", "signaled", "timed_out",
-         "output_limit", "lost"}
+from pluto_jobs_def import FINAL_STATES
+
+_FINAL = frozenset(FINAL_STATES)
 
 _BRIEF = ("job_id", "name", "state", "activity", "reason", "exit_code",
-          "signal", "size")
+          "signal", "size", "output_truncated", "leader_exit_code")
 
 
 def dumps(obj) -> str:
@@ -64,19 +65,26 @@ def read(r: dict, hashes: bool = False) -> dict:
     return {k: v for k, v in r.items() if k not in drop}
 
 
+def grep_lines(groups: list, offsets: bool = True) -> str:
+    """grep -n style text: 12@345:match (or 12:match), 13-context."""
+    def line(e: dict) -> str:
+        if not e["match"]:
+            return f"{e['line']}-{e['text']}"
+        at = f"@{e['offset']}" if offsets else ""
+        return f"{e['line']}{at}:{e['text']}"
+
+    context = any(not e["match"] for g in groups for e in g)
+    return ("\n--\n" if context else "\n").join(
+        "\n".join(map(line, g)) for g in groups)
+
+
 def grep(r: dict) -> dict:
-    """One string per line, grep -n style: 12@345:match, 13-context."""
-    groups = ["\n".join(
-        f"{e['line']}@{e['offset']}:{e['text']}" if e["match"]
-        else f"{e['line']}-{e['text']}" for e in g) for g in r["groups"]]
-    context = any(not e["match"] for g in r["groups"] for e in g)
-    out = {"matches": r["matches"],
-           "lines": ("\n--\n" if context else "\n").join(groups)}
+    out = {"matches": r["matches"], "lines": grep_lines(r["groups"])}
     if not r["complete"]:
         out["resume_at"] = r["resume_at"]
     if r["lines_over_regex_limit"]:
         out["lines_over_regex_limit"] = r["lines_over_regex_limit"]
-    if r["state"] not in FINAL:
+    if r["state"] not in _FINAL:
         out["state"] = r["state"]
     return out
 
@@ -85,4 +93,4 @@ def final_jobs(r: dict) -> set:
     """Ids whose final state this result already tells the agent."""
     jobs = r.get("jobs") if isinstance(r.get("jobs"), list) else [r]
     return {j["job_id"] for j in jobs if isinstance(j, dict)
-            and j.get("job_id") and j.get("state") in FINAL}
+            and j.get("job_id") and j.get("state") in _FINAL}

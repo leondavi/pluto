@@ -146,18 +146,12 @@ serve(Sock, IdleMs) ->
             end,
             KeepAlive = wants_keep_alive(Vsn, Headers),
             case dispatch(Method, Path, Headers, Body, Sock) of
-                {no_cors, Status, RespBody} ->
-                    send_http_response(Sock, Status, RespBody, KeepAlive, []),
-                    case KeepAlive of
-                        true  -> serve(Sock, IdleMs);
-                        false -> ok
-                    end;
                 {skip_response_, already_sent} ->
                     %% Long-poll wrote its own response with a
                     %% close-by-default header — terminate the conn.
                     ok;
-                {Status, RespBody} ->
-                    send_http_response(Sock, Status, RespBody, KeepAlive),
+                {Status, RespBody, Extra} ->
+                    send_http_response(Sock, Status, RespBody, KeepAlive, Extra),
                     case KeepAlive of
                         true  -> serve(Sock, IdleMs);
                         false -> ok
@@ -177,9 +171,17 @@ serve(Sock, IdleMs) ->
 %% key check and must never be readable cross-origin.
 dispatch(Method, <<"/jobs", _/binary>> = Path, Headers, Body, Sock) ->
     {Status, RespBody} = pluto_job_http:handle(Method, Path, Headers, Body, Sock),
-    {no_cors, Status, RespBody};
+    {Status, RespBody, []};
 dispatch(Method, Path, _Headers, Body, Sock) ->
-    route(Method, Path, Body, Sock).
+    case route(Method, Path, Body, Sock) of
+        {Status, RespBody} when is_integer(Status) -> {Status, RespBody, cors_headers()};
+        Sent -> Sent
+    end.
+
+cors_headers() ->
+    [<<"Access-Control-Allow-Origin: *\r\n">>,
+     <<"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n">>,
+     <<"Access-Control-Allow-Headers: Content-Type, Authorization\r\n">>].
 
 %%====================================================================
 %% HTTP request parsing (minimal HTTP/1.1)
@@ -258,10 +260,7 @@ send_http_response(Sock, StatusCode, Body) ->
     send_http_response(Sock, StatusCode, Body, false).
 
 send_http_response(Sock, StatusCode, Body, KeepAlive) ->
-    send_http_response(Sock, StatusCode, Body, KeepAlive, [
-        <<"Access-Control-Allow-Origin: *\r\n">>,
-        <<"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n">>,
-        <<"Access-Control-Allow-Headers: Content-Type, Authorization\r\n">>]).
+    send_http_response(Sock, StatusCode, Body, KeepAlive, cors_headers()).
 
 send_http_response(Sock, StatusCode, Body, KeepAlive, ExtraHeaders) ->
     JsonBody = pluto_protocol_json:encode(Body),
@@ -286,9 +285,11 @@ send_http_response(Sock, StatusCode, Body, KeepAlive, ExtraHeaders) ->
 status_line(200) -> <<"200 OK">>;
 status_line(400) -> <<"400 Bad Request">>;
 status_line(401) -> <<"401 Unauthorized">>;
+status_line(403) -> <<"403 Forbidden">>;
 status_line(404) -> <<"404 Not Found">>;
 status_line(405) -> <<"405 Method Not Allowed">>;
 status_line(500) -> <<"500 Internal Server Error">>;
+status_line(503) -> <<"503 Service Unavailable">>;
 status_line(N)   -> iolist_to_binary([integer_to_binary(N), <<" ">>]).
 
 %%====================================================================
@@ -303,7 +304,7 @@ route('OPTIONS', _Path, _Body, _Sock) ->
 route('GET', <<"/health">>, _Body, _Sock) ->
     {200, #{<<"status">> => <<"ok">>,
             <<"version">> => list_to_binary(?VERSION),
-            <<"capabilities">> => [<<"smartstreams">>],
+            <<"capabilities">> => [?CAP_SMARTSTREAMS],
             <<"server_epoch">> => pluto_app:server_epoch()}};
 
 route('GET', <<"/ping">>, _Body, _Sock) ->

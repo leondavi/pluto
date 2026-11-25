@@ -15,6 +15,7 @@ sends can never reach a recycled pid.
 """
 
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -23,15 +24,8 @@ import subprocess
 import sys
 import time
 
-CHUNK = 65536
-RECORD = 256                       # fixed-width manifest line, incl. newline
-TICK_S = 0.1
-DRAIN_S = 0.5
-GRACE_S = 5.0
-READ_PER_TICK = 8 * 1024 * 1024
-MAX_STDIN_BUFFER = 1024 * 1024
-ZERO = "0" * 64
-SIGNALS = {"INT", "TERM", "HUP", "USR1", "USR2", "QUIT", "KILL", "STOP", "CONT"}
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import pluto_job_defs as d  # noqa: E402  (needs the path above)
 
 
 def now_ms():
@@ -69,84 +63,162 @@ def write_atomic(path, obj):
     os.replace(tmp, path)
 
 
+def write_retry(path, obj, reserve, limit_s):
+    """Persist a result that must not be lost: give back the reserved disk
+    space first, then keep trying."""
+    end = time.monotonic() + limit_s
+    while True:
+        try:
+            return write_atomic(path, obj)
+        except OSError:
+            if os.path.exists(reserve):
+                os.unlink(reserve)
+            elif time.monotonic() > end:
+                raise
+            else:
+                time.sleep(1)
+
+
 class Manifest:
-    """Hash-chained, fixed-width chunk records over output.log."""
+    """Hash-chained, fixed-width chunk records over the output file.
+
+    Records are queued in memory and written when the disk allows it, so a
+    full disk delays the manifest without corrupting it.
+    """
 
     def __init__(self, job_dir):
-        self.src = open(os.path.join(job_dir, "output.log"), "rb")
-        self.out = open(os.path.join(job_dir, "manifest.jsonl"), "ab")
+        self.src = open(os.path.join(job_dir, d.FILE_OUTPUT), "rb")
+        self.out = os.open(os.path.join(job_dir, d.FILE_MANIFEST),
+                           os.O_CREAT | os.O_APPEND | os.O_WRONLY, d.MODE_FILE)
+        self.reset()
+
+    def reset(self):
+        """Start over: new job, or the command rewrote its own output."""
+        os.ftruncate(self.out, 0)
+        self.src.seek(0)
         self.total = hashlib.sha256()
         self.buf = b""
-        self.pos = 0            # bytes hashed into self.total / buf
+        self.pos = 0            # bytes hashed so far
         self.seq = 0
         self.lines = 0
-        self.chain = ZERO
+        self.chain = d.ZERO
+        self.pending = b""
 
-    def feed(self, limit, budget=READ_PER_TICK):
-        """Consume up to *budget* bytes below offset *limit*."""
+    def feed(self, limit, budget=d.FEED_PER_TICK):
+        """Consume up to *budget* bytes below offset *limit*. True when the
+        manifest has caught up (or the file ended early)."""
         while budget > 0 and self.pos < limit:
-            data = self.src.read(min(1 << 20, limit - self.pos, budget))
+            data = self.src.read(min(d.FEED_BLOCK, limit - self.pos, budget))
             if not data:
-                break
+                return True
             budget -= len(data)
             self.pos += len(data)
             self.total.update(data)
             self.buf += data
-            while len(self.buf) >= CHUNK:
-                self._seal(self.buf[:CHUNK])
-                self.buf = self.buf[CHUNK:]
-        self.out.flush()
+            while len(self.buf) >= d.CHUNK:
+                self._seal(self.buf[:d.CHUNK])
+                self.buf = self.buf[d.CHUNK:]
+        self._flush()
         return self.pos >= limit
 
     def _seal(self, data):
         digest = hashlib.sha256(data).hexdigest()
-        self.chain = hashlib.sha256(
-            (self.chain + digest).encode()).hexdigest()
-        start = self.seq * CHUNK
+        self.chain = d.next_chain(self.chain, digest)
+        start = self.seq * d.CHUNK
         newlines = data.count(b"\n")
-        rec = json.dumps({"seq": self.seq, "start": start,
-                          "end": start + len(data),
-                          "first_line": self.lines + 1, "newlines": newlines,
-                          "sha256": digest, "chain": self.chain},
-                         separators=(",", ":"))
-        self.out.write(rec.ljust(RECORD - 1).encode() + b"\n")
+        self.pending += d.encode_record(self.seq, start, start + len(data),
+                                        self.lines + 1, newlines, digest,
+                                        self.chain)
         self.lines += newlines
         self.seq += 1
 
-    def finish(self):
+    def _flush(self):
+        # A short write leaves the rest pending, so records stay whole.
+        try:
+            while self.pending:
+                n = os.write(self.out, self.pending)
+                self.pending = self.pending[n:]
+        except OSError as exc:
+            if exc.errno not in (errno.ENOSPC, errno.EDQUOT, errno.EINTR):
+                raise
+
+    def finish(self, reserve):
+        """Seal the last partial chunk; returns the whole-output sha256."""
         if self.buf:
             self._seal(self.buf)
             self.buf = b""
-        self.out.flush()
-        os.fsync(self.out.fileno())
+        self._flush()
+        end = time.monotonic() + d.FINAL_WRITE_RETRY_S
+        while self.pending and time.monotonic() < end:
+            if os.path.exists(reserve):
+                os.unlink(reserve)
+            else:
+                time.sleep(1)
+            self._flush()
+        os.fsync(self.out)
         return self.total.hexdigest()
 
 
 class Runner:
+    """Starts one command and supervises it until its group is empty."""
+
     def __init__(self, job_dir, spec, umask):
         self.dir = job_dir
         self.spec = spec
         self.umask = umask
-        self.control = os.path.join(job_dir, "control")
-        self.log = os.path.join(job_dir, "output.log")
+        self.control = self.path(d.DIR_CONTROL)
+        self.log = self.path(d.FILE_OUTPUT)
+        self.reserve = self.path(d.FILE_RESERVE)
         self.stdin_buf = b""
         self.stdin_close = False
-        self.kill_at = None
+        self.kill_at = None          # when TERM escalates to KILL
+        self.killed_at = None        # when KILL was sent
         self.verdict = None          # why we are stopping the command
         self.paused_since = None
+        self.published_size = None
         self.state = {"state": "starting", "runner_pid": os.getpid(),
                       "runner_ident": identity(os.getpid()),
                       "paused_ms": 0, "size": 0}
 
-    def publish(self):
-        write_atomic(os.path.join(self.dir, "state.json"), self.state)
-        self.published = time.monotonic()
+    def path(self, name):
+        return os.path.join(self.dir, name)
 
+    def publish(self):
+        """Best effort: a full disk must not end supervision."""
+        try:
+            write_atomic(self.path(d.FILE_STATE), self.state)
+            self.published_size = self.state["size"]
+        except OSError as exc:
+            sys.stderr.write("state: %s\n" % exc)
+
+    # ── start ────────────────────────────────────────────────────────────
     def start(self):
+        with open(self.reserve, "wb") as f:
+            f.write(b"\0" * d.RESERVE_BYTES)
         self.publish()
-        os.close(os.open(os.path.join(self.dir, "manifest.jsonl"),
-                         os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600))
-        fd = os.open(self.log, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+        os.close(os.open(self.path(d.FILE_MANIFEST),
+                         os.O_CREAT | os.O_APPEND | os.O_WRONLY, d.MODE_FILE))
+        fd = os.open(self.log, os.O_CREAT | os.O_APPEND | os.O_WRONLY, d.MODE_FILE)
+        try:
+            # The server gave up on us (very slow start): never run late.
+            if os.path.exists(self.path(d.FILE_ABORT)):
+                raise OSError("aborted by the server before start")
+            self.proc = self.popen(fd)
+        except (OSError, ValueError, TypeError) as exc:
+            os.write(fd, ("pluto: cannot start: %s\n" % exc).encode())
+            self.start_failed(exc)
+            raise
+        finally:
+            os.close(fd)
+        if self.proc.stdin:
+            os.set_blocking(self.proc.stdin.fileno(), False)
+        pid = self.proc.pid
+        self.state.update(state="running", pid=pid, pgid=pid,
+                          child_ident=identity(pid), started_at=now_ms(),
+                          last_output_at=now_ms())
+        self.publish()
+
+    def popen(self, fd):
         spec = self.spec
         env = dict(os.environ)
         env.update(spec.get("base_env") or {})
@@ -154,36 +226,28 @@ class Runner:
         env["PLUTO_JOB_ID"] = os.path.basename(self.dir)
         env.setdefault("PYTHONUNBUFFERED", "1")
         argv = spec.get("argv") or ["/bin/sh", "-c", spec["command"]]
-        want_stdin = bool(spec.get("stdin"))
+        umask = self.umask           # the command keeps the user's umask
+        return subprocess.Popen(
+            argv, cwd=spec.get("cwd") or None, env=env,
+            stdin=subprocess.PIPE if spec.get("stdin") else subprocess.DEVNULL,
+            stdout=fd, stderr=fd, start_new_session=True,
+            preexec_fn=lambda: os.umask(umask))
 
-        def child_setup():
-            os.umask(self.umask)
-        try:
-            self.proc = subprocess.Popen(
-                argv, cwd=spec.get("cwd") or None, env=env,
-                stdin=subprocess.PIPE if want_stdin else subprocess.DEVNULL,
-                stdout=fd, stderr=fd, start_new_session=True,
-                preexec_fn=child_setup)
-        except (OSError, ValueError) as exc:
-            os.write(fd, ("pluto: cannot start: %s\n" % exc).encode())
-            os.close(fd)
-            m = Manifest(self.dir)
-            size = os.path.getsize(self.log)
-            m.feed(size)
-            self.state.update(state="failed", reason="start_failed: %s" % exc,
-                              exit_code=127, started_at=now_ms(),
-                              ended_at=now_ms(), size=size, final_size=size,
-                              sha256=m.finish())
-            self.publish()
-            raise
-        os.close(fd)
-        if want_stdin:
-            os.set_blocking(self.proc.stdin.fileno(), False)
-        pid = self.proc.pid
-        self.state.update(state="running", pid=pid, pgid=pid,
-                          child_ident=identity(pid), started_at=now_ms(),
-                          last_output_at=now_ms())
-        self.publish()
+    def start_failed(self, exc):
+        man = Manifest(self.dir)
+        size = os.path.getsize(self.log)
+        man.feed(size)
+        self.state.update(state="failed", reason="start_failed: %s" % exc,
+                          exit_code=d.EXIT_CANNOT_START, started_at=now_ms(),
+                          ended_at=now_ms(), size=size, final_size=size,
+                          sha256=man.finish(self.reserve))
+        self.save_final()
+
+    def save_final(self):
+        write_retry(self.path(d.FILE_STATE), self.state, self.reserve,
+                    d.FINAL_WRITE_RETRY_S)
+        if os.path.exists(self.reserve):
+            os.unlink(self.reserve)
 
     # ── signalling ───────────────────────────────────────────────────────
     def group(self, sig):
@@ -192,12 +256,23 @@ class Runner:
         except (ProcessLookupError, PermissionError):
             pass
 
+    def group_alive(self):
+        """Members left after the leader exited. While there are any, the
+        group id cannot be reused; we stop looking once there are none."""
+        try:
+            os.killpg(self.proc.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:      # only zombies left (macOS)
+            return False
+
     def stop(self, verdict, sig=signal.SIGTERM):
         if self.verdict is None:
             self.verdict = verdict
-            self.kill_at = time.monotonic() + GRACE_S
+            self.kill_at = time.monotonic() + d.GRACE_S
         self.group(sig)
-        self.group(signal.SIGCONT)
+        self.group(signal.SIGCONT)   # a stopped process cannot handle TERM
 
     def pause(self):
         if self.paused_since is None and self.verdict is None:
@@ -215,6 +290,7 @@ class Runner:
             self.group(signal.SIGCONT)
             self.publish()
 
+    # ── requests ─────────────────────────────────────────────────────────
     def handle(self, req):
         action = req.get("action")
         if action == "cancel":
@@ -223,7 +299,7 @@ class Runner:
             self.pause()
         elif action == "resume":
             self.resume()
-        elif action == "signal" and req.get("signal") in SIGNALS:
+        elif action == "signal" and req.get("signal") in d.SIGNALS:
             name = req["signal"]
             if name == "STOP":
                 self.pause()
@@ -232,25 +308,33 @@ class Runner:
             else:
                 self.group(getattr(signal, "SIG" + name))
         elif action == "input" and self.proc.stdin:
-            data = base64.b64decode(req.get("data", ""))
-            if len(self.stdin_buf) + len(data) <= MAX_STDIN_BUFFER:
-                self.stdin_buf += data
+            self.stdin_buf += base64.b64decode(req.get("data", ""))
             self.stdin_close = self.stdin_close or bool(req.get("close"))
 
     def read_control(self):
+        """Apply requests in order. Input that does not fit the buffer stays
+        on disk for a later tick; cancel and pause still overtake it."""
         try:
             names = sorted(n for n in os.listdir(self.control)
                            if n.endswith(".json"))
         except OSError:
             return
+        input_blocked = False
         for name in names:
             path = os.path.join(self.control, name)
             try:
                 with open(path) as f:
                     req = json.load(f)
+                if req.get("action") == "input":
+                    size = len(req.get("data", "")) * 3 // 4
+                    if self.stdin_buf and \
+                            len(self.stdin_buf) + size > d.STDIN_BUFFER_MAX:
+                        input_blocked = True
+                    if input_blocked:
+                        continue
                 os.unlink(path)
                 self.handle(req)
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, AttributeError) as exc:
                 sys.stderr.write("control %s: %s\n" % (name, exc))
                 try:
                     os.unlink(path)
@@ -262,90 +346,126 @@ class Runner:
         if not pipe:
             return
         try:
-            if self.stdin_buf:
+            while self.stdin_buf:
                 n = os.write(pipe.fileno(), self.stdin_buf)
                 self.stdin_buf = self.stdin_buf[n:]
-            if self.stdin_close and not self.stdin_buf:
+            # Close only once nothing is waiting on disk either.
+            if self.stdin_close:
                 pipe.close()
                 self.proc.stdin = None
         except BlockingIOError:
             pass
-        except OSError:
+        except OSError:              # the command closed its stdin
             self.proc.stdin = None
             self.stdin_buf = b""
 
+    # ── limits ───────────────────────────────────────────────────────────
     def limits(self, size):
-        if self.verdict is None:
-            if size > self.spec.get("max_output_bytes", 1 << 30):
-                self.stop("output_limit")
-            elif (time.monotonic() - self.disk_checked) > 5:
-                self.disk_checked = time.monotonic()
-                st = os.statvfs(self.dir)
-                if st.f_bavail * st.f_frsize < self.spec.get("min_free_bytes", 0):
-                    self.state["reason"] = "low_disk"
-                    self.stop("output_limit")
-            limit = self.spec.get("timeout_s")
-            if limit and self.paused_since is None:
-                ran = now_ms() - self.state["started_at"] - self.state["paused_ms"]
-                if ran > limit * 1000:
-                    self.stop("timed_out")
-        elif self.kill_at and time.monotonic() > self.kill_at:
-            self.group(signal.SIGKILL)
-            self.kill_at = None
+        if self.verdict is not None:
+            if self.kill_at and time.monotonic() > self.kill_at:
+                self.group(signal.SIGKILL)
+                self.kill_at = None
+                self.killed_at = time.monotonic()
+            return
+        if size > self.spec.get("max_output_bytes", d.DEFAULT_MAX_OUTPUT):
+            self.stop("output_limit")
+            return
+        st = os.statvfs(self.dir)
+        if st.f_bavail * st.f_frsize < self.spec.get("min_free_bytes", 0):
+            self.state["reason"] = "low_disk"
+            self.stop("output_limit", signal.SIGKILL)   # every MB counts
+            return
+        limit = self.spec.get("timeout_s")
+        if limit and self.paused_since is None:
+            ran = now_ms() - self.state["started_at"] - self.state["paused_ms"]
+            if ran > limit * 1000:
+                self.stop("timed_out")
 
     # ── main loop ────────────────────────────────────────────────────────
     def loop(self):
         man = Manifest(self.dir)
-        hb = os.path.join(self.dir, "hb")
         last_hb = 0.0
-        self.disk_checked = 0.0
-        seen = 0
         while True:
             self.read_control()
             self.pump_stdin()
-            size = os.path.getsize(self.log)
-            if size != seen:
-                seen = size
-                self.state.update(size=size, last_output_at=now_ms())
+            size = self.observe(man)
             self.limits(size)
             caught_up = man.feed(size)
-            rc = self.proc.poll()
-            if rc is not None:
+            if self.finished():
                 break
-            mono = time.monotonic()
-            if mono - last_hb > 1:
-                with open(hb, "w") as f:
-                    f.write(str(now_ms()))
-                last_hb = mono
-                if self.state.get("size") != self.state.get("_pub"):
-                    self.state["_pub"] = self.state["size"]
-                    self.publish()
+            if time.monotonic() - last_hb > d.HEARTBEAT_S:
+                last_hb = time.monotonic()
+                self.heartbeat()
             if caught_up:
-                time.sleep(TICK_S)
-        ended = now_ms()
-        if self.verdict is not None:
-            self.group(signal.SIGKILL)    # leftovers of a stopped job
-        time.sleep(DRAIN_S)
+                time.sleep(d.TICK_S)
+        self.finalize(man)
+
+    def observe(self, man):
+        """Current output size. A shrinking file means the command truncated
+        its own log (on Linux, even ``> /dev/stderr`` does); say so and
+        rebuild the manifest over what is left."""
         size = os.path.getsize(self.log)
+        if size < man.pos:
+            self.state["output_truncated"] = True
+            man.reset()
+        if size != self.state["size"]:
+            self.state.update(size=size, last_output_at=now_ms())
+        return size
+
+    def finished(self):
+        """The job ends when the whole group is gone, so background children
+        stay under limits and cancel. After KILL we wait only briefly."""
+        rc = self.proc.poll()
+        if rc is None:
+            return False
+        if "leader_exited_at" not in self.state:
+            self.state["leader_exited_at"] = now_ms()
+            self.state["leader_exit_code"] = rc
+        if not self.group_alive():
+            return True
+        return (self.killed_at is not None
+                and time.monotonic() - self.killed_at > d.KILLED_S)
+
+    def heartbeat(self):
+        try:
+            with open(self.path(d.FILE_HB), "w") as f:
+                f.write(str(now_ms()))
+        except OSError:
+            pass
+        if self.state["size"] != self.published_size or \
+                "leader_exited_at" in self.state:
+            self.publish()
+
+    def finalize(self, man):
+        ended = now_ms()
+        rc = self.proc.returncode
+        if self.verdict is not None:
+            self.group(signal.SIGKILL)
+        # Writes already in flight land before the size is fixed.
+        time.sleep(d.DRAIN_S)
+        size = self.observe(man)
         while not man.feed(size):
             pass
+        size = man.pos
         if self.paused_since is not None:
             self.state["paused_ms"] += ended - self.paused_since
-        for k in ("_pub", "paused_since"):
-            self.state.pop(k, None)
-        self.state.update(size=size, final_size=size, sha256=man.finish(),
-                          ended_at=ended)
+            self.state.pop("paused_since", None)
+        self.state.update(size=size, final_size=size, ended_at=ended,
+                          sha256=man.finish(self.reserve))
+        self.state.pop("leader_exit_code", None)
         if rc < 0:
             self.state.update(signal=signal.Signals(-rc).name, exit_code=None)
         else:
             self.state["exit_code"] = rc
         self.state["state"] = self.verdict or (
             "signaled" if rc < 0 else "succeeded" if rc == 0 else "failed")
-        self.publish()
+        self.save_final()
 
 
 def daemonize(job_dir, spec, umask):
-    """Double-fork. Returns in the grandchild with a pipe for the verdict."""
+    """Detach fully (own session, no controlling tty, reparented) so neither
+    the server nor its port can take the job down. The pipe carries one line
+    back: "ready", or why the command could not start."""
     r, w = os.pipe()
     if os.fork():
         os.close(w)
@@ -357,8 +477,8 @@ def daemonize(job_dir, spec, umask):
     if os.fork():
         os._exit(0)
     null = os.open(os.devnull, os.O_RDWR)
-    err = os.open(os.path.join(job_dir, "runner.log"),
-                  os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+    err = os.open(os.path.join(job_dir, d.FILE_RUNNER_LOG),
+                  os.O_CREAT | os.O_APPEND | os.O_WRONLY, d.MODE_FILE)
     os.dup2(null, 0)
     os.dup2(null, 1)
     os.dup2(err, 2)
@@ -375,7 +495,8 @@ def daemonize(job_dir, spec, umask):
 
 def main(argv):
     if argv[0] == "ident":
-        print(identity(int(argv[1])))
+        # The prefix tells "dead" (empty) from "the helper did not work".
+        print("ident:" + identity(int(argv[1])))
     elif argv[0] == "kill":
         pid = int(argv[1])
         if not argv[2] or identity(pid) != argv[2]:

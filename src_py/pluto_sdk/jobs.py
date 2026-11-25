@@ -6,22 +6,34 @@ the key on first contact; the client reads it lazily.
 """
 
 import getpass
+import json
 import os
 import uuid
 from typing import Dict, Optional
 
+import pluto_jobs_def as defs
 from pluto_sdk.errors import PlutoError
 from pluto_sdk.http_client import PlutoHttpClient
 
-#: Environment the job needs to behave like the agent's own shell. Values
-#: are stored in the package until it starts, so nothing secret goes here.
-BASE_ENV = ("PATH", "HOME", "SHELL", "LANG", "LC_ALL", "USER", "LOGNAME",
-            "TMPDIR", "VIRTUAL_ENV", "CONDA_PREFIX", "JAVA_HOME", "GOPATH")
+_REPO_CONFIG = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "config",
+    "pluto_config.json"))
 
 
 def smartstreams_home() -> str:
-    return os.environ.get("PLUTO_SMARTSTREAMS_HOME") or os.path.join(
-        os.path.expanduser("~"), ".pluto", "smartstreams")
+    """Resolved as the server does: environment, config file, default."""
+    env = os.environ.get(defs.HOME_ENV)
+    if env:
+        return env
+    try:
+        with open(os.environ.get(defs.CONFIG_ENV) or _REPO_CONFIG,
+                  encoding="utf-8") as f:
+            home = json.load(f)[defs.CONFIG_SECTION]["home"]
+            if home:
+                return home
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return os.path.join(os.path.expanduser("~"), *defs.DEFAULT_HOME_PARTS)
 
 
 class PlutoJobsClient:
@@ -37,7 +49,7 @@ class PlutoJobsClient:
         self._key: Optional[str] = None
 
     def _read_key(self) -> str:
-        path = os.path.join(smartstreams_home(), "key")
+        path = os.path.join(smartstreams_home(), defs.KEY_FILE)
         try:
             with open(path, encoding="ascii") as f:
                 return f.read().strip()
@@ -56,33 +68,35 @@ class PlutoJobsClient:
         resp: dict = {}
         for _ in range(2):
             self._key = self._key or self._read_key()
-            resp = self.http._request(
-                "POST", f"/jobs/{op}", body=body, timeout=timeout or 30.0,
+            resp = self.http.request(
+                "POST", f"/jobs/{op}", body=body, timeout=timeout or defs.CALL_TIMEOUT_S,
                 extra_headers={"Authorization": f"Bearer {self._key}"})
-            if resp.get("reason") != "bad_key":
+            if resp.get("reason") != defs.ERR_BAD_KEY:
                 break
             self._key = None    # first contact creates the key; read it again
         if resp.get("status") != "ok":
             reason = resp.get("reason", "no response")
-            if reason == "unknown_route":
+            if reason == defs.ERR_UNKNOWN_ROUTE:
                 reason = ("this Pluto server has no SmartStreams; restart it "
                           "from v0.6.0 or newer")
             raise PlutoError(reason)
         resp.pop("status")
         return resp
 
+    # One method per operation that needs more than call().
+
     def start(self, **spec) -> dict:
         spec.setdefault("base_env",
-                        {k: os.environ[k] for k in BASE_ENV if k in os.environ})
+                        {k: os.environ[k] for k in defs.BASE_ENV if k in os.environ})
         spec.setdefault("framework", self.framework)
         return self.call("start", **spec)
 
-    def wait(self, *, timeout_ms: int = 50000, **fields) -> dict:
-        return self.call("wait", timeout=timeout_ms / 1000 + 15,
+    def wait(self, *, timeout_ms: int = defs.WAIT_DEFAULT_S * 1000, **fields) -> dict:
+        return self.call("wait", timeout=timeout_ms / 1000 + defs.WAIT_SLACK_S,
                          timeout_ms=timeout_ms, **fields)
 
     def export(self, job_id: str, path: Optional[str] = None) -> dict:
-        return self.call("export", timeout=900, job_id=job_id, path=path)
+        return self.call("export", timeout=defs.PACKAGE_TIMEOUT_S, job_id=job_id, path=path)
 
     def import_(self, path: str) -> dict:
-        return self.call("import", timeout=900, path=os.path.abspath(path))
+        return self.call("import", timeout=defs.PACKAGE_TIMEOUT_S, path=os.path.abspath(path))

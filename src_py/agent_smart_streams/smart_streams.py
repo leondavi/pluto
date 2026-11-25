@@ -21,6 +21,7 @@ if _SRC_PY not in sys.path:
 
 from agent_friend.frameworks import load_pluto_config  # noqa: E402
 from agent_smart_streams import reports  # noqa: E402
+from pluto_jobs_def import HISTORY_ALL  # noqa: E402
 from pluto_sdk import PlutoError, PlutoHttpClient, PlutoJobsClient  # noqa: E402
 
 
@@ -50,7 +51,7 @@ def parse(argv):
 
 
 def history(jobs, a):
-    recs = jobs.call("history", limit=10000)["history"]
+    recs = jobs.call("history", limit=HISTORY_ALL)["history"]
     if a.agent:
         recs = [r for r in recs if a.agent in (r.get("owner"), r.get("opener"))]
     if a.state:

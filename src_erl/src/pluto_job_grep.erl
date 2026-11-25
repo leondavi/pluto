@@ -8,16 +8,12 @@
 %%%-------------------------------------------------------------------
 -module(pluto_job_grep).
 
+-include("pluto.hrl").
+
 -export([grep/3, compile/2]).
 
--define(BLOCK, 262144).
--define(MAX_LINE, 1048576).          %% longer lines are matched in pieces
--define(CLIP, 4096).
--define(BUDGET, 268435456).
--define(DEADLINE_MS, 10000).
--define(MAX_OUT, 65536).             %% total text returned
--define(RE_LIMIT, 100000).
-
+%% @doc Compile a pattern; `fixed' escapes it first.
+-spec compile(binary(), map()) -> {ok, term()} | {error, binary()}.
 compile(Pattern, Opts) ->
     P = case maps:get(fixed, Opts, false) of
             true  -> re:replace(Pattern, "[][\\\\^$.|?*+(){}-]", "\\\\&",
@@ -30,19 +26,22 @@ compile(Pattern, Opts) ->
             {error, iolist_to_binary(io_lib:format("~ts at ~w", [Msg, At]))}
     end.
 
+%% @doc Search a byte range. The result holds groups of adjacent lines;
+%% resume_at says where to continue when a limit stopped the scan.
+-spec grep(src(), binary(), map()) -> {ok, map()} | {error, binary()}.
 grep(Src, Pattern, Opts) ->
     case compile(Pattern, Opts) of
         {error, R} -> {error, R};
         {ok, _} ->
-            {_Pid, Ref} = spawn_opt(
+            {Pid, Ref} = spawn_opt(
                 fun() -> exit({done, run(Src, Pattern, Opts)}) end,
-                [monitor, {max_heap_size, #{size => 16#1000000, kill => true,
+                [monitor, {max_heap_size, #{size => ?GREP_HEAP_WORDS, kill => true,
                                             error_logger => false}}]),
             receive
                 {'DOWN', Ref, process, _, {done, R}} -> {ok, R};
                 {'DOWN', Ref, process, _, _} -> {error, <<"grep_aborted">>}
-            after ?DEADLINE_MS + 5000 ->
-                exit(_Pid, kill),
+            after ?GREP_DEADLINE_MS + ?GREP_SLACK_MS ->
+                exit(Pid, kill),
                 erlang:demonitor(Ref, [flush]),
                 {error, <<"grep_deadline">>}
             end
@@ -55,10 +54,13 @@ run(#{hi := Hi} = Src, Pattern, Opts) ->
           invert => maps:get(invert, Opts, false),
           before => maps:get(before, Opts, 0),
           'after' => maps:get('after', Opts, 0),
-          max => maps:get(max, Opts, 50),
-          stop => erlang:monotonic_time(millisecond) + ?DEADLINE_MS,
-          budget => From + ?BUDGET,
-          line => pluto_job_read:line_of(Src, From),
+          max => maps:get(max, Opts, ?GREP_DEFAULT_HITS),
+          stop => erlang:monotonic_time(millisecond) + ?GREP_DEADLINE_MS,
+          budget => From + ?GREP_BUDGET,
+          line => case pluto_job_read:line_of(Src, From) of
+                      null -> 0;      %% unknown; offsets still work
+                      Line -> Line
+                  end,
           prev => [], left => 0, hits => 0, out => [], bytes => 0,
           limited => 0, groups => [], resume => undefined},
     Done = scan(S, From, <<>>),
@@ -77,7 +79,7 @@ scan(#{src := Src, hi := Hi, stop := Stop, budget := Budget} = S, Off, Carry) ->
     case Pos >= Budget orelse erlang:monotonic_time(millisecond) > Stop of
         true  -> S#{resume := Off};
         false ->
-            case pluto_job_read:bytes(Src, Pos, min(?BLOCK, Hi - Pos)) of
+            case pluto_job_read:bytes(Src, Pos, min(?JOB_READ_BLOCK, Hi - Pos)) of
                 <<>> when Carry =:= <<>> -> S;
                 <<>> ->
                     case line(S, Off, Carry, true) of
@@ -96,7 +98,7 @@ lines(S, Off, Bin) ->
                 {stop, S1} -> S1;
                 S1         -> lines(S1, Off + P + 1, Rest)
             end;
-        nomatch when byte_size(Bin) >= ?MAX_LINE ->
+        nomatch when byte_size(Bin) >= ?GREP_MAX_LINE ->
             case line(S, Off, Bin, false) of
                 {stop, S1} -> S1;
                 S1         -> scan(S1, Off + byte_size(Bin), <<>>)
@@ -104,13 +106,21 @@ lines(S, Off, Bin) ->
         nomatch -> scan(S, Off, binary:copy(Bin))
     end.
 
-line(#{re := Re, invert := Inv, line := N} = S0, Off, L, EndsLine) ->
+%% The deadline is checked per line: with a hostile pattern each line may
+%% burn its whole backtracking budget.
+line(#{stop := Stop, limited := Lim} = S, Off, L, EndsLine) ->
+    case Lim > 0 andalso erlang:monotonic_time(millisecond) > Stop of
+        true  -> {stop, S#{resume := Off}};
+        false -> match_line(S, Off, L, EndsLine)
+    end.
+
+match_line(#{re := Re, invert := Inv, line := N} = S0, Off, L, EndsLine) ->
     S = case EndsLine of
             true  -> S0#{line := N + 1};
             false -> S0
         end,
     Res = re:run(L, Re, [{capture, first, index}, report_errors,
-                         {match_limit, ?RE_LIMIT}]),
+                         {match_limit, ?GREP_RE_LIMIT}]),
     case Res of
         {error, _} -> context(S#{limited := maps:get(limited, S) + 1}, N, Off, L);
         nomatch when Inv -> hit(S, N, Off, L, 0);
@@ -119,12 +129,14 @@ line(#{re := Re, invert := Inv, line := N} = S0, Off, L, EndsLine) ->
         {match, [{Col, _} | _]} -> hit(S, N, Off, L, Col)
     end.
 
-hit(#{hits := H, max := Max, bytes := B} = S, _N, Off, _L, _C)
-  when H >= Max; B > ?MAX_OUT ->
+hit(#{hits := H, max := Max, bytes := B} = S, _, Off, _, _)
+  when H >= Max; B > ?GREP_MAX_OUT ->
     {stop, S#{resume := Off}};
 hit(#{hits := H, out := Out, prev := Prev, left := Left,
       'after' := After} = S, N, Off, L, Col) ->
-    %% Context that touches the previous group merges into it.
+    %% prev holds the context before this hit, newest first; out holds the
+    %% open group, newest first. Close that group first unless this hit or
+    %% its context continues it.
     S1 = case Left =:= 0 andalso Out =/= [] andalso Prev =/= [] andalso
               not adjacent(hd(Out), lists:last(Prev)) of
              true  -> flush(S);
@@ -149,7 +161,7 @@ context(#{left := Left, out := Out, bytes := B} = S, N, Off, L) when Left > 0 ->
        bytes := B + byte_size(maps:get(<<"text">>, E))};
 context(#{before := 0} = S, _N, _Off, _L) -> S;
 context(#{before := B, prev := Prev} = S, N, Off, L) ->
-    Clip = binary:copy(binary:part(L, 0, min(byte_size(L), ?CLIP))),
+    Clip = binary:copy(binary:part(L, 0, min(byte_size(L), ?GREP_CLIP))),
     S#{prev := lists:sublist([{N, Off, Clip} | Prev], B)}.
 
 flush(#{out := []} = S) -> S;
@@ -159,14 +171,14 @@ flush(#{out := Out, groups := G} = S) ->
 %% A clipped line is shown around its match, not from its start.
 entry(N, Off, L, Match, Col) ->
     Size = byte_size(L),
-    From = case Size > ?CLIP of
-               true  -> max(0, min(Col - ?CLIP div 4, Size - ?CLIP));
+    From = case Size > ?GREP_CLIP of
+               true  -> max(0, min(Col - ?GREP_CLIP div 4, Size - ?GREP_CLIP));
                false -> 0
            end,
-    Text = pluto_job_read:sanitize(binary:part(L, From, min(?CLIP, Size - From))),
+    Text = pluto_job_read:sanitize(binary:part(L, From, min(?GREP_CLIP, Size - From))),
     E = #{<<"line">> => N, <<"offset">> => Off, <<"match">> => Match,
           <<"text">> => Text},
-    case Size > ?CLIP of
+    case Size > ?GREP_CLIP of
         true  -> E#{<<"clipped">> => true};
         false -> E
     end.

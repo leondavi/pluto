@@ -5,9 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-COLUMNS = (("job_id", 27), ("name", 14), ("user", 9), ("opener", 12),
-           ("owner", 12), ("host", 12), ("opened", 16), ("elapsed", 9),
-           ("state", 11), ("activity", 8), ("size", 8))
+from agent_smart_streams.constants import COLUMNS
 
 
 def when(ms) -> str:

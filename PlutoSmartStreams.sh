@@ -9,6 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENTRY="${SCRIPT_DIR}/src_py/agent_smart_streams/smart_streams.py"
+MCP_CONFIG_TOOL="${SCRIPT_DIR}/src_py/agent_smart_streams/mcp_config.py"
 PLUTO_ENTRY="${SCRIPT_DIR}/src_py/agent_mcp_friend/pluto_mcp_friend.py"
 REQUIREMENTS="${SCRIPT_DIR}/requirements.txt"
 CONFIG_FILE="${SCRIPT_DIR}/config/pluto_config.json"
@@ -103,36 +104,11 @@ write_config() {
     local safe target
     safe=$(printf '%s' "${agent_id}" | tr -c 'A-Za-z0-9._-' '_')
     target="${MCP_DIR}/${safe}.smartstreams.json"
-    mkdir -p "${MCP_DIR}"
-    python3 - "${target}" "${PY}" "${ENTRY}" "${PLUTO_ENTRY}" "${agent_id}" \
-        "${host}" "${port}" "${framework}" "${with_pluto}" <<'PYEOF'
-import json, os, sys
-(target, py, entry, pluto, agent, host, port, framework, with_pluto) = sys.argv[1:]
-common = ["--agent-id", agent, "--host", host, "--http-port", port]
-env = {}
-if framework == "claude":
-    # Same inbox-socket pass-through PlutoMCPFriend.sh uses for wakeups.
-    for k in ("CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN"):
-        env[k] = "${%s}" % k
-home = os.environ.get("PLUTO_SMARTSTREAMS_HOME")
-def server(args):
-    s = {"command": py, "args": args, "env": dict(env)}
-    if home:
-        s["env"]["PLUTO_SMARTSTREAMS_HOME"] = home
-    if framework == "copilot":
-        s.update(type="local", tools=["*"])
-    return s
-extra = ["--framework", framework]
-if with_pluto == "true":
-    extra.append("--attach")    # the Pluto adapter owns the registration
-servers = {"smartstreams": server([entry] + common + extra)}
-if with_pluto == "true":
-    servers["pluto"] = server([pluto] + common)
-fd = os.open(target, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-with os.fdopen(fd, "w") as f:
-    json.dump({"mcpServers": servers}, f, indent=2)
-print(target)
-PYEOF
+    local extra=()
+    ${with_pluto} && extra=(--pluto-entry "${PLUTO_ENTRY}")
+    python3 "${MCP_CONFIG_TOOL}" --out "${target}" --python "${PY}" \
+        --entry "${ENTRY}" --agent-id "${agent_id}" --host "${host}" \
+        --port "${port}" --framework "${framework}" ${extra[@]+"${extra[@]}"}
 }
 
 need() { [[ $# -ge 2 ]] || die "$1 needs a value."; }

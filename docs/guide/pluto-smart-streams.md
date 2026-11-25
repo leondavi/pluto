@@ -25,13 +25,17 @@ run concurrently without the LLM managing the underlying process.
 | `job_next_chunk` | Next unread output; the cursor is durable and per agent |
 | `job_window` | Bounded read at an offset, line, tail or cursor |
 | `job_grep` | Regex on the server, with context, lines and offsets |
-| `job_control` | `cancel`/`halt`, `pause`, `resume`, `signal`; `tree` includes children |
+| `job_control` | `cancel`/`halt`, `pause`, `resume`, `signal` (INT TERM HUP USR1 USR2 QUIT KILL STOP CONT); `tree` includes children |
 | `job_input` | Write to stdin |
 | `job_stream` | Streams within the stream: `split`, `push`, `pause`, `resume`, `halt`, `followup` |
 | `job_manifest` | 64 KiB chunks with chained SHA-256; `verify` re-hashes |
 | `job_transfer` | Move a job to another agent |
 | `job_review` | Verdict and note pinned to a hashed byte range |
 | `job_open`, `job_export` | Open or import a package; write a `.pjob` |
+
+A job ends when its whole process group has ended, so background children
+(`server &`) keep it running, under limits and cancellable. The exit code is
+the main process's; until the group ends it shows as `leader_exit_code`.
 
 Pausing a *job* stops the process. Pausing a *nested stream* only stops
 delivery and pushes; the job keeps running.
@@ -64,22 +68,42 @@ every hash and never runs anything.
   them, since all agents of one user hold the same key.
 - Jobs run as the server's OS user, outside the agent CLI's Bash permission
   rules. The launcher never pre-approves `job_start`.
-- Commands and output are stored unencrypted. `env` values are not stored.
+- Commands, arguments, directories and output are stored unencrypted. `env`
+  values are not stored; PATH-like variables (PATH, HOME, VIRTUAL_ENV, ...) are
+  kept in the package on this host and stripped from exports.
+- Imported archives are untrusted: every field is checked and rewritten, every
+  hash verified, and only jobs started on this host can ever run on it.
 - Manifest hashes detect corruption. They do not prove who wrote a package.
 
 ## Configuration
 
 Optional `smartstreams` section in `config/pluto_config.json`: `home`,
 `python`, `max_running` (16), `max_per_agent` (8), `idle_after_ms` (30000),
-`min_free_bytes`, `allow_remote` (false). `PLUTO_SMARTSTREAMS_HOME` overrides
-the storage directory and must match for server and clients; a directory is
-used by one server at a time.
+`min_free_bytes` (256 MiB; below it jobs are stopped), `allow_remote` (false).
+`PLUTO_SMARTSTREAMS_HOME` overrides the storage directory and must match for
+server and clients; a directory is used by one server at a time. The server
+needs `python3` (3.9+). A job may print 1 GiB unless `max_output_bytes` says
+otherwise.
+
+## HTTP
+
+`POST /jobs/<op>` with `Authorization: Bearer <key>` and a JSON body that
+includes `agent_id`: `start status list open window next grep wait control
+input transfer stream review manifest export import notices history stats
+prune`. Errors are `{"status":"error","reason":"..."}`. Send a `request_id`
+with changing calls to make retries safe. `wait` takes `until` = `exit`,
+`output`, `idle` (`idle_ms`) or `pattern`, for `job_id` or `job_ids`, with
+`all` and `timeout_ms` (max 55000).
 
 ## Limits
 
-Processes that call `setsid` escape group signals. Grep matches bytes, so
+A command that truncates its own log (on Linux also `> /dev/stderr`; use
+`>> /dev/stderr` or `>&2`) loses that output; the job then reports
+`output_truncated`. Processes that call `setsid` escape group signals. Grep matches bytes, so
 `ignore_case` is ASCII only. Queued jobs that were given `env` values fail if
-the server restarts before they start.
+the server restarts before they start. If a runner is killed, its job is
+`orphaned`: output limits and timeouts stop applying until it ends or is
+cancelled, and line numbers far past the last manifest chunk are null.
 
 ## Tests
 

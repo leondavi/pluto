@@ -76,7 +76,7 @@ def test_start_status_and_failure(srv):
     assert s["user"] and s["opened_at"] and s["elapsed_ms"] >= 0
     with pytest.raises(PlutoError, match="cwd"):
         j.start(command="true", cwd="/no/such")
-    with pytest.raises(PlutoError, match="exactly one"):
+    with pytest.raises(PlutoError, match="exactly_one"):
         j.start(command="true", argv=["true"])
     bad = j.start(argv=["/no/such/bin"])["job_id"]
     assert done(j, bad)["state"] == "failed"
@@ -575,3 +575,168 @@ def test_launcher_writes_private_config(srv, tmp_path, framework, flag, prefix):
     assert set(cfg) == {"smartstreams", "pluto"}
     assert "--attach" in cfg["smartstreams"]["args"]
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+# ── Regression tests for the v0.6.0 review ──────────────────────────────────
+
+def test_broken_package_does_not_break_the_others(srv):
+    j = srv.jobs("brk")
+    jid, _ = run(j, "echo x")
+    for text in ('{"brk":{"pos":"abc"}}', "[]", "", "nonsense"):
+        with open(srv.path(jid, "cursors.json"), "w") as f:
+            f.write(text)
+        assert j.call("list")["total"] == 1
+        assert j.call("next", job_id=jid)["text"] == "x\n"
+
+
+def test_foreign_queued_package_never_runs(tmp_path):
+    s = Server(tmp_path).start()
+    try:
+        j = s.jobs("f")
+        jid, _ = run(j, "true")
+        s.kill()
+        path = s.path("J-20260101-00000000000000aa", "package.json")
+        os.makedirs(os.path.join(os.path.dirname(path), "control"))
+        pkg = json.load(open(s.path(jid, "package.json")))
+        pkg.update(id="J-20260101-00000000000000aa", sched="queued", done=False,
+                   command=f"touch {tmp_path}/PWNED", env_keys=[],
+                   origin={"host_id": "elsewhere"})
+        json.dump(pkg, open(path, "w"))
+        s.start()
+        j = s.jobs("f")
+        time.sleep(2)
+        assert j.call("status", job_id=pkg["id"])["state"] == "lost"
+        assert not os.path.exists(tmp_path / "PWNED")
+    finally:
+        s.cleanup()
+
+
+def test_disk_errors_hit_one_job_not_the_server(srv):
+    j = srv.jobs("disk")
+    a = j.start(command="sleep 1")["job_id"]
+    until(lambda: j.call("status", job_id=a)["state"] == "running")
+    d = os.path.dirname(srv.path(a, "x"))
+    blocker = srv.path(a, "package.json.tmp")
+    os.mkdir(blocker)                       # every write of package.json fails
+    time.sleep(8)
+    b, s = run(j, "echo fine")
+    assert s["state"] == "succeeded"
+    assert j.call("status", job_id=a)["state"] == "succeeded"
+    os.rmdir(blocker)
+    until(lambda: a in [n["job_id"] for n in j.call("notices")["notices"]])
+    assert os.path.isdir(d)
+
+
+def test_removed_directory_frees_the_slot(srv):
+    import shutil
+    j = srv.jobs("gone")
+    a = j.start(command="sleep 300")["job_id"]
+    until(lambda: j.call("status", job_id=a)["state"] == "running")
+    pg = json.load(open(srv.path(a, "state.json")))["pgid"]
+    shutil.rmtree(os.path.dirname(srv.path(a, "x")))
+    until(lambda: not [x for x in j.call("list")["jobs"] if x["job_id"] == a])
+    os.killpg(pg, signal.SIGKILL)
+
+
+def test_slow_split_does_not_block_other_calls(srv):
+    j, o = srv.jobs("slow"), srv.jobs("slow2")
+    jid, _ = run(j, f"{PY} -c \"[print('a'*40000+'b') for _ in range(400)]\"")
+    t = threading.Thread(target=lambda: pytest.raises(PlutoError, j.call, "stream",
+                         job_id=jid, action="split", pattern="(a+)+$"))
+    t.start()
+    worst = 0
+    while t.is_alive():
+        t0 = time.time()
+        o.call("status", job_id=jid)
+        worst = max(worst, time.time() - t0)
+    assert worst < 1
+
+
+def test_concurrent_exports_and_next(srv):
+    from concurrent.futures import ThreadPoolExecutor
+    j = srv.jobs("conc")
+    jid, _ = run(j, "seq 1 200000")
+    with ThreadPoolExecutor(6) as ex:
+        paths = list(ex.map(lambda _: j.export(jid)["path"], range(3)))
+        assert len(set(paths)) == 3
+        parts = list(ex.map(lambda _: j.call("next", job_id=jid, max_bytes=5000),
+                            range(40)))
+    spans = sorted((p["start"], p["end"]) for p in parts)
+    assert all(a[1] == b[0] for a, b in zip(spans, spans[1:]))
+
+
+def test_hostile_imports_leave_the_server_alone(srv, tmp_path):
+    from tests.test_job_package import rewrite, streams
+    j = srv.jobs("host")
+    jid, _ = run(j, "echo x")
+    good = str(tmp_path / "g.pjob")
+    j.export(jid, good)
+    secret = tmp_path / "secret.log"
+    secret.write_text("TOPSECRET")
+    changes = [
+        lambda f: f.__setitem__("streams.json", streams(id=str(secret)[:-4])),
+        lambda f: f.__setitem__("streams.json", b"{}"),
+        lambda f: f.__setitem__("cursors.json", b'{"host":{"pos":"abc"}}'),
+        lambda f: f.__setitem__("state.json", f["state.json"].replace(
+            b'"paused_ms": 0', b'"paused_ms": NaN')),
+        lambda f: f.__setitem__("package.json", f["package.json"].replace(
+            b'"id"', b'"id": "../../x", "id"', 1))]
+    for _ in range(3):
+        for n, ch in enumerate(changes):
+            bad = str(rewrite(good, tmp_path / f"b{n}.pjob", ch))
+            with pytest.raises(PlutoError):
+                j.import_(bad)
+    with pytest.raises(PlutoError):
+        j.call("window", job_id=jid, stream=str(secret)[:-4])
+    log = open(os.path.join(srv.base, "server.log"), errors="replace").read()
+    assert "pluto_job_mgr terminating" not in log
+    assert j.call("status", job_id=jid)["state"] == "succeeded"
+
+
+def test_missing_python_does_not_stop_pluto(tmp_path):
+    s = Server(tmp_path, python="/no/such/python").start()
+    try:
+        with pytest.raises(PlutoError, match="python3"):
+            s.jobs("np")
+        assert s.proc.poll() is None
+    finally:
+        s.kill()
+
+
+def test_helper_failure_never_declares_a_live_job_lost(tmp_path):
+    py = tmp_path / "py"
+    py.write_text(f'#!/bin/sh\n[ -e {tmp_path}/broken ] && exit 1\nexec {PY} "$@"\n')
+    py.chmod(0o755)
+    s = Server(tmp_path / "s", python=str(py)).start()
+    try:
+        j = s.jobs("hf")
+        a = j.start(command="sleep 60")["job_id"]
+        until(lambda: j.call("status", job_id=a)["state"] == "running")
+        (tmp_path / "broken").touch()
+        st = json.load(open(s.path(a, "state.json")))
+        os.kill(st["runner_pid"], signal.SIGSTOP)      # heartbeat goes stale
+        time.sleep(14)
+        assert j.call("status", job_id=a)["state"] == "running"
+        os.kill(st["runner_pid"], signal.SIGCONT)
+        j.call("control", job_id=a, action="cancel")
+        assert done(j, a)["state"] == "cancelled"
+    finally:
+        (tmp_path / "broken").unlink(missing_ok=True)
+        s.cleanup()
+
+
+def test_home_from_config_file(tmp_path, monkeypatch):
+    from pluto_sdk.jobs import smartstreams_home
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"smartstreams": {"home": str(tmp_path / "h")}}))
+    monkeypatch.delenv("PLUTO_SMARTSTREAMS_HOME", raising=False)
+    monkeypatch.setenv("PLUTO_CONFIG", str(cfg))
+    assert smartstreams_home() == str(tmp_path / "h")
+
+
+def test_short_jobs_finish_promptly(srv):
+    j = srv.jobs("quick")
+    for _ in range(4):
+        t0 = time.time()
+        run(j, "true")
+        assert time.time() - t0 < 2.5

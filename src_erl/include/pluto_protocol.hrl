@@ -142,4 +142,14 @@
 %% caller does not want to enter the wait queue.
 -define(STATUS_UNAVAILABLE,     <<"unavailable">>).
 
+%% ── SmartStreams jobs ───────────────────────────────────────────────────────
+-define(EVT_JOB_FINISHED,    <<"job_finished">>).
+-define(EVT_JOB_TRANSFERRED, <<"job_transferred">>).
+-define(ERR_BAD_JOB_ID,      <<"bad_job_id">>).
+-define(ERR_UNKNOWN_JOB,     <<"unknown_job">>).
+-define(ERR_UNKNOWN_STREAM,  <<"unknown_stream">>).
+-define(ERR_NOT_OWNER,       <<"not_owner">>).
+-define(ERR_BAD_KEY,         <<"bad_key">>).
+-define(CAP_SMARTSTREAMS,    <<"smartstreams">>).
+
 -endif. %% PLUTO_PROTOCOL_HRL

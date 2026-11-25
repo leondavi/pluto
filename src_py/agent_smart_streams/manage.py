@@ -6,7 +6,11 @@ import curses
 import os
 import sys
 
-from agent_smart_streams import reports
+from agent_smart_streams import compact, reports
+from agent_smart_streams.constants import (
+    COLUMNS, REFRESH_MS, VIEW_CONTEXT, VIEW_LINES, VIEW_MATCHES,
+)
+from pluto_jobs_def import LIST_ALL, LIVE_STATES, READ_MAX
 from pluto_sdk import PlutoError, PlutoJobsClient
 
 HELP = ("up/down select  v view  g grep  m move  e export  p pause  r resume  "
@@ -15,7 +19,7 @@ HELP = ("up/down select  v view  g grep  m move  e export  p pause  r resume  "
 
 def run(jobs: PlutoJobsClient) -> int:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print(reports.table(jobs.call("list", scope="all", limit=500)["jobs"]))
+        print(reports.table(jobs.call("list", scope="all", limit=LIST_ALL)["jobs"]))
         return 0
     os.environ.setdefault("ESCDELAY", "25")
     curses.wrapper(lambda scr: Manager(scr, jobs).loop())
@@ -23,6 +27,8 @@ def run(jobs: PlutoJobsClient) -> int:
 
 
 class Manager:
+    """One screen: the job table, a message line, and single-key actions."""
+
     def __init__(self, scr, jobs):
         self.scr, self.jobs = scr, jobs
         self.sel = 0
@@ -40,19 +46,18 @@ class Manager:
 
     def refresh(self):
         try:
-            jobs = self.jobs.call("list", scope="all", limit=500)["jobs"]
+            jobs = self.jobs.call("list", scope="all", limit=LIST_ALL)["jobs"]
         except (PlutoError, OSError) as exc:
             self.msg = f"error: {exc}"
             return
-        live = ("queued", "starting", "running", "paused", "orphaned")
-        self.rows = [j for j in jobs if self.all or j["state"] in live]
+        self.rows = [j for j in jobs if self.all or j["state"] in LIVE_STATES]
         self.sel = max(0, min(self.sel, len(self.rows) - 1))
 
     def draw(self):
         self.scr.erase()
         h, _ = self.scr.getmaxyx()
         self.put(0, f"PlutoSmartStreams - {len(self.rows)} jobs", curses.A_BOLD)
-        self.put(1, reports.line({k: k.upper() for k, _ in reports.COLUMNS}),
+        self.put(1, reports.line({k: k.upper() for k, _ in COLUMNS}),
                  curses.A_UNDERLINE)
         page = max(1, h - 5)
         top = (self.sel // page) * page
@@ -100,17 +105,17 @@ class Manager:
         job = self.rows[self.sel]
         jid = job["job_id"]
         if key == "v":
-            m = self.jobs.call("window", job_id=jid, tail=2000, max_bytes=32768,
+            m = self.jobs.call("window", job_id=jid, tail=VIEW_LINES, max_bytes=READ_MAX,
                                strip_ansi=True)
             self.pager(m["text"])
         elif key == "g":
             pat = self.ask("grep: ")
             if pat:
-                m = self.jobs.call("grep", job_id=jid, pattern=pat, before=2,
-                                   after=2, max_matches=100)
-                self.pager("\n--\n".join(
-                    "\n".join(f"{e['line']}{':' if e['match'] else '-'}{e['text']}"
-                              for e in g) for g in m["groups"]) or "(no match)")
+                m = self.jobs.call("grep", job_id=jid, pattern=pat,
+                                   before=VIEW_CONTEXT, after=VIEW_CONTEXT,
+                                   max_matches=VIEW_MATCHES)
+                self.pager(compact.grep_lines(m["groups"], offsets=False)
+                           or "(no match)")
         elif key == "m":
             to = self.ask(f"move {jid} from {job['owner']} to agent: ")
             if to:
@@ -130,7 +135,7 @@ class Manager:
         while True:
             self.refresh()
             self.draw()
-            self.scr.timeout(1000)
+            self.scr.timeout(REFRESH_MS)
             c = self.scr.getch()
             if c == ord("q"):
                 return

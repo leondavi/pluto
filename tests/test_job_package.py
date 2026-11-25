@@ -16,7 +16,7 @@ JID = "J-20260101-0123456789abcdef"
 
 
 def call(*a):
-    out = subprocess.run([sys.executable, PKG, *map(str, a)], text=True,
+    out = subprocess.run([sys.executable, "-I", "-B", PKG, *map(str, a)], text=True,
                          capture_output=True)
     return json.loads(out.stdout)
 
@@ -25,7 +25,7 @@ def call(*a):
 def job(tmp_path):
     d = tmp_path / "job"
     (d / "control").mkdir(parents=True)
-    subprocess.run([sys.executable, os.path.join(PRIV, "pluto_job_runner.py"),
+    subprocess.run([sys.executable, "-I", "-B", os.path.join(PRIV, "pluto_job_runner.py"),
                     "run", str(d)], text=True, capture_output=True,
                    input=json.dumps({"command": "seq 1 30000"}) + "\n")
     import time
@@ -33,7 +33,8 @@ def job(tmp_path):
         time.sleep(0.05)
     pkg = tmp_path / "package.json"
     pkg.write_text(json.dumps({"schema": 1, "id": JID, "owner": "a",
-                               "opener": "a", "user": "u", "opened_at": 1}))
+                               "opener": "a", "user": "u", "opened_at": 1,
+                               "origin": {"host_id": "h"}}))
     dest = tmp_path / "x.pjob"
     assert not call("export", d, pkg, dest)["snapshot"]
     return dest
@@ -55,6 +56,35 @@ def rewrite(src, dst, change):
     return dst
 
 
+def edit(files, name, old, new):
+    assert old in files[name]
+    files[name] = files[name].replace(old, new, 1)
+
+
+def streams(**kw):
+    s = {"id": "S1", "kind": "push", "state": "open", "name": "", "by": "a",
+         "at": 1, "parent": None, **kw}
+    return json.dumps({"seq": 1, "streams": [s], "followups": []}).encode()
+
+
+def test_unknown_and_scheduling_fields_are_dropped(job, tmp_path):
+    ok = rewrite(job, tmp_path / "n.pjob", lambda f: edit(
+        f, "package.json", b'"schema"', b'"sched": "queued", "done": false, "schema"'))
+    call("import", ok, tmp_path / "s")
+    pkg = json.loads((tmp_path / "s" / "package.json").read_text())
+    assert "sched" not in pkg and "done" not in pkg
+
+
+def test_huge_extension_header_is_refused_cheaply(tmp_path):
+    import gzip
+    info = tarfile.TarInfo("././@LongLink")
+    info.type, info.size = tarfile.GNUTYPE_LONGNAME, 3 << 30
+    with gzip.open(tmp_path / "b.pjob", "wb", 1) as f:
+        f.write(info.tobuf(tarfile.GNU_FORMAT))
+        f.write(b"\0" * (64 << 20))
+    assert "type" in call("import", tmp_path / "b.pjob", tmp_path / "s")["error"]
+
+
 def test_round_trip(job, tmp_path):
     r = call("import", job, tmp_path / "s")
     assert r["id"] == JID and r["final"]
@@ -74,6 +104,18 @@ def test_round_trip(job, tmp_path):
     ("schema", lambda f: f.__setitem__("package.json", f["package.json"].replace(
         b'"schema": 1', b'"schema": 2')), "schema"),
     ("state", lambda f: f.__setitem__("state.json", b"[]"), "not an object"),
+    ("nan", lambda f: edit(f, "state.json", b'"paused_ms": 0', b'"paused_ms": NaN'), "NaN"),
+    ("dup", lambda f: edit(f, "package.json", b'"id":', b'"id": "../../x", "id":'), "duplicate"),
+    ("surrogate", lambda f: edit(f, "package.json", b'"user": "u"', b'"user": "\\ud800"'), "unreadable"),
+    ("bool", lambda f: edit(f, "package.json", b'"opened_at": 1', b'"opened_at": true'), "opened_at"),
+    ("origin", lambda f: edit(f, "package.json", b'{"host_id": "h"}', b'"x"'), "origin"),
+    ("nostate", lambda f: edit(f, "state.json", b'"state"', b'"zzz"'), "lacks state"),
+    ("cursor", lambda f: f.__setitem__("cursors.json", b'{"a":{"pos":"abc"}}'), "pos"),
+    ("streams", lambda f: f.__setitem__("streams.json", b"{}"), "streams"),
+    ("streamid", lambda f: f.__setitem__("streams.json", streams(id="../../x")), "stream"),
+    ("streamrange", lambda f: f.__setitem__("streams.json", streams(
+        kind="split", lo=0, hi=10**9)), "range"),
+    ("review", lambda f: f.__setitem__("reviews.jsonl", b'{"id":1}\n'), "review"),
     ("missing", lambda f: f.pop("manifest.jsonl"), "missing"),
 ])
 def test_tampered(job, tmp_path, name, change, why):

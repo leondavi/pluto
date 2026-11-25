@@ -9,43 +9,22 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from typing import Any, Optional
+from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from agent_smart_streams import compact
+from agent_smart_streams.constants import MANIFEST_PAGE
+from agent_smart_streams.notices import NoticeBoard
+from pluto_jobs_def import (
+    GREP_MATCHES, LIST_DEFAULT, READ_DEFAULT, WAIT_DEFAULT_S, WAIT_MAX_S,
+)
 from pluto_sdk import PlutoError, PlutoJobsClient
 
 READ = ToolAnnotations(readOnlyHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 RUNS = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
-
-
-class NoticeBoard:
-    """Attaches durable job notices to tool results.
-
-    A notice is acknowledged by the call *after* the one that carried it,
-    so a result lost on the way to the model shows it again.
-    """
-
-    def __init__(self, jobs: PlutoJobsClient):
-        self.jobs = jobs
-        self._ack = 0
-
-    def attach(self, result: dict) -> dict:
-        try:
-            notices = self.jobs.call("notices", ack=self._ack)["notices"]
-        except (PlutoError, OSError):
-            return result
-        if not notices:
-            return result
-        self._ack = max(n["seq"] for n in notices)
-        told = compact.final_jobs(result)
-        fresh = [{k: n[k] for k in ("event", "job_id", "name", "state")
-                  if n.get(k) is not None} for n in notices
-                 if not (n["event"] == "job_finished" and n["job_id"] in told)]
-        return dict(result, _job_notices=fresh) if fresh else result
 
 
 def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
@@ -99,7 +78,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
     async def job_window(
         job_id: str, offset: Optional[int] = None, line: Optional[int] = None,
         tail: Optional[int] = None, cursor: bool = False, before: int = 0,
-        lines: Optional[int] = None, max_bytes: int = 8192,
+        lines: Optional[int] = None, max_bytes: int = READ_DEFAULT,
         stream: Optional[str] = None, strip_ansi: bool = False,
         hashes: bool = False,
     ) -> str:
@@ -118,7 +97,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
     async def job_grep(
         pattern: str, job_id: Optional[str] = None,
         job_ids: Optional[list[str]] = None, before: int = 0, after: int = 0,
-        max_matches: int = 50, ignore_case: bool = False, fixed: bool = False,
+        max_matches: int = GREP_MATCHES, ignore_case: bool = False, fixed: bool = False,
         invert: bool = False, from_offset: Optional[int] = None,
         to_offset: Optional[int] = None, from_line: Optional[int] = None,
         to_line: Optional[int] = None, stream: Optional[str] = None,
@@ -146,7 +125,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
 
     @mcp.tool(annotations=WRITE, structured_output=False)
     async def job_next_chunk(
-        job_id: str, max_bytes: int = 8192, stream: Optional[str] = None,
+        job_id: str, max_bytes: int = READ_DEFAULT, stream: Optional[str] = None,
         from_offset: Optional[int] = None, strip_ansi: bool = False,
         encoding: Optional[str] = None, hashes: bool = False,
     ) -> str:
@@ -165,7 +144,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
         tree: bool = False,
     ) -> str:
         """action: cancel (or halt), pause, resume, signal (with signal=
-        INT|TERM|HUP|USR1|USR2|QUIT|KILL). tree=true also applies it to
+        INT|TERM|HUP|USR1|USR2|QUIT|KILL|STOP|CONT). tree=true also applies it to
         child jobs."""
         return await _run(jobs.call, "control", job_id=job_id, action=action,
                           signal=signal, tree=tree or None)
@@ -174,14 +153,14 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
     async def job_wait(
         job_id: Optional[str] = None, job_ids: Optional[list[str]] = None,
         until: str = "exit", pattern: Optional[str] = None,
-        wait_all: bool = False, timeout_s: int = 50,
+        wait_all: bool = False, timeout_s: int = WAIT_DEFAULT_S,
         from_offset: Optional[int] = None, idle_ms: Optional[int] = None,
     ) -> str:
         """Block (max 55 s) until a job exits, or until="output", "idle", or
         "pattern" (regex appears in output). Give job_ids for several;
         wait_all waits for every one. Use this instead of polling."""
         return await _run(
-            jobs.wait, timeout_ms=max(1, min(int(timeout_s), 55)) * 1000,
+            jobs.wait, timeout_ms=max(1, min(int(timeout_s), WAIT_MAX_S)) * 1000,
             job_id=job_id, job_ids=job_ids, until=until, pattern=pattern,
             all=wait_all or None, from_offset=from_offset, idle_ms=idle_ms,
             shape=compact.waited)
@@ -196,7 +175,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
     async def job_list(
         scope: str = "mine", states: Optional[list[str]] = None,
         tags: Optional[list[str]] = None, parent: Optional[str] = None,
-        limit: int = 20,
+        limit: int = LIST_DEFAULT,
     ) -> str:
         """List jobs, including those from earlier sessions. scope: mine,
         user or all. parent lists the children of a job."""
@@ -218,7 +197,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None) -> None:
         return await _run(work)
 
     @mcp.tool(annotations=READ, structured_output=False)
-    async def job_manifest(job_id: str, start: int = 0, limit: int = 20,
+    async def job_manifest(job_id: str, start: int = 0, limit: int = MANIFEST_PAGE,
                            verify: bool = False) -> str:
         """Chunk manifest (64 KiB chunks, chained SHA-256). verify=true
         re-hashes the listed chunks on the server."""

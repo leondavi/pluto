@@ -148,7 +148,7 @@ its onset per window; closest pairs, spacing variance, Gram blocks and S(g_n) pe
 by Rosser's rule). Tests compare it with Euler-Maclaurin summation (1e-8), the first zeros, N(100) = 29,
 N(1000) = 649, N(10000) = 10142, the 10000th zero, the bad Gram points below 400 and Lehmer's pair. Truth takes about 50 s of CPU.
 
-@@SOLVER@@
+Scripted results for E7 at full size: not yet measured (`verify_e7.py`, policies wise and lazy). The post-run analysis of `verify_e7.py` alone, on unpaced scans of 300 intervals, gets full marks in counts, bands and campaign.
 
 **Arm C `native_sub`.** B's tools, prompt and limits plus Claude Code's Agent/Task tool. Its
 paragraph is B's plus a neutral offer (foreground or background, at most four at a time). Rules: the same

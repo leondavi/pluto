@@ -1,11 +1,15 @@
-"""Workload 1: stress trace of a persistent AVL map, one process per shard."""
+"""Workload 1 (v2): stress trace of a persistent AVL map, one process per shard.
+
+Shards run in groups of twelve that start together (barrier).
+"""
 
 import argparse
 import random
 
 from wl_common import *  # noqa: F401,F403  (inlined by the builder)
 
-WARM = 1500
+WARM = 1200
+AUDITS = ("ORDER", "BALANCE", "SIZE")
 
 
 def cell_ck(key, val):
@@ -86,49 +90,76 @@ def locate(t, k):
     return last, path
 
 
+def _spoil_path(rng, path, k):
+    """Make one inner element contradict the first one, or None if too short."""
+    if len(path) < 4 or k == path[0]:
+        return None
+    path = list(path)
+    j = rng.randrange(1, len(path) - 1)
+    path[j] = path[0] + rng.randrange(1, 60) if k < path[0] else path[0] - rng.randrange(1, 60)
+    return path
+
+
 def trace(p):
-    """Yield (fraction, line). ``p`` is one shard's parameter dict."""
+    """Yield (fraction, line-or-event). ``p`` is one shard's parameter dict."""
     rng = random.Random(f"shard:{p['seed']}:{p['shard']}")
     n, sh = p["ops"], p["shard"]
-    kind, fop = p["kind"], p["fault_op"]
     cells = {}
     for op, text in p["cells"]:
         cells.setdefault(op, []).append(text)
     root, ver, snaps, sid, scratch = None, 0, [], 0, []
-    present = {}
+    present, pending, rebuild, rid = {}, set(), 0, 0
     for _ in range(WARM):
         k = rng.randrange(1000, 400000)
         root = put(root, k, 0, scratch)
         present[k] = 0
     keys = sorted(present)
-    yield 0.0, f"# shard={sh} ops={n} warm={len(keys)} fmt=3"
+    fresh = []                              # keys written in this trace
+    yield 0.0, f"# shard={sh} ops={n} warm={len(keys)} fmt=4"
     for i in range(1, n + 1):
         frac = i / n
-        damage = kind != "NONE" and (i == fop or (i > fop and rng.random() < 1 / 300))
-        lt = i * 10 + sh
-        thr = rng.randrange(8)
+        for kind, fop in p["faults"]:
+            if i == fop or (i > fop and rng.random() < 1 / 150):
+                pending.add(kind)
+        lt, thr = i * 50 + sh, rng.randrange(8)
+        if i == p["spin_op"]:
+            yield frac, (p["spin"], i)
         for text in cells.get(i, ()):
             yield frac, f"{i:06d} lt={lt:07d} {text}"
-        r = rng.random()
-        rots = []
-        if damage and kind == "STALE" or r < 0.30:
-            k = rng.choice(keys)
+        if rebuild:
+            rebuild -= 1
+            if not rebuild:
+                yield frac, f"{i:06d} REBUILD end id={rid:04d} thr=t{thr}"
+        elif rng.random() < 1 / 300:
+            rebuild, rid = rng.randrange(15, 45), rid + 1
+            yield frac, f"{i:06d} REBUILD begin id={rid:04d} thr=t{thr}"
+        r, rots, forced = rng.random(), [], None
+        for kind in ("VERSION", "STALE"):
+            if kind in pending and forced is None and (kind == "VERSION" or fresh):
+                forced = kind
+        if forced == "STALE":
+            live = [k for k in fresh[-200:] if present.get(k)]
+            forced = "STALE" if live else None
+        if forced == "STALE" or (forced is None and r < 0.30):
+            k = rng.choice(live if forced else fresh[-300:] if fresh and r < 0.18 else keys)
             want = present.get(k, 0)
-            repl = 1 if rng.random() < 0.25 else 0
+            repl = 1 if rng.random() < 0.25 and not forced else 0
             got = want
-            if repl and want and rng.random() < 0.15:
+            if forced or (repl and want and rng.random() < 0.2):
                 got = rng.randrange(want)
-            if damage and kind == "STALE":
-                repl, want = 0, max(want, 1)
-                got = rng.randrange(want)
-            op = f"GET key={k:06d} ver={got:05d} want={want:05d} repl={repl}"
-        elif r < 0.78 or len(present) < 900:
+            pending.discard("STALE" if forced else None)
+            op = f"GET key={k:06d} ver={got:05d} repl={repl}"
+        elif forced == "VERSION" or r < 0.78 or len(present) < 900:
             k = rng.randrange(1000, 400000) if rng.random() < 0.5 else rng.choice(keys)
             ver += 1
+            if forced == "VERSION":
+                ver += rng.randrange(1, 3)
+                pending.discard("VERSION")
             root = put(root, k, ver, rots)
             if k not in present:
                 keys.append(k)
             present[k] = ver
+            fresh.append(k)
             op = f"PUT key={k:06d} ver={ver:05d} val={rng.randrange(10**6):06d}"
         else:
             j = rng.randrange(len(keys))
@@ -137,42 +168,53 @@ def trace(p):
             keys.pop()
             present.pop(k, None)
             root = delete(root, k, rots)
-            op = f"DEL key={k:06d} ver={ver:05d}"
+            op = f"DEL key={k:06d}"
         (nd, lo, hi), path = locate(root, k)
+        path = path[-9:]
+        if "PATH" in pending:
+            bad = _spoil_path(rng, path, k)
+            if bad:
+                path = bad
+                pending.discard("PATH")
         yield frac, (f"{i:06d} lt={lt:07d} thr=t{thr} {op} size={_s(root)} h={_h(root)} "
-                     f"root={zlib.crc32(repr((root[0], root[1], i)).encode()):08x} "
-                     f"path={'/'.join(map(str, path[-9:]))}")
+                     f"path={'/'.join(map(str, path))}")
         for rk, b in rots:
             yield frac, f"{i:06d} ROT node={rk:06d} bf={b:+d} -> settled thr=t{thr}"
         key, lh, rh, ls, rs = nd[0], _h(nd[4]), _h(nd[5]), _s(nd[4]), _s(nd[5])
-        bf, sz = lh - rh, nd[3]
-        if damage and kind == "BALANCE":
-            sgn = rng.choice((-1, 1))
-            rh = lh + 2 if sgn < 0 else rh
-            lh = rh + 2 if sgn > 0 else lh
-            bf = lh - rh
-        elif damage and kind == "SIZE":
-            sz += rng.choice((-1, 1, 2))
-        elif damage and kind == "ORDER":
+        sz, hit = nd[3], set()
+        if rebuild:                         # transient states are legal here
+            hit = {k for k in AUDITS if rng.random() < 0.06}
+        else:
+            hit = {k for k in AUDITS if k in pending}
+            pending -= hit
+        if "BALANCE" in hit:
             if rng.random() < 0.5:
-                hi = max(lo, key - rng.randrange(1, 40))
-                hi = min(hi, key)
+                rh = lh + 2
+            else:
+                lh = rh + 2
+        if "SIZE" in hit:
+            sz += rng.choice((-1, 1, 2))
+        if "ORDER" in hit:
+            if rng.random() < 0.5:
+                hi = max(1, key - rng.randrange(0, 40))
                 lo = min(lo, hi - 1)
             else:
-                lo = min(key + rng.randrange(1, 40), 999998)
+                lo = key + rng.randrange(0, 40)
                 hi = max(hi, lo + 1)
         yield frac, (f"{i:06d} AUDIT node={key:06d} lo={lo:06d} hi={hi:06d} lh={lh} rh={rh} "
-                     f"bf={bf:+d} lsz={ls} rsz={rs} sz={sz}")
-        if i % 90 == 0:
+                     f"bf={lh - rh:+d} lsz={ls} rsz={rs} sz={sz}")
+        if i % 60 == 0:
             sid += 1
             pin = rng.choice(keys)
             dg = zlib.crc32(f"{p['seed']}:{sh}:{sid}".encode())
             snaps.append((sid, pin, dg))
             yield frac, f"{i:06d} SNAP id={sid:05d} pin={pin:06d} dg={dg:08x}"
-        bad = damage and kind == "PERSIST"
-        if bad or (snaps and i % 45 == 20):
+        bad = "PERSIST" in pending and bool(snaps)
+        if bad or (snaps and i % 30 == 20):
             s = rng.choice(snaps)
             dg = s[2] ^ (1 << rng.randrange(32)) if bad else s[2]
+            if bad:
+                pending.discard("PERSIST")
             yield frac, f"{i:06d} RECHK id={s[0]:05d} pin={s[1]:06d} dg={dg:08x}"
         if rng.random() < 0.002:
             yield frac, (f"{i:06d} ERROR latch timeout thr=t{thr} node={rng.choice(keys):06d} "
@@ -182,13 +224,53 @@ def trace(p):
     yield 1.0, f"# done shard={sh} size={_s(root)} h={_h(root)}"
 
 
+def text_lines(p):
+    """The trace as text up to a livelock, without live-only SPIN lines."""
+    for _, x in trace(p):
+        if isinstance(x, str):
+            yield x
+        elif x[0] == "LIVELOCK":
+            return
+
+
 def main():
     ap = argparse.ArgumentParser(description="Stress one shard of the persistent map.")
     ap.add_argument("--shard", type=int, required=True)
     a = ap.parse_args()
     p = load_image(f"shard{a.shard}.img")
-    led = Ledger(f"shard{a.shard}")
-    run_paced(trace(p), p["duration"], led)
+    led = Ledger(f"shard{a.shard}", shard=a.shard)
+    group = {f"shard{s}" for s in p["group"]}
+    limit = time.time() + p["barrier_s"]
+    say(f"# shard={a.shard} waiting for its group of {len(group)}")
+    while not group <= set(live_labels()):
+        if time.time() > limit:
+            say("# barrier timeout: not all shards of the group are running")
+            os._exit(75)
+        time.sleep(0.5)
+        led.beat()
+    led.mark(began=time.time())
+
+    def spin(i, seconds):
+        t, k = time.time(), 0
+        while time.time() - t < seconds:
+            say(f"{i:06d} SPIN latch={i % 97:02d} turns={k}")
+            k += 1
+            time.sleep(1.0)
+            led.beat()
+        return time.time() - t
+
+    def livelock(i):
+        led.mark(onset=time.time())
+        spin(i, p["spin_s"])
+        os._exit(70)
+
+    def transient(i):
+        led.mark(transient=time.time())
+        dt = spin(i, p["spin_s"])
+        say(f"{i:06d} SPIN resolved")
+        return dt
+
+    run_paced(trace(p), p["duration"], led, {"LIVELOCK": livelock, "TRANSIENT": transient})
     led.beat(done=True)
 
 

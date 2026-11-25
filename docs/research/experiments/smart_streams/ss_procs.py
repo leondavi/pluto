@@ -29,6 +29,13 @@ def ps_table():
     return tab
 
 
+def cpu_share():
+    """Share of all cores in use now, from ps's decaying per-process averages."""
+    out = subprocess.run(["ps", "-A", "-o", "%cpu="], capture_output=True, text=True,
+                         env=dict(os.environ, LC_ALL="C")).stdout
+    return round(sum(float(x) for x in out.split()) / 100 / (os.cpu_count() or 1), 3)
+
+
 def _epoch(start):
     try:
         return time.mktime(time.strptime(start, "%a %b %d %H:%M:%S %Y"))
@@ -58,6 +65,7 @@ class Tracker(threading.Thread):
     def __init__(self, interval=1.5):
         super().__init__(daemon=True)
         self.roots, self.known, self.interval = set(), {}, interval
+        self.cpu = []                       # whole-machine CPU share samples, 0..1
         self._halt = threading.Event()
         self.lock = threading.Lock()
 
@@ -80,9 +88,13 @@ class Tracker(threading.Thread):
                 self.known.setdefault(p, tab[p]["start"])
 
     def run(self):
+        n = 0
         while not self._halt.wait(self.interval):
+            n += 1
             try:
                 self.sample()
+                if n % 4 == 0:
+                    self.cpu.append(cpu_share())
             except OSError:
                 pass
 

@@ -25,6 +25,8 @@ import ss_prompts  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(HERE, *[".."] * 4))
 ADAPTER = os.path.join(REPO, "src_py", "agent_smart_streams", "smart_streams.py")
+PROTOCOL_VERSION = 2
+MIN_PEAK = 8
 CONDITIONS = ("smartstreams", "native")
 BUILTIN = ["Bash", "BashOutput", "KillShell", "TaskOutput", "TaskStop", "Monitor", "Read",
            "Grep", "Glob", "Write", "Edit", "TodoWrite", "ToolSearch"]
@@ -89,7 +91,7 @@ def private_pluto(base):
         "smart_streams_server", os.path.join(REPO, "tests", "smart_streams_server.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.Server(base, max_running=32, max_per_agent=16)
+    return mod.Server(base, max_running=96, max_per_agent=32)
 
 
 def stop_pluto(server):
@@ -204,15 +206,25 @@ def run_one(exp, condition, rep, seed, args):
     tampered = ss_build.tree_digest(ws) != before
     team = ss_metrics.merge(per)
     hard = [f for fs in fails.values() for f in fs if f != "cutoff"]
-    row = {"exp": exp, "name": mod.NAME, "condition": condition, "rep": rep, "run_id": run_id,
+    recs = ss_build.launches(ws)
+    peaks = ss_build.peak_streams(recs, [n for n, _ in roster], meta, mod.owner,
+                                  getattr(mod, "owner2", None))
+    cpu = tracker.cpu or [0.0]
+    row = {"protocol_version": PROTOCOL_VERSION, "exp": exp, "name": mod.NAME, "condition": condition, "rep": rep, "run_id": run_id,
            "model": args.model, "seed": seed, "started_at": t0,
            "score": g["score"], "wall_s": round(meta["run_end"] - t0, 1),
            "grade": g, "team": team, "per_agent": per, "status": status,
            "protocol_failures": fails, "n_protocol_failures": len(hard) + int(not g["final_valid"]),
            "leaks": leaks, "tampered": tampered, "tainted": bool(leaks) or tampered,
            "leftovers_killed": killed,
-           "program_seconds": round(sum(r["t_last"] - r["t0"] for r in ss_build.launches(ws)), 1),
-           "program_launches": len(ss_build.launches(ws))}
+           "timed_out": {n: bool(status.get(n, {}).get("timed_out")) for n, _ in roster},
+           "peak_streams": peaks, "low_parallelism": min(peaks.values()) < MIN_PEAK,
+           "peak_streams_total": ss_build.peak([(r["t0"], r["t_last"]) for r in recs]),
+           "cpu_share_mean": round(sum(cpu) / len(cpu), 3), "cpu_share_max": max(cpu),
+           "max_pacing_lag_s": max((r["lag"] for r in recs), default=0.0),
+           "program_cpu_s": round(sum(r["cpu"] for r in recs), 1),
+           "program_seconds": round(sum(r["t_last"] - r["t0"] for r in recs), 1),
+           "program_launches": len(recs)}
     with open(os.path.join(run_dir, "result.json"), "w") as f:
         json.dump(row, f, indent=1)
     return row, run_dir

@@ -31,7 +31,7 @@ try:
 finally:
     sys.path.remove(EXP)
 
-OPS = 3000
+OPS = 1500
 
 
 def put_json(path, obj):
@@ -42,53 +42,67 @@ def put_json(path, obj):
 
 # ── experiment 1 ─────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("seed", [1, 2, 3])
-def test_e1_checker_recovers_planted_truth(seed):
-    shards, cross = exp1_shards.plan(seed, ops=OPS, duration=0)
+def test_e1_checker_recovers_planted_truth():
+    shards, cells = exp1_shards.plan(1, ops=OPS, duration=0)
     bad = []
+    assert len(shards) == 48
     for s, p in shards.items():
-        lines = [x for _, x in wl_shards.trace(p)]
-        assert lines == [x for _, x in wl_shards.trace(p)]
+        lines = list(wl_shards.text_lines(p))
         first, b = exp1_shards.check_lines(lines)
         bad += [dict(x, shard=s) for x in b]
-        assert first["kind"] == p["kind"]
-        assert first["op"] == (None if p["kind"] == "NONE" else p["fault_op"])
+        assert set(first) == {k for k, _ in p["faults"]}
+        assert all(first[k]["op"] >= o for k, o in p["faults"])
+        if p["spin"] == "LIVELOCK":
+            assert all(v["op"] < p["spin_op"] for v in first.values())
+    assert lines == list(wl_shards.text_lines(p))
     bad.sort(key=lambda x: x["lt"])
-    assert [b["verb"] for b in bad].count("CELL") == 1
-    assert (bad[0]["shard"], bad[0]["op"], bad[0]["cell"]) == (
-        cross["shard"], cross["op"], cross["cell"])
-    assert [bad[0]["shard"]] + [b["shard"] for b in bad if b["verb"] == "XIN"] == cross["path"]
+    assert {x["cell"] for x in bad} == {c["cell"] for c in cells} and len(cells) == 6
+    for c in cells:
+        b = [x for x in bad if x["cell"] == c["cell"]]
+        assert (b[0]["verb"], b[0]["shard"], b[0]["op"]) == ("CELL", c["shard"], c["op"])
+        assert [c["shard"]] + [x["shard"] for x in b if x["verb"] == "XIN"] == c["path"]
+    for g in range(4):
+        spins = [shards[s]["spin"] for s in range(12 * g + 1, 12 * g + 13)]
+        assert spins.count("LIVELOCK") == 2 and spins.count("TRANSIENT") == 3
 
 
-def test_e1_grader_partial_credit(tmp_path):
-    tr = exp1_shards.truth(5, ops=OPS, duration=0)
+def test_e1_path_invariant():
+    assert exp1_shards.path_ok([50, 20, 30, 25], 25)
+    assert exp1_shards.path_ok([50, 20, 30], 25)            # key absent
+    assert not exp1_shards.path_ok([50, 60, 30], 25)
+    assert not exp1_shards.path_ok([50, 25, 30], 25)
+
+
+def ledger(tmp_path, name, **rec):
+    put_json(str(tmp_path / ".runs" / f"{name}.json"),
+             dict({"t0": 0.0, "t_last": 10.0, "done": False, "lag": 0, "cpu": 0, "label": name},
+                  **rec))
+
+
+def test_e1_grader(tmp_path):
+    tr = exp1_shards.truth(5, ops=400, duration=0)
     ws, path = str(tmp_path), str(tmp_path / "answers" / "final.json")
     assert exp1_shards.grade(ws, tr)["score"] == 0
-    full = {"shards": tr["shards"], "root_cause": tr["root_cause"], "path": tr["root_cause"]["path"]}
-    put_json(path, full)
+    put_json(path, {"shards": tr["shards"], "cells": tr["cells"]})
+    assert exp1_shards.grade(ws, tr)["score"] == pytest.approx(0.75)
+    for s in tr["livelocked"]:
+        ledger(tmp_path, f"shard{s}", shard=s, began=1.0, onset=100.0, t_last=180.0)
     assert exp1_shards.grade(ws, tr)["score"] == 1.0
-    part = copy.deepcopy(full)
-    del part["root_cause"]
-    part["path"] = part["path"][:3] + [0, 0]
-    s = exp1_shards.grade(ws, dict(tr, ))["score"]
-    put_json(path, part)
+    ok = next(s for s in range(1, 49) if s not in tr["livelocked"])
+    ledger(tmp_path, f"shard{ok}", shard=ok, began=1.0)                     # false kill
+    ledger(tmp_path, f"shard{tr['livelocked'][0]}", shard=tr["livelocked"][0], began=1.0,
+           onset=100.0, t_last=200.0)                                      # too late
     g = exp1_shards.grade(ws, tr)
-    assert s == 1.0 and g["score"] == pytest.approx(0.68 + 0.12 * 3 / 5)
-    # per-shard files are the fallback for missing shards
-    put_json(path, {})
-    k = next(s for s, t in tr["shards"].items() if t["kind"] != "NONE")
-    put_json(str(tmp_path / "answers" / f"shard_{k}.json"), tr["shards"][k])
-    assert exp1_shards.grade(ws, tr)["score"] == pytest.approx(0.085)
-    for junk in ("[1]", '{"shards": 3, "path": "x", "root_cause": []}', "{bad"):
+    assert g["parts"]["reactions"] == pytest.approx(6 / 8) and g["false_kills"] == 1
+    put_json(path, {"cells": tr["cells"] * 2})              # duplicates are harmless
+    g = exp1_shards.grade(ws, tr)
+    assert g["parts"]["cells"] == 1 and g["parts"]["shards"] == 0
+    for junk in ("[1]", '{"shards": 3, "cells": [1, {"cell": "x"}]}', "{bad"):
         (tmp_path / "answers" / "final.json").write_text(junk)
-        assert 0 <= exp1_shards.grade(ws, tr)["score"] <= 0.1
-
-
-def test_e1_claiming_none_everywhere_is_cheap(tmp_path):
-    tr = exp1_shards.truth(5, ops=OPS, duration=0)
-    put_json(str(tmp_path / "answers" / "final.json"),
-             {"shards": {str(s): {"op": None, "kind": "NONE", "key": None} for s in range(1, 9)}})
-    assert exp1_shards.grade(str(tmp_path), tr)["score"] == pytest.approx(0.085)
+        assert exp1_shards.grade(ws, tr)["parts"]["shards"] == 0
+    assert exp1_shards.shard_score({}, {}) == 1 and exp1_shards.shard_score({"X": {}}, {}) == 0
+    w = {"SIZE": {"op": 5, "key": 7}}
+    assert exp1_shards.shard_score({"SIZE": {"op": 5, "key": 1}, "PATH": {}}, w) == pytest.approx(.35)
 
 
 # ── experiment 2 ─────────────────────────────────────────────────────────────
@@ -99,93 +113,195 @@ def test_e2_variants_agree_and_plan_is_informative():
     for a in wl_sssp.ALGOS:
         dist, order, work = wl_sssp.solve(a, adj)
         assert dist == ref and sorted(order) == list(range(300)) and work > 0
-    for seed in range(4):
-        assert exp2_sssp.plan(seed) == exp2_sssp.plan(seed)
-        tr = exp2_sssp.truth(seed)
-        assert tr["bug"]["variant"] not in tr["winners"]
-        assert len(set(tr["winners"])) >= 3
-        assert all(1 <= x <= 3 for x in tr["crossovers"])
-        assert 1.3 * tr["ref_s"] < tr["full_s"]
+    for seed in range(3):
+        p = exp2_sssp.plan(seed, sizes=E2)
+        assert p == exp2_sssp.plan(seed, sizes=E2)
+        tr = exp2_sssp.truth(seed, sizes=E2)
+        bad = {d["variant"] for d in tr["defects"].values()}
+        assert len(bad) == 2 and not bad & {v for row in tr["podium"] for v, _ in row}
+        assert len({row[0][0] for row in tr["podium"]}) >= 3
+        assert exp2_sssp.EFF_SLACK * tr["ref_s"] < 0.75 * tr["full_s"]
+        for v in p["variants"].values():
+            for row in v["grid"]:
+                c = [x["cost"] for x in row]
+                k = c.index(min(c))
+                assert c[:k + 1] == sorted(c[:k + 1], reverse=True) and c[k:] == sorted(c[k:])
+                assert not any(row[x]["hang"] for x in (k - 1, k, k + 1) if 0 <= x < 8)
 
 
-def test_e2_trace_reveals_the_defect_only_by_comparison():
-    p, tr = exp2_sssp.plan(3, lps=100), exp2_sssp.truth(3, lps=100)
-    si, bug = tr["bug"]["size"], tr["bug"]["variant"]
-    settle, results = {}, {}
+E2 = [60, 100, 160, 240]
+
+
+def test_e2_reference_search_finds_every_optimum():
+    p = exp2_sssp.plan(3, sizes=E2)
+    for v in p["variants"].values():
+        for row in v["grid"]:
+            st = {}
+            while ks := exp2_sssp.next_probes(st):
+                known = [s[1] for s in st.values() if s[0] == "done"]
+                fin = [row[k]["cost"] for k in ks if not row[k]["hang"]]
+                b = min(known + fin, default=0)
+                for k in ks:
+                    c = row[k]["cost"]
+                    st[k] = (("hang",) if row[k]["hang"] else
+                             ("done", c) if c <= b else ("gt", b))
+            best = min((s[1], k) for k, s in st.items() if s[0] == "done")
+            assert best[0] == min(x["cost"] for x in row)
+
+
+def test_e2_traces_show_both_defects():
+    p, tr = exp2_sssp.plan(3, sizes=E2, lps=30), exp2_sssp.truth(3, sizes=E2, lps=30)
+    dd, dc = tr["defects"]["DISTANCE"], tr["defects"]["COUNTER"]
+    settle, si = {}, dd["size"]
     for v in p["variants"]:
-        lines = [x for _, x in wl_sssp.trace(p, v, si)]
+        k = min(range(8), key=lambda k: wl_sssp.combo(p, v, si, k)["cost"])
+        lines = [x for _, x in wl_sssp.trace(p, v, si, k)]
         settle[v] = {x.split()[1]: x.split()[2] for x in lines if x.startswith("SETTLE")}
         cum = [int(x.split()[1][4:]) for x in lines if x.startswith("TICK")]
-        results[v] = p["variants"][v]["cost"][si]
-        assert cum == sorted(cum) and cum[-1] <= results[v]
-        assert lines[-1].startswith("RESULT") and f"cost={results[v]} " in lines[-1]
-    good = [v for v in settle if v != bug]
+        assert (cum != sorted(cum)) == (v == dc["variant"] and si >= dc["size"])
+        assert f"cost={wl_sssp.combo(p, v, si, k)['cost']} " in lines[-1]
+    good = [v for v in settle if v != dd["variant"]]
     assert all(settle[v] == settle[good[0]] for v in good)
-    wrong = [k for k in settle[bug] if settle[bug][k] != settle[good[0]][k]]
-    assert min(int(k[2:]) for k in wrong) == tr["bug"]["vertex"]
-    assert settle[good[0]][f"v={tr['bug']['vertex']:05d}"] == f"d={tr['bug']['distance']:05d}"
+    wrong = [k for k in settle[good[0]] if settle[dd["variant"]][k] != settle[good[0]][k]]
+    assert min(int(k[2:]) for k in wrong) == dd["vertex"]
+    assert settle[good[0]][f"v={dd['vertex']:05d}"] == f"d={dd['distance']:05d}"
+    v, i, k = next((v, i, k) for v, q in p["variants"].items() for i, row in enumerate(q["grid"])
+                   for k, c in enumerate(row) if c["hang"])
+    assert [x for _, x in wl_sssp.trace(p, v, i, k)][-1][0] == "HANG"
 
 
 def test_e2_grader(tmp_path):
-    tr, ws = exp2_sssp.truth(4), str(tmp_path)
-    ans = {k: tr[k] for k in ("winners", "crossovers", "bug")}
+    tr, ws = exp2_sssp.truth(4, sizes=E2), str(tmp_path)
     path = str(tmp_path / "answers" / "final.json")
     assert exp2_sssp.grade(ws, tr)["score"] == 0          # no answer: no efficiency credit
+    ans = {"podium": tr["podium"], "defects": tr["defects"]}
     put_json(path, ans)
     assert exp2_sssp.grade(ws, tr)["score"] == 1.0
-    put_json(str(tmp_path / ".runs" / "a.json"), {"t0": 0, "t_last": tr["full_s"], "label": "x"})
-    assert exp2_sssp.grade(ws, tr)["score"] == pytest.approx(0.85)
-    put_json(path, dict(ans, bug={"variant": tr["bug"]["variant"].lower()}, crossovers=None))
-    assert exp2_sssp.grade(ws, tr)["score"] == pytest.approx(0.35 + 0.12)
+    ledger(tmp_path, "a", t_last=tr["full_s"])
+    assert exp2_sssp.grade(ws, tr)["score"] == pytest.approx(0.8)
+    put_json(path, {"podium": [[[v.lower(), 99] for v, _ in r] for r in tr["podium"]],
+                    "defects": {"COUNTER": dict(tr["defects"]["COUNTER"]), "DISTANCE": None}})
+    assert exp2_sssp.grade(ws, tr)["score"] == pytest.approx(.25 + .3 * .4)
+    put_json(path, {"podium": [["V1"], 3, [[]]], "defects": []})
+    assert exp2_sssp.grade(ws, tr)["score"] == 0
+
+
+def test_e2_cap_and_window_are_enforced(tmp_path):
+    ws = str(tmp_path)
+    exp2_sssp.build(ws, 3, sizes=E2, best_s=0.2)
+    cmd = [ws + "/bin/spbench", "--size", "0", "--tune", "3", "--variant"]
+    now = time.time()
+    for i in range(exp2_sssp.CAP):
+        ledger(tmp_path, f"V2_s0_t{i}", t0=now, t_last=now + 5, label=f"V2_s0_t{i}", variant="V2")
+    assert subprocess.run(cmd + ["V1"], capture_output=True).returncode == 76
+    r = subprocess.run(cmd + ["V4"], capture_output=True, text=True, timeout=20)
+    assert r.returncode == 0 and "RESULT variant=V4" in r.stdout       # another worker's
+    ledger(tmp_path, "V1_s0_t0", t0=now, t_last=now + 5, label="V1_s0_t0", ended=True)
+    for i in range(1, exp2_sssp.CAP):                                  # dead pid: not alive
+        ledger(tmp_path, f"V2_s0_t{i}", t0=now, t_last=now + 5, label=f"V2_s0_t{i}", pid=2**22)
+    r = subprocess.run(cmd + ["V1"], capture_output=True, text=True, timeout=20)
+    assert r.returncode == 0
+    ledger(tmp_path, "V2_s0_t0", t0=now - 10000, t_last=now - 9000)
+    assert subprocess.run(cmd + ["V7"], capture_output=True).returncode == 77
 
 
 # ── experiment 3 ─────────────────────────────────────────────────────────────
 
 def parse_soak(lines):
-    lim, viol, dig, last = 10**9, None, None, None
-    for x in lines[1:]:
+    lim, viol, dig, last, leak, prev = 10**9, None, None, None, None, None
+    for x in lines:
+        if not isinstance(x, str) or x.startswith("#"):
+            continue
         f = dict(t.split("=", 1) for t in x.split() if "=" in t)
         last = int(x[1:6])
         lim = int(f.get("probe_limit", lim))
-        if "bucket" in f and int(f["probe"]) > lim and viol is None:
-            viol = (last, int(f["bucket"]))
         dig = f.get("table_digest", dig)
-    return viol, dig, last
+        if "bucket" in f:
+            if int(f["probe"]) > lim and viol is None:
+                viol = {"epoch": last, "bucket": int(f["bucket"])}
+            if prev is not None and abs(int(f["live"]) - prev) > 3 and leak is None:
+                leak = last
+            prev = int(f["live"])
+    return viol, leak, dig, last
 
 
-@pytest.mark.parametrize("rid", ["00000001", "deadbeef"])
-def test_e3_trace_matches_expected(rid):
-    seen = set()
+def test_e3_trace_matches_expected():
+    modes = []
     for p in exp3_relay.plan(7, epochs=500, duration=0).values():
-        e = exp3_relay.expected(p, rid)
-        viol, dig, last = parse_soak([x for _, x in wl_soak.trace(p, rid)])
-        assert (viol, dig, last) == ((e["epoch"], e["bucket"]), e["final_digest"], e["last_epoch"])
-        seen.add((e["outcome"], e["exit_code"] not in (0, None)))
-    assert seen == {("COMPLETED", False), ("COMPLETED", True), ("CRASHED", True), ("STALLED", False)}
+        e = exp3_relay.expected(p, "deadbeef")
+        lines = [x for _, x in wl_soak.trace(p, "deadbeef")]
+        assert parse_soak(lines) == (e["first_violation"], e["first_leak"], e["final_digest"],
+                                     e["last_epoch"])
+        # every request leaves at least its ttl before the job stops
+        assert all((e["last_epoch"] - ep) / p["epochs"] * 0.95 * exp3_relay.DURATION
+                   >= exp3_relay.TTL - 1 for ep, _ in wl_soak.requests(p, "deadbeef"))
+        asked = [x[2] for x in lines if not isinstance(x, str) and x[0] == "CKPT"]
+        assert asked == [t for _, t in wl_soak.requests(p, "deadbeef")] and asked
+        modes.append(e["outcome"])
+    assert [modes.count(x) for x in ("COMPLETED", "CRASHED", "STALLED")] == [16, 4, 4]
 
 
-def test_e3_grader_continuity_and_invented_runs(tmp_path):
-    tr, ws = exp3_relay.truth(7, epochs=300, duration=0), str(tmp_path)
-    meta, jobs = {"phase1_end": 100.0, "run_end": 500.0}, {}
+def test_e3_node_groups_are_identifiable():
+    for seed in range(4):
+        ps = exp3_relay.plan(seed)
+
+        def common(a, b):
+            return sum(any(abs(x - y) <= 4 for y in ps[b]["spikes"]) for x in ps[a]["spikes"])
+        for a in ps:
+            for b in ps:
+                if a != b:
+                    assert (common(a, b) >= 5) == (ps[a]["node"] == ps[b]["node"])
+            assert max(ps[a]["spikes"]) < 0.52 * ps[a]["epochs"]
+    jobs = {str(j): p for j, p in ps.items()}
+    groups = [[j for j, p in ps.items() if p["node"] == n] for n in range(6)]
+    assert exp3_relay.node_f1(groups, jobs) == 1
+    assert exp3_relay.node_f1([list(ps)], jobs) < 0.25
+    assert exp3_relay.node_f1([["x", None], 3], jobs) == exp3_relay.node_f1(None, jobs) == 0
+
+
+def test_e3_grader(tmp_path):
+    tr, ws = exp3_relay.truth(7, epochs=200, duration=0), str(tmp_path)
+    meta, jobs = {"phase1_end": 100.0}, {}
     for j, p in tr["jobs"].items():
         rid = f"{int(j):08x}"
-        e = exp3_relay.expected(p, rid)
-        jobs[j] = dict(e, first_violation={"epoch": e["epoch"], "bucket": e["bucket"]})
-        put_json(str(tmp_path / ".runs" / f"job{j}.json"),
-                 {"job": int(j), "run_id": rid, "t0": 50.0, "t_last": 400.0, "label": f"job{j}"})
-    put_json(str(tmp_path / "answers" / "final.json"), {"jobs": jobs})
+        jobs[j] = exp3_relay.expected(p, rid)
+        rec = {"job": int(j), "run_id": rid, "t0": 50.0, "t_last": 400.0, "done": p["mode"] != "stall",
+               "acks": {t: 5.0 for _, t in wl_soak.requests(p, rid)}}
+        if p["mode"] == "stall":
+            rec["onset"] = 300.0
+        ledger(tmp_path, f"job{j}", **rec)
+    nodes = [[int(j) for j, p in tr["jobs"].items() if p["node"] == n] for n in range(6)]
+    path = str(tmp_path / "answers" / "final.json")
+    put_json(path, {"jobs": jobs, "nodes": nodes})
     assert exp3_relay.grade(ws, tr, meta)["score"] == 1.0
-    # a relaunch in shift 2 loses continuity for that job only
-    put_json(str(tmp_path / ".runs" / "x.json"), {"job": 1, "run_id": "ff", "t0": 300, "t_last": 301})
+    late = next(j for j, p in tr["jobs"].items() if p["mode"] == "stall")
+    rec = json.load(open(tmp_path / ".runs" / f"job{late}.json"))
+    ledger(tmp_path, f"job{late}", **dict(rec, t_last=460.0, acks={}))  # late kill, no acks
     g = exp3_relay.grade(ws, tr, meta)
-    assert g["score"] == pytest.approx(1 - 0.15 / 6, abs=1e-3) and g["relaunches"] == 1
-    # a stalled job left alive loses its termination credit
-    g = exp3_relay.grade(ws, tr, dict(meta, run_end=401.0))
-    assert g["score"] == pytest.approx(1 - 0.30 / 6, abs=1e-3)
-    # run ids that were never launched earn nothing
-    put_json(str(tmp_path / "answers" / "final.json"),
-             {"jobs": {j: dict(v, run_id="0badc0de") for j, v in jobs.items()}})
+    assert g["score"] == pytest.approx(1 - 0.9 * 0.30 / 24, abs=1e-3)
+    assert g["acks_in_time"] < g["acks_requested"]
+    ledger(tmp_path, "x", job=int(late), run_id="ff", t0=300)           # relaunch
+    g2 = exp3_relay.grade(ws, tr, meta)
+    assert g2["relaunches"] == 1 and g2["score"] < g["score"]
+    put_json(path, {"jobs": {j: dict(v, run_id="0badc0de") for j, v in jobs.items()}})
     assert exp3_relay.grade(ws, tr, meta)["score"] == 0
+
+
+def test_e3_ack_is_seen_while_the_job_runs(tmp_path):
+    ws = str(tmp_path)
+    exp3_relay.build(ws, 7, epochs=40, duration=3.0, ttl=3.0, pause_s=0.2)
+    ps = exp3_relay.plan(7, epochs=40, duration=3.0, ttl=3.0, pause_s=0.2)
+    j = next(j for j, p in ps.items() if p["mode"] == "ok")
+    out = open(tmp_path / "log", "w+")
+    p = subprocess.Popen([ws + "/bin/soak", "--job", str(j)], stdout=out)
+    while p.poll() is None:
+        toks = [x.split("token=")[1].split()[0] for x in open(tmp_path / "log")
+                if "CKPT request" in x and x.endswith("\n")]
+        (tmp_path / "control" / f"job_{j}.ack").write_text(" ".join(toks))
+        time.sleep(0.05)
+    rec, = ss_build.launches(ws)
+    want = wl_soak.requests(ps[j], rec["run_id"])
+    assert rec["done"] and len(rec["acks"]) >= 1 and set(rec["acks"]) <= {t for _, t in want}
 
 
 # ── workspaces ───────────────────────────────────────────────────────────────
@@ -198,25 +314,50 @@ def test_image_roundtrip_is_opaque():
 
 def test_workspace_runs_and_hides_sources(tmp_path):
     ws = str(tmp_path / "ws dir")                          # a space must not break the wrapper
-    exp1_shards.build(ws, 11, ops=400, duration=1.0)
+    exp1_shards.build(ws, 11, ops=400, duration=1.0, transient_s=0.2)
     files = [os.path.join(b, f) for b, _, fs in os.walk(ws) for f in fs]
     assert not [f for f in files if f.endswith(".py")]
     blob = b"".join(open(f, "rb").read() for f in files)
     assert os.path.realpath(EXP).encode() not in blob and b"check_lines" not in blob
     t = time.time()
-    out = subprocess.run([ws + "/bin/shard_stress", "--shard", "2"], capture_output=True,
-                         text=True, check=True).stdout.splitlines()
-    assert time.time() - t > 0.7                           # paced
-    p = exp1_shards.plan(11, ops=400, duration=1.0)[0][2]
-    assert out == [x for _, x in wl_shards.trace(p)]
-    rec, = ss_build.launches(ws)
-    assert rec["done"] and rec["label"] == "shard2"
+    def go(k):                                       # files: an unread pipe would block
+        return subprocess.Popen([ws + "/bin/shard_stress", "--shard", str(k)],
+                                stdout=open(tmp_path / f"{k}.log", "w"))
+    procs = {k: go(k) for k in range(13, 24)}
+    time.sleep(1.2)
+    assert not any("began" in r for r in ss_build.launches(ws))     # barrier holds
+    procs[24] = go(24)
+    plan = exp1_shards.plan(11, ops=400, duration=1.0, transient_s=0.2)[0]
+    live = {k for k in procs if plan[k]["spin"] == "LIVELOCK"}
+    for k, p in procs.items():
+        if k not in live:
+            p.wait(15)
+            out = [x for x in (tmp_path / f"{k}.log").read_text().splitlines()
+                   if " SPIN " not in x and "waiting" not in x]
+            assert p.returncode == 0 and out == list(wl_shards.text_lines(plan[k]))
+    while sum("onset" in r for r in ss_build.launches(ws)) < 2:
+        time.sleep(0.1)
+    for k in live:
+        procs[k].terminate()
+        procs[k].wait()
+    assert time.time() - t < 15
+    recs = ss_build.launches(ws)
+    assert exp1_shards.reactions(ws, live) == (2, 0)
+    assert ss_build.peak_streams(recs, ["w1", "w2"], {}, exp1_shards.owner)["w2"] >= 10
+
+
+def test_peak_streams_splits_shifts():
+    assert ss_build.peak([(0, 2), (1, 3), (2, 4), (5, 5)]) == 2
+    recs = [{"job": j, "t0": 1.0, "t_last": 9.0 + j} for j in (1, 2, 3, 14)]
+    got = ss_build.peak_streams(recs, ["p1", "p2", "q1", "q2"], {"phase1_end": 5.0},
+                                exp3_relay.owner, exp3_relay.owner2)
+    assert got == {"p1": 3, "p2": 1, "q1": 2, "q2": 2}
 
 
 def test_exit_code_survives_the_wrapper(tmp_path):
     ws = str(tmp_path)
-    exp3_relay.build(ws, 7, epochs=40, duration=0.2)
-    p = next(p for p in exp3_relay.plan(7, epochs=40, duration=0.2).values() if p["mode"] == "warn")
+    exp3_relay.build(ws, 7, epochs=40, duration=0.2, pause_s=0.1)
+    p = next(p for p in exp3_relay.plan(7, epochs=40, duration=0.2, pause_s=0.1).values() if p["mode"] == "warn")
     r = subprocess.run([ws + "/bin/soak", "--job", str(p["job"])], capture_output=True, text=True)
     assert r.returncode == p["exit"] != 0 and "FINAL" in r.stdout
 
@@ -354,7 +495,7 @@ if me == "p1":
                      stderr=subprocess.STDOUT, start_new_session=True)
     time.sleep(60)                                  # must be cut off by the harness
 if me == "q1":
-    time.sleep(1.5)
+    time.sleep(0.6)
     rid = open("j1.log").readline().split("run_id=")[1].split()[0]
     json.dump({{"jobs": {{"1": {{"run_id": rid}}}}}}, open("answers/final.json", "w"))
 emit(type="result", subtype="success", is_error=False, total_cost_usd=0.1, modelUsage={{}})
@@ -365,13 +506,16 @@ def test_runner_end_to_end_with_fake_claude(tmp_path, monkeypatch):
     fake = tmp_path / "claude"
     fake.write_text(FAKE.format(py=sys.executable))
     fake.chmod(0o755)
-    monkeypatch.setattr(exp3_relay, "PHASE1_CUTOFF", 2)
+    monkeypatch.setattr(exp3_relay, "PHASE1_CUTOFF", 1.6)
     out = tmp_path / "out"
     (out / "runs").mkdir(parents=True)
     args = ss_run.parse_args(["--out", str(out), "--exp", "3", "--condition", "native",
                               "--claude", str(fake)])
     row, = ss_run.run_block("3", 1, ["native"], "m", args)
     assert row["status"]["p1"]["timed_out"] and row["status"]["q1"]["rc"] == 0
+    assert row["protocol_version"] == 2 and row["low_parallelism"]
+    assert row["peak_streams"] == {"p1": 1, "p2": 0, "q1": 1, "q2": 0}
+    assert row["timed_out"] == {"p1": True, "p2": False, "q1": False, "q2": False}
     assert row["grade"]["detail"]["job1"]["run_id"]          # job survived the shift change
     assert row["grade"]["detail"]["job1"]["continuity"]
     assert row["team"]["cost_complete"] is False and not row["tainted"]
@@ -401,7 +545,9 @@ def test_summary_pairs_by_seed():
     def row(cond, seed, score):
         tok = dict.fromkeys(ss_metrics.KEYS, 1)
         return {"exp": "1", "name": "n", "condition": cond, "rep": 1, "run_id": "r", "seed": seed,
-                "score": score, "wall_s": 10.0, "program_seconds": 1.0, "n_protocol_failures": 0,
+                "score": score, "wall_s": 10.0, "program_seconds": 1.0, "peak_streams": {"w1": 9},
+                "timed_out": {"w1": False}, "low_parallelism": False, "cpu_share_max": 0.1,
+                "max_pacing_lag_s": 0.0, "n_protocol_failures": 0,
                 "tainted": seed == 2, "protocol_failures": {"w1": []}, "grade": {"parts": {}},
                 "team": {"cost_usd": 1.0, "cost_complete": True, "tokens": tok, "turns": 1,
                          "tool_calls": {}, "tool_result_bytes": 5, "max_tool_result_bytes": 5}}

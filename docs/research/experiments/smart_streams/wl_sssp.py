@@ -1,4 +1,4 @@
-"""Workload 2: single-source shortest path variants under a cost model."""
+"""Workload 2 (v2): tunable single-source shortest path variants under a cost model."""
 
 import argparse
 import bisect
@@ -6,6 +6,7 @@ import random
 from collections import deque
 
 from wl_common import *  # noqa: F401,F403  (inlined by the builder)
+from wl_common import _runs_dir  # noqa: F401  (inlined by the builder)
 
 MAXW = 60
 ALGOS = ["bin_heap", "quad_heap", "oct_heap", "pairing", "dial", "fifo", "slf", "sorted"]
@@ -157,31 +158,44 @@ def solve(algo, adj):
     return dist, order, work + h.work
 
 
+def combo(p, variant, si, k):
+    return p["variants"][variant]["grid"][si][k]        # {"cost", "dur", "hang"}
+
+
 def reported(p, variant, si):
-    """(distances as reported, settle order) including the seeded defect."""
+    """(distances as reported, settle order) including a seeded defect."""
     v = p["variants"][variant]
     dist, order, _ = solve(v["algo"], graph(p["seed"], p["sizes"][si]))
     dist = list(dist)
-    for vert, delta in p["defect"]["sets"].get(str(si), []) if variant == p["defect"]["variant"] else []:
+    d = p["defects"]["DISTANCE"]
+    for vert, delta in d["sets"].get(str(si), []) if variant == d["variant"] else []:
         dist[vert] += delta
     return dist, order
 
 
-def trace(p, variant, si):
-    v, n = p["variants"][variant], p["sizes"][si]
-    cost, dur = v["cost"][si], v["dur"][si]
+def trace(p, variant, si, k):
+    v, c, n = p["variants"][variant], combo(p, variant, si, k), p["sizes"][si]
+    cost, dur = c["cost"], c["dur"]
     dist, order = reported(p, variant, si)
     adj = graph(p["seed"], n)
     late = v["algo"] in ("fifo", "slf")
-    rng = random.Random(f"tr:{p['seed']}:{variant}:{si}")
-    total = max(int(dur * p["lps"]), n * 3)
-    yield 0.0, f"# variant={variant} size={si} n={n} sources=1 unit=cost"
-    lo, hi = (0.93, 0.995) if late else (0.02, 0.97)
+    rng = random.Random(f"tr:{p['seed']}:{variant}:{si}:{k}")
+    total = max(int(dur * p["lps"]), n + 200)
+    ctr = p["defects"]["COUNTER"]
+    reset = ctr["at"] if variant == ctr["variant"] and si >= ctr["first"] else None
+    yield 0.0, f"# variant={variant} size={si} tune={k} n={n} unit=cost"
+    lo, hi = (0.90, 0.99) if late else (0.02, 0.96)
     done = 0
     for i in range(total):
         frac = i / total
-        if i % 60 == 0:
-            yield frac, f"TICK cum={int(cost * frac)} queue={rng.randrange(1, n)} settled={done}"
+        if c["hang"] and frac >= c["hang"]:
+            yield frac, ("HANG", int(cost * frac))
+            return
+        if i % 40 == 0:
+            cum = cost * frac
+            if reset:                       # the counter restarts part-way through
+                cum = cum / (1 - reset["drop"]) if frac < reset["frac"] else cum
+            yield frac, f"TICK cum={int(cum)} queue={rng.randrange(1, n)} settled={done}"
         while done < len(order) and (done + 1) / len(order) * (hi - lo) + lo <= frac:
             x = order[done]
             done += 1
@@ -199,20 +213,54 @@ def trace(p, variant, si):
     for b in range(0, n, 64):
         dg = zlib.crc32(repr(dist[b:b + 64]).encode())
         yield 1.0, f"BLOCK b={b // 64:03d} first={b:05d} dg={dg:08x}"
-    yield 1.0, f"RESULT variant={variant} size={si} n={n} cost={cost} settled={len(order)}"
+    yield 1.0, f"RESULT variant={variant} size={si} tune={k} cost={cost} settled={len(order)}"
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Benchmark one variant at one size.")
+    ap = argparse.ArgumentParser(description="Benchmark one variant/size/tuning.")
     ap.add_argument("--variant", required=True)
     ap.add_argument("--size", type=int, required=True)
+    ap.add_argument("--tune", type=int, required=True)
     a = ap.parse_args()
     p = load_image("bench.img")
-    if a.variant not in p["variants"] or not 0 <= a.size < len(p["sizes"]):
-        ap.error("unknown variant or size index")
-    led = Ledger(f"{a.variant}_s{a.size}", variant=a.variant, size=a.size)
-    run_paced(trace(p, a.variant, a.size), p["variants"][a.variant]["dur"][a.size], led)
+    if a.variant not in p["variants"] or not 0 <= a.size < len(p["sizes"]) \
+            or not 0 <= a.tune < p["tunes"]:
+        ap.error("unknown variant, size index or tuning")
+    w = int(a.variant[1:]) - 1
+    mates = {f"V{i + 1}" for i in range(len(p["variants"])) if i // p["per"] == w // p["per"]}
+    alive = [x for x in live_labels(count_done=False) if x.split("_")[0] in mates]
+    if len(alive) >= p["cap"]:
+        say(f"# refused: {len(alive)} benchmarks of this worker are already running")
+        os._exit(76)
+    first = first_start()
+    if first and time.time() - first > p["window_s"]:
+        say("# refused: the reservation window is over")
+        os._exit(77)
+    led = Ledger(f"{a.variant}_s{a.size}_t{a.tune}", variant=a.variant, size=a.size, tune=a.tune)
+
+    def hang(cum):
+        t = time.time()
+        while time.time() - t < 900:
+            say(f"TICK cum={cum} queue=1 settled=0")
+            time.sleep(1.0)
+            led.beat()
+        os._exit(70)
+
+    run_paced(trace(p, a.variant, a.size, a.tune), combo(p, a.variant, a.size, a.tune)["dur"],
+              led, {"HANG": hang})
     led.beat(done=True)
+
+
+def first_start():
+    t = []
+    for name in os.listdir(_runs_dir()) if os.path.isdir(_runs_dir()) else []:
+        if name.endswith(".json"):
+            try:
+                with open(os.path.join(_runs_dir(), name)) as f:              
+                    t.append(json.load(f)["t0"])
+            except (OSError, ValueError):
+                pass
+    return min(t, default=None)
 
 
 if __name__ == "__main__":

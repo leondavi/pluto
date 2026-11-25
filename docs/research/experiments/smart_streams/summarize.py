@@ -21,6 +21,10 @@ METRICS = [("score", lambda r: r["score"]),
            ("tool_result_bytes", lambda r: r["team"]["tool_result_bytes"]),
            ("max_tool_result_bytes", lambda r: r["team"]["max_tool_result_bytes"]),
            ("program_seconds", lambda r: r["program_seconds"]),
+           ("min_peak_streams", lambda r: min(r["peak_streams"].values())),
+           ("cpu_share_max", lambda r: r["cpu_share_max"]),
+           ("max_pacing_lag_s", lambda r: r["max_pacing_lag_s"]),
+           ("agents_timed_out", lambda r: sum(r["timed_out"].values())),
            ("protocol_failures", lambda r: r["n_protocol_failures"])]
 
 
@@ -55,6 +59,10 @@ def summarize(rows, exclude_tainted=False):
         ss = sum(n for k, n in r["team"]["tool_calls"].items() if k.startswith("mcp__smartstreams__"))
         out["runs"].append({"exp": r["exp"], "rep": r["rep"], "condition": r["condition"],
                             "run_id": r["run_id"], "tainted": r["tainted"],
+                            "timed_out": [n for n, t in r["timed_out"].items() if t],
+                            "peak_streams": " ".join(f"{n}:{p}" for n, p in
+                                                     r["peak_streams"].items()),
+                            "low_parallelism": r["low_parallelism"],
                             "smartstreams_calls": ss, "failure_codes": codes,
                             "parts": r["grade"]["parts"], **{m: f(r) for m, f in METRICS}})
     return out
@@ -88,7 +96,7 @@ def markdown(s):
         out.append("")
     cols = ["exp", "rep", "condition", "score", "wall_s", "cost_usd", "output_tokens", "turns",
             "tool_result_bytes", "smartstreams_calls", "program_seconds", "protocol_failures",
-            "tainted", "failure_codes"]
+            "timed_out", "peak_streams", "low_parallelism", "cpu_share_max", "tainted", "failure_codes"]
     out += ["## Runs\n", "| " + " | ".join(cols) + " |", "|---" * len(cols) + "|"]
     for r in s["runs"]:
         cells = [fmt(v) if isinstance(v, (int, float)) and not isinstance(v, bool) or v is None
@@ -104,6 +112,9 @@ def main():
     a = p.parse_args()
     with open(os.path.join(a.out_dir, "results.jsonl"), encoding="utf-8") as f:
         rows = [json.loads(x) for x in f if x.strip()]
+    old = [r for r in rows if r.get("protocol_version", 1) != 2]
+    if old:
+        raise SystemExit(f"{len(old)} rows are not protocol v2; use the v1 code (git a9eab16)")
     s = summarize(rows, a.exclude_tainted)
     md = markdown(s)
     tag = "_clean" if a.exclude_tainted else ""

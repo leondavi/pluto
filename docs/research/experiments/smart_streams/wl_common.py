@@ -39,24 +39,70 @@ def load_image(name):
         return unseal(f.read())
 
 
+def _runs_dir():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(os.path.dirname(here), ".runs")
+
+
+def _pid_alive(pid):
+    try:
+        if pid:
+            os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass
+    return True
+
+
+def live_labels(max_age=4.0, count_done=True):
+    """Labels of launches that are alive now (or, optionally, finished)."""
+    out, now = [], time.time()
+    for name in os.listdir(_runs_dir()) if os.path.isdir(_runs_dir()) else []:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(_runs_dir(), name)) as f:
+                r = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if r["done"]:
+            alive = count_done
+        else:
+            alive = now - r["t_last"] < max_age and not r.get("ended") and _pid_alive(r.get("pid"))
+        if alive:
+            out.append(r["label"])
+    return out
+
+
 class Ledger:
-    """Heartbeat file per launch: lets the grader measure compute-seconds and
-    launch continuity, even for a process that was SIGKILLed."""
+    """Heartbeat file per launch: lets the grader measure stream-seconds, peak
+    concurrency, reaction times and continuity, even after a SIGKILL."""
 
     def __init__(self, label, **extra):
-        here = os.path.dirname(os.path.abspath(__file__))
-        d = os.path.join(os.path.dirname(here), ".runs")
-        os.makedirs(d, exist_ok=True)
-        self.path = os.path.join(d, f"{label}-{os.getpid()}-{time.time_ns()}.json")
+        os.makedirs(_runs_dir(), exist_ok=True)
+        self.path = os.path.join(_runs_dir(), f"{label}-{os.getpid()}-{time.time_ns()}.json")
         now = time.time()
-        self.rec = dict(extra, label=label, t0=now, t_last=now, done=False)
+        self.rec = dict(extra, label=label, t0=now, t_last=now, done=False, lag=0.0, cpu=0.0,
+                        pid=os.getpid())
         self._write()
+        signal.signal(signal.SIGTERM, self._term)
+
+    def _term(self, *_):
+        self.rec.update(t_last=time.time(), ended=True)
+        self._write()
+        os._exit(143)
 
     def _write(self):
+        self.rec["cpu"] = round(time.process_time(), 3)
         tmp = self.path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(self.rec, f)
         os.replace(tmp, self.path)
+
+    def mark(self, **kw):
+        self.rec.update(kw, t_last=time.time())
+        self._write()
 
     def beat(self, done=False):
         now = time.time()
@@ -65,22 +111,42 @@ class Ledger:
             self._write()
 
 
-def run_paced(items, duration, ledger):
-    """Print (fraction, line) pairs so that ``fraction`` tracks wall time."""
-    signal.signal(signal.SIGTERM, lambda *_: os._exit(143))
+def say(line):
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+
+
+def run_paced(items, duration, ledger, handlers=None, tick=None):
+    """Print (fraction, line) pairs so that ``fraction`` tracks wall time.
+
+    A non-string item (name, args...) calls handlers[name](*args) on schedule;
+    the seconds it returns are excluded from the schedule. ``tick`` is called
+    about twice a second. The largest schedule lag goes to the ledger."""
     t0 = time.time()
-    out = sys.stdout
+    out, last_tick = sys.stdout, 0.0
     try:
         for i, (frac, line) in enumerate(items):
-            out.write(line + "\n")
-            if i % 32 == 0:
-                ahead = t0 + frac * duration - time.time()
-                while ahead > 0.02:
+            event = not isinstance(line, str)
+            if i % 32 == 0 or event:
+                while True:
+                    now = time.time()
+                    ahead = t0 + frac * duration - now
+                    if tick and now - last_tick >= 0.5:
+                        last_tick = now
+                        tick()
+                    if ahead <= 0.02:
+                        if duration:
+                            ledger.rec["lag"] = round(max(ledger.rec["lag"], -ahead), 3)
+                        break
                     out.flush()
                     time.sleep(min(ahead, 0.5))
                     ledger.beat()
-                    ahead = t0 + frac * duration - time.time()
                 ledger.beat()
+            if event:
+                out.flush()
+                t0 += handlers[line[0]](*line[1:]) or 0.0
+            else:
+                out.write(line + "\n")
         out.flush()
     except BrokenPipeError:
         os._exit(141)

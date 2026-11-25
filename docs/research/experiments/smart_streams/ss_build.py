@@ -11,7 +11,7 @@ import tempfile
 import wl_common
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-IMPORT = "from wl_common import *"
+IMPORT = "from wl_common import "
 
 
 def write(ws, rel, text):
@@ -76,3 +76,31 @@ def tree_digest(ws, sub="bin"):
             with open(p, "rb") as fh:
                 out[os.path.relpath(p, ws)] = hashlib.sha256(fh.read()).hexdigest()
     return out
+
+
+def peak(intervals):
+    """Largest number of simultaneously open [start, end] intervals."""
+    ev = sorted([(a, 1) for a, b in intervals if b > a] + [(b, -1) for a, b in intervals if b > a])
+    n = best = 0
+    for _, d in ev:
+        n += d
+        best = max(best, n)
+    return best
+
+
+def peak_streams(recs, owners, meta, owner, owner2=None):
+    """{agent: peak concurrent streams}. With ``owner2`` the streams alive after
+    phase1_end belong to the shift-2 owner. Streams waiting at a barrier do not
+    count until they began."""
+    cut = meta.get("phase1_end")
+    out = {o: [] for o in owners}
+    for r in recs:
+        a, b = r.get("began", r["t0"] if "shard" not in r else r["t_last"]), r["t_last"]
+        if owner2 is None or cut is None:
+            out.setdefault(owner(r), []).append((a, b))
+        else:
+            if a < cut:
+                out.setdefault(owner(r), []).append((a, min(b, cut)))
+            if b > cut:
+                out.setdefault(owner2(r), []).append((max(a, cut), b))
+    return {o: peak(x) for o, x in out.items()}

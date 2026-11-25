@@ -160,7 +160,8 @@ def is_secs(v):
 
 
 # Watch rules are only ever shown after an import, never evaluated.
-WATCH_SPEC = dict.fromkeys(("name", "match", "extract", "stalled", "then"), is_str)
+WATCH_SPEC = dict.fromkeys(("name", "match", "extract", "stalled", "then",
+                            "file", "text"), is_str)
 WATCH_SPEC.update(dict.fromkeys(("where", "by"), is_strs))
 WATCH_SPEC.update(dict.fromkeys(("window_s", "idle_s", "absent_s", "cooldown_s"), is_secs))
 WATCH_SPEC.update(dict.fromkeys(("count", "max_hits", "stalled_n"), is_int))

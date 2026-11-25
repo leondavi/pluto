@@ -113,7 +113,10 @@ WATCH_HITS_MAX = 1000
 WATCH_KEYS_MAX = 2000              # by-groups remembered per rule
 WATCH_COUNT_MAX = 10000
 WATCH_SECONDS_MAX = 86400 * 30
-WATCH_THEN = ("notify", "cancel", "pause", "halt")
+WATCH_THEN = ("notify", "cancel", "pause", "halt", "append", "input")
+ACT_HITS = 1000                    # default max_hits of an acting rule
+ACT_TEXT_MAX = 4096                # characters of one action
+ACT_FILE_MAX = 64 << 20            # bytes a file appended to may reach
 
 
 def encode_record(seq, start, end, first_line, newlines, sha256, chain):

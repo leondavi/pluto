@@ -238,13 +238,18 @@ start_job(R, S) ->
         _ ->
             P = new_package(R),
             #{<<"id">> := Id} = P,
+            Rules = opt(<<"watch">>, R, []),
             Dir = pluto_job_store:dir(Id),
             ok = io(file:make_dir(Dir)),
             ok = io(file:change_mode(Dir, ?MODE_DIR)),
             ok = io(file:make_dir(filename:join(Dir, ?JOB_DIR_CONTROL))),
-            try save(P)
+            %% Rules first: a package on disk is a job that may run.
+            try
+                ok = io(pluto_job_watch:prepare(Id, maps:get(<<"owner">>, P), Rules)),
+                save(P)
             catch throw:E -> _ = file:del_dir_r(Dir), throw(E)
             end,
+            Rules =:= [] orelse pluto_job_watch:prepared(Id),
             pluto_job_notice:event(job_opened, P, ?JOB_QUEUED),
             Env = opt(<<"env">>, R, #{}),
             S1 = schedule(S#state{env = (S#state.env)#{Id => Env}}),

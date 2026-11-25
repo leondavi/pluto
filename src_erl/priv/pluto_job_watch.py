@@ -32,6 +32,7 @@ class Job:
     def __init__(self, msg):
         self.id = self.label = msg["job"]
         self.name = msg.get("name") or msg["job"]
+        self.params = msg.get("params") or {}
         self.path, self.state_path = msg["path"], msg["state_path"]
         self.rules = {}
         self.readers = {}           # (offset, line) -> [Reader, [rules]]
@@ -182,7 +183,7 @@ class Watcher:
                 self.guarded(job, r, lambda r=r: r.tick(
                     c, size, job.last_out_c, job.last_line,
                     not over and (not r.by_lines or r.st["offset"] >= size
-                                  or not more)))
+                                  or not more), job))
                 if over and not more:
                     r.end(c)
         hits = [h for r in job.rules.values() for h in r.take()]

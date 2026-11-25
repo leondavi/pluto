@@ -103,6 +103,7 @@
 -define(JOB_PACKAGE_SCRIPT, "pluto_job_package.py").
 -define(JOB_ANALYZE_SCRIPT, "pluto_job_analyze.py").
 -define(JOB_WATCH_SCRIPT,   "pluto_job_watch.py").
+-define(JOB_ACT_SCRIPT,     "pluto_job_act.py").
 -define(MODE_DIR,  8#700).
 -define(MODE_FILE, 8#600).
 
@@ -110,6 +111,7 @@
 -define(JOB_SCHEMA,       1).
 -define(JOB_SHORT_ID_LEN, 6).   %% last hex digits, accepted as an id
 -define(JOB_ID_RE,        "\\AJ-[0-9]{8}-[0-9a-f]{16}\\z").
+-define(JOB_PARAM_RE,     "\\A[A-Za-z][A-Za-z0-9_]{0,29}\\z").
 -define(STREAM_ID_RE,     "\\AS[0-9]{1,6}\\z").
 -define(JOB_CHUNK_BYTES,  65536).
 -define(JOB_RECORD_BYTES, 256).                 %% fixed-width manifest line
@@ -117,8 +119,8 @@
 -define(JOB_KEY_MIN,      32).                  %% shortest key accepted
 
 %% ── Configurable defaults (pluto_config.json "smartstreams") ────────────────
--define(DEFAULT_JOB_MAX_RUNNING,    16).
--define(DEFAULT_JOB_MAX_PER_AGENT,  8).
+-define(DEFAULT_JOB_MAX_RUNNING,    64).
+-define(DEFAULT_JOB_MAX_PER_AGENT,  16).
 -define(DEFAULT_JOB_IDLE_AFTER_MS,  30000).
 -define(DEFAULT_JOB_MIN_FREE_BYTES, 268435456).
 
@@ -158,6 +160,10 @@
 -define(WATCH_SETTLE_MS,     15000).  %% job_wait stops waiting for last hits
 -define(WATCH_EXIT_MEMORY,   99).     %% exit status of a helper over its limit
 -define(WATCH_BACKOFF_MS,    60000).
+-define(ACT_TRIES,           5).      %% repeated before an action has failed
+-define(ACT_RETRY_MS,        250).    %% doubled each time
+-define(ACT_OVERDUE_MS,      10000).  %% helper hangs: kill it
+-define(JOB_BATCH_MAX,       200).    %% jobs of one start request
 
 %% ── Waits, lists, misc limits ───────────────────────────────────────────────
 -define(JOB_WAIT_MAX_MS,      55000).
@@ -202,19 +208,20 @@
                         <<"timeout_s">>, <<"max_output_bytes">>, <<"name">>,
                         <<"tags">>, <<"task_id">>, <<"framework">>,
                         <<"session_id">>, <<"parent">>, <<"rerun_of">>,
-                        <<"base_env">>, <<"request_id">>]).
+                        <<"base_env">>, <<"request_id">>, <<"params">>]).
 %% Handed to the runner.
 -define(JOB_LAUNCH_KEYS, [<<"command">>, <<"argv">>, <<"cwd">>, <<"stdin">>,
                           <<"timeout_s">>, <<"max_output_bytes">>, <<"base_env">>]).
 %% Repeated by rerun_of.
 -define(JOB_RERUN_KEYS, [<<"command">>, <<"argv">>, <<"cwd">>, <<"stdin">>,
-                         <<"timeout_s">>, <<"max_output_bytes">>, <<"name">>]).
+                         <<"timeout_s">>, <<"max_output_bytes">>, <<"name">>,
+                         <<"params">>]).
 %% Meaningful on this host only; stripped from exports.
 -define(JOB_LOCAL_KEYS, [<<"base_env">>, <<"request_id">>, <<"spawn_at">>,
                          <<"sched_ended_at">>]).
 -define(JOB_CARD_KEYS, [<<"name">>, <<"user">>, <<"opener">>, <<"owner">>,
                         <<"opened_at">>, <<"tags">>, <<"task_id">>, <<"parent">>,
-                        <<"rerun_of">>, <<"framework">>]).
+                        <<"rerun_of">>, <<"framework">>, <<"params">>, <<"cwd">>]).
 -define(JOB_OPEN_KEYS, [<<"command">>, <<"argv">>, <<"cwd">>, <<"origin">>,
                         <<"ownership">>, <<"imported">>, <<"env_keys">>,
                         <<"timeout_s">>]).
@@ -231,7 +238,7 @@
                        <<"scope">>, <<"until">>, <<"status">>, <<"assignee">>,
                        <<"followup_id">>, <<"framework">>, <<"session_id">>,
                        <<"sort">>, <<"match">>, <<"stalled">>,
-                       <<"then">>, <<"rule">>]).
+                       <<"then">>, <<"rule">>, <<"file">>]).
 -define(JOB_INT_KEYS, [<<"max_bytes">>, <<"from_offset">>, <<"to_offset">>,
                        <<"offset">>, <<"line">>, <<"lines">>, <<"tail">>,
                        <<"before">>, <<"after">>, <<"limit">>, <<"from">>,
@@ -251,7 +258,8 @@
 -define(WATCH_KEYS, [<<"name">>, <<"match">>, <<"where">>, <<"by">>, <<"extract">>,
                      <<"count">>, <<"window_s">>, <<"idle_s">>, <<"absent_s">>,
                      <<"stalled">>, <<"stalled_n">>, <<"then">>, <<"once">>,
-                     <<"cooldown_s">>, <<"max_hits">>, <<"from_now">>]).
+                     <<"cooldown_s">>, <<"max_hits">>, <<"from_now">>,
+                     <<"file">>, <<"text">>]).
 -define(JOB_ENV_KEYS,  [<<"env">>, <<"base_env">>]).
 
 -endif. %% PLUTO_JOBS_HRL

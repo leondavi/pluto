@@ -10,11 +10,9 @@
 
 -include("pluto.hrl").
 
--export([analyze/2, check_rule/1]).
+-export([analyze/2, check_rules/2]).
 
 -import(pluto_job_store, [opt/2, opt/3]).
-
-
 
 %% @doc Answer one request about some jobs; see priv/pluto_job_analyze.py.
 -spec analyze([pkg()], map()) -> reply().
@@ -33,11 +31,14 @@ analyze(Jobs, R) ->
         E -> E
     end.
 
-%% @doc A watch rule with defaults filled in, or what is wrong with it.
--spec check_rule(map()) -> {ok, map()} | {error, binary()}.
-check_rule(Spec) ->
-    case in_slot("pluto_check_", 2, fun() -> run(["check"], Spec) end) of
-        {ok, #{<<"rule">> := Rule}} -> {ok, Rule};
+%% @doc Watch rules with defaults filled in, or what is wrong with one.
+%% Params: names of the parameters of the jobs they are for.
+-spec check_rules([map()], [binary()]) -> {ok, [map()]} | {error, binary()}.
+check_rules([], _) -> {ok, []};
+check_rules(Specs, Params) ->
+    Req = #{<<"rules">> => Specs, <<"params">> => Params},
+    case in_slot("pluto_check_", 2, fun() -> run(["check"], Req) end) of
+        {ok, #{<<"rules">> := Rules}} -> {ok, Rules};
         {ok, _} -> {error, <<"analyze_failed">>};
         E -> E
     end.
@@ -131,19 +132,9 @@ collect(Port, Acc, Size, Stop) ->
     receive
         {Port, {data, D}} when Size + byte_size(D) =< ?ANALYZE_MAX_OUT ->
             collect(Port, [Acc, D], Size + byte_size(D), Stop);
-        {Port, {data, _}} -> kill(Port), {error, <<"analyze_failed">>};
+        {Port, {data, _}} -> pluto_job_store:kill_port(Port), {error, <<"analyze_failed">>};
         {Port, {exit_status, _}} -> {ok, iolist_to_binary(Acc)}
     after max(0, Stop - erlang:monotonic_time(millisecond)) ->
-        kill(Port),
+        pluto_job_store:kill_port(Port),
         {error, <<"analyze_deadline">>}
     end.
-
-%% The port is still open, so its process cannot have been reaped and the
-%% pid is still its own.
-kill(Port) ->
-    case erlang:port_info(Port, os_pid) of
-        {os_pid, Pid} -> os:cmd("kill -9 " ++ integer_to_list(Pid));
-        undefined     -> ok
-    end,
-    catch port_close(Port),
-    ok.

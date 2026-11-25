@@ -9,6 +9,7 @@ import json
 import math
 
 import pluto_job_defs as d
+import pluto_out_act as act
 from pluto_out_agg import hashable
 from pluto_out_fields import (PSEUDO, QueryError, auto, brace_regex, by_regex,
                               compiled, extractor, is_brace, pseudo, show)
@@ -16,7 +17,7 @@ from pluto_out_where import Where, equal, new_memory
 
 _FIELDS = ("name", "match", "where", "by", "extract", "count", "window_s", "idle_s",
            "absent_s", "stalled", "stalled_n", "then", "once", "cooldown_s",
-           "max_hits", "from_now")
+           "max_hits", "from_now", "file", "text")
 
 
 def _number(r, key, lo, hi, default=None, whole=False):
@@ -30,23 +31,28 @@ def _number(r, key, lo, hi, default=None, whole=False):
     return int(v) if whole else v
 
 
-def check_rule(r):
+def check_rule(r, params=()):
     """The rule with defaults filled in; raises QueryError naming what is
-    wrong with it."""
+    wrong with it. *params*: names of the job's parameters."""
     out = {k: r[k] for k in _FIELDS if r.get(k) not in (None, "", [])}
     secs = d.WATCH_SECONDS_MAX
     for k in ("window_s", "idle_s", "absent_s"):
         v = _number(r, k, 0.5, secs)
         if v is not None:
             out[k] = v
-    out["cooldown_s"] = _number(r, "cooldown_s", 0, secs, d.WATCH_COOLDOWN_S)
-    out["max_hits"] = _number(r, "max_hits", 1, d.WATCH_HITS_MAX, d.WATCH_HITS, True)
-    out["count"] = _number(r, "count", 1, d.WATCH_COUNT_MAX, 1, True)
-    out["once"] = bool(r.get("once"))
-    out["from_now"] = bool(r.get("from_now"))
     out["then"] = r.get("then") or "notify"
     if out["then"] not in d.WATCH_THEN:
         raise QueryError("watch: then=%r; use %s" % (out["then"][:40], ", ".join(d.WATCH_THEN)))
+    acting = out["then"] in act.NEEDS
+    act.check(out)
+    out["cooldown_s"] = _number(r, "cooldown_s", 0, secs, 0 if acting else d.WATCH_COOLDOWN_S)
+    if acting and out["cooldown_s"]:
+        raise QueryError("watch: a cooldown would skip lines that must be acted on")
+    out["max_hits"] = _number(r, "max_hits", 1, d.WATCH_HITS_MAX,
+                              d.ACT_HITS if acting else d.WATCH_HITS, True)
+    out["count"] = _number(r, "count", 1, d.WATCH_COUNT_MAX, 1, True)
+    out["once"] = bool(r.get("once"))
+    out["from_now"] = bool(r.get("from_now"))
     if "match" in out and out["match"] == "re:":
         raise QueryError("watch: empty regex in match")
     kinds = [k for k in ("idle_s", "absent_s", "stalled") if k in out]
@@ -76,7 +82,11 @@ def check_rule(r):
         out["name"] = (out.get("match") or (out["where"][0] if "where" in out else
                                             kinds[0]))[:60]
     out["name"] = out["name"][:100]
-    Rule("R0", out)                          # patterns and conditions compile
+    rule = Rule("R0", out)                   # patterns and conditions compile
+    by_time = "idle_s" in out or "absent_s" in out
+    captured = [] if by_time else list(rule.rx.groupindex) \
+        if rule.rx is not None and rule.rx.groupindex else None
+    act.check_holes(out, captured, params)
     return out
 
 
@@ -105,6 +115,8 @@ class Rule:
             need[spec["stalled"]] = None
         self.pseudo = [k for k in need if k in PSEUDO]
         self.want = any(k not in PSEUDO for k in need)
+        # A placeholder may name a job parameter, so it is no condition.
+        look = self.want or any(k not in act.BUILT_IN for k in act.holes(spec))
         self.literal, self.rx, self.fields = None, None, None
         match = spec.get("match")
         if match and (match.startswith("re:") or is_brace(match)):
@@ -114,7 +126,7 @@ class Rule:
                 self.fields = by_regex(self.rx)
         elif match:
             self.literal = match
-        if self.fields is None and self.want:
+        if self.fields is None and look:
             kind = spec.get("extract") or "auto"
             # A table's header is in the output, which may not be there yet.
             self.fields = auto(head) if kind == "auto" else (
@@ -156,9 +168,9 @@ class Rule:
                 return
         elif not self.where.test(rec):
             return
-        self._matched(rec, text, n, offset, c)
+        self._matched(rec, text, n, c, job)
 
-    def _matched(self, rec, text, n, offset, c):
+    def _matched(self, rec, text, n, c, job):
         st, spec = self.st, self.spec
         if "absent_s" in spec:
             st["seen_c"] = c
@@ -176,7 +188,7 @@ class Rule:
                 run[0], run[1] = v, 1
             if run[1] == spec["stalled_n"]:
                 self.fire(c, n, "%s=%s unchanged for %d matches: %s" % (
-                    spec["stalled"], show(v)[:60], run[1], text))
+                    spec["stalled"], show(v)[:60], run[1], text), rec, job)
             return
         need = spec["count"]
         if need > 1:
@@ -189,7 +201,7 @@ class Rule:
             if len(times) < need:
                 return
             st["times"] = []
-        self.fire(c, n, text)
+        self.fire(c, n, text, rec, job)
 
     def _slot(self, name, rec, make):
         """Memory of this rule for the record's ``by`` group."""
@@ -203,7 +215,7 @@ class Rule:
         return got
 
     # ── time ──
-    def tick(self, c, size, last_out_c, last_line, caught_up):
+    def tick(self, c, size, last_out_c, last_line, caught_up, job=None):
         st, spec = self.st, self.spec
         if st.get("late") and c >= st.get("next_c", 0):
             self._emit(c, *st["last"])
@@ -217,32 +229,38 @@ class Rule:
             st["fired"] = True
             n, text = last_line()
             self.fire(c, n, "no output for %gs; last line: %s" % (
-                round(c - last_out_c, 1), text or "(none)"))
+                round(c - last_out_c, 1), text or "(none)"), {}, job)
         elif "absent_s" in spec:
             since = st.get("seen_c", st.get("from_c", 0))
             if c - since >= spec["absent_s"]:
                 st["fired"] = True
                 n, text = last_line()
                 self.fire(c, n, "no matching line for %gs; last line: %s" % (
-                    round(c - since, 1), text or "(none)"))
+                    round(c - since, 1), text or "(none)"), {}, job)
 
     def end(self, c):
         if not self.done and self.st.get("late"):
             self._emit(c, *self.st["last"])
 
     # ── firing ──
-    def fire(self, c, n, text):
+    def fire(self, c, n, text, rec, job):
         st = self.st
         st["total"] += 1
+        action = None
+        if self.spec["then"] in act.NEEDS:
+            try:
+                action = act.expand(self.spec, rec, job, text)
+            except act.ActionError as exc:
+                action = {"kind": "none", "error": "%s: %s" % (exc, text)}
         text = text.strip()[:d.WATCH_TEXT].replace("\0", "�")
         if st["n"] and self.cool and c < st.get("next_c", 0):
             # Told when the cool-down ends, so that nothing goes unnoticed.
             st["late"] = st.get("late", 0) + 1
             st["last"] = [n, text]
             return
-        self._emit(c, n, text)
+        self._emit(c, n, text, action)
 
-    def _emit(self, c, n, text):
+    def _emit(self, c, n, text, action=None):
         st = self.st
         also = st.pop("late", 0)
         if st.pop("last", None) == [n, text]:
@@ -253,6 +271,11 @@ class Rule:
                "line": n, "text": text, "then": self.spec["then"]}
         if also > 0:
             hit["also"] = also
+        if action is not None and "error" in action:
+            hit["then"] = "notify"
+            hit["text"] = ("not done, %s" % action["error"])[:d.WATCH_TEXT]
+        elif action is not None:
+            hit["act"] = action
         if self.spec["once"] or st["n"] >= self.spec["max_hits"]:
             st["done"] = True
             st["why"] = "once" if self.spec["once"] else "max_hits reached"

@@ -19,6 +19,9 @@ init([]) ->
           [#{id => pluto_job_mgr, start => {pluto_job_mgr, start_link, []},
              restart => permanent, shutdown => 5000, type => worker,
              modules => [pluto_job_mgr]},
+           #{id => pluto_job_act, start => {pluto_job_act, start_link, []},
+             restart => permanent, shutdown => 5000, type => worker,
+             modules => [pluto_job_act]},
            #{id => pluto_job_watch, start => {pluto_job_watch, start_link, []},
              restart => permanent, shutdown => 5000, type => worker,
              modules => [pluto_job_watch]}]}}.

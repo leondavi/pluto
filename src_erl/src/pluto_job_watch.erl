@@ -13,6 +13,14 @@
 %%% again, and a crash after it delivers the same hit again, which the
 %%% manager recognises. Only the action of a rule (cancel, pause) can be
 %%% requested twice, when the crash falls between it and its notice.
+%%%
+%%% Hits of acting rules (append, input) tell nobody. Their actions wait in
+%%% `acts', in order, until pluto_job_act has reported them done; one that
+%%% failed becomes an ordinary hit. A document leaves the memory only when
+%%% its job is over, all hits are told and no action is left.
+%%%
+%%% The manager may write watch.json only before it publishes the job
+%%% (prepare/3); from then on this server is its only writer.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(pluto_job_watch).
@@ -20,7 +28,8 @@
 
 -include("pluto.hrl").
 
--export([start_link/0, activated/0, request/3, hits/2, settled/1, watched/1]).
+-export([start_link/0, activated/0, request/3, hits/2, settled/1, watched/1,
+         prepare/3, prepared/1, acted/3, specs/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -import(pluto_job_store, [opt/2, opt/3, now_ms/0]).
@@ -33,7 +42,9 @@
     told      = #{}  :: #{job_id() => integer()},   %% delivered up to this h
     suspect   = none :: term(),             %% rule at work in the last death
     unsaved   = #{}  :: #{job_id() => true},
-    ended     = #{}  :: #{job_id() => true}         %% helper knows it is over
+    ended     = #{}  :: #{job_id() => true},        %% helper knows it is over
+    handed    = #{}  :: #{job_id() => integer()},   %% actions up to this one
+    actor     = none :: none | pid()                %% are with this process
 }).
 
 %%====================================================================
@@ -56,13 +67,42 @@ request(Jobs, Actor, R) ->
             {ok, #{<<"jobs">> => maps:from_list([{I, describe(I)} || I <- Ids])}};
         <<"add">> ->
             Spec = maps:filter(fun(_, V) -> V =/= null end, maps:with(?WATCH_KEYS, R)),
-            case pluto_job_analyze:check_rule(Spec) of
-                {ok, Rule} -> call({add, Actor, Ids, Rule, opt(<<"request_id">>, R, null)});
-                E          -> E
+            case pluto_job_analyze:check_rules([Spec], params(Jobs)) of
+                {ok, [Rule]} -> call({add, Actor, Ids, Rule, opt(<<"request_id">>, R, null)});
+                E            -> E
             end;
         <<"remove">> -> call({remove, Actor, Ids, opt(<<"rule">>, R)});
         _ -> {error, <<"bad_action">>}
     end.
+
+%% Parameters all the jobs have.
+params([P | Ps]) ->
+    Keys = fun(X) -> maps:keys(opt(<<"params">>, X, #{})) end,
+    lists:foldl(fun(X, Acc) -> [K || K <- Acc, lists:member(K, Keys(X))] end, Keys(P), Ps).
+
+%% @doc Write checked rules of a job that nobody knows yet. Follow up with
+%% prepared/1 once the job is saved, and before it can start.
+-spec prepare(job_id(), agent_id(), [map()]) -> ok | {error, term()}.
+prepare(_, _, []) -> ok;
+prepare(Id, By, Rules) ->
+    Numbered = lists:zip(lists:seq(1, length(Rules)), Rules),
+    Named = [{rule_id(N), Rule} || {N, Rule} <- Numbered],
+    write(Id, (empty())#{
+        <<"seq">> := length(Rules),
+        <<"rules">> := [rule(Rid, Rule, By, null) || {Rid, Rule} <- Named],
+        <<"states">> := maps:from_list([{Rid, start_state(Id, false)}
+                                        || {Rid, _} <- Named])}).
+
+-spec prepared(job_id()) -> ok.
+prepared(Id) -> gen_server:cast(?MODULE, {prepared, Id}).
+
+%% @doc An action of the job was carried out, or could not be.
+-spec acted(job_id(), pos_integer(), ok | {error, binary()}) -> ok.
+acted(Id, A, Result) -> gen_server:cast(?MODULE, {acted, Id, A, Result}).
+
+%% @doc The rules of a job, as they were given.
+-spec specs(job_id()) -> [map()].
+specs(Id) -> [Spec || #{<<"spec">> := Spec} <- maps:get(<<"rules">>, doc(Id), [])].
 
 call(Req) ->
     try gen_server:call(?MODULE, Req, ?JOB_CALL_MS)
@@ -74,12 +114,12 @@ call(Req) ->
 hits(Id, Mark) ->
     [H || #{<<"h">> := N} = H <- maps:get(<<"hits">>, doc(Id), []), N > Mark].
 
-%% @doc Has everything the job printed been looked at?
+%% @doc Has everything the job printed been looked at and acted on?
 -spec settled(job_id()) -> boolean().
 settled(Id) ->
     case doc(Id) of
         #{<<"final">> := false} -> false;
-        _ -> true
+        D -> maps:get(<<"acts">>, D, []) =:= []
     end.
 
 %% @doc Does the job have rules, or had when it ran here?
@@ -111,6 +151,7 @@ describe(Id) ->
             M -> M
         end,
     States = maps:get(<<"states">>, D, #{}),
+    Acts = maps:get(<<"acts">>, D, []),
     [begin
          St = maps:get(Rid, States, #{}),
          maps:merge(
@@ -119,6 +160,7 @@ describe(Id) ->
                  not opt(<<"done">>, St, false),
              <<"hits">> => opt(<<"n">>, St, 0),
              <<"fired">> => opt(<<"total">>, St, 0),
+             <<"waiting">> => length([A || #{<<"rule">> := R} = A <- Acts, R =:= Rid]),
              <<"inert">> => maps:get(<<"inert">>, D, true)},
            maps:with([<<"why">>], St))
      end || #{<<"id">> := Rid, <<"spec">> := Spec} <- maps:get(<<"rules">>, D, [])].
@@ -152,7 +194,16 @@ handle_call(_, _, S) -> {reply, {error, <<"unknown_request">>}, S}.
 handle_cast(activated, S) ->
     ets:delete_all_objects(?ETS_JOB_WATCH),
     lists:foreach(fun load/1, pluto_job_registry:all()),
-    {noreply, helper(S#state{told = #{}, unsaved = #{}, ended = #{}})};
+    {noreply, helper(S#state{told = #{}, unsaved = #{}, ended = #{}, handed = #{}})};
+handle_cast({prepared, Id}, S) ->
+    case pluto_job_registry:pkg(Id) of
+        {ok, P} ->
+            load(P),
+            ets:member(?ETS_JOB_WATCH, Id) andalso tell_set(Id, all, S),
+            {noreply, helper(S)};
+        _ -> {noreply, S}                      %% gone already
+    end;
+handle_cast({acted, Id, A, Result}, S) -> {noreply, done(Id, A, Result, S)};
 handle_cast(_, S) -> {noreply, S}.
 
 handle_info(tick, S) ->
@@ -196,10 +247,20 @@ owned(Id, {Agent, AsUser}) ->
         R -> R
     end.
 
+%% a: number of the last action; acts: those not carried out yet.
+empty() ->
+    #{<<"schema">> => ?JOB_SCHEMA, <<"inert">> => false, <<"seq">> => 0, <<"h">> => 0,
+      <<"rules">> => [], <<"states">> => #{}, <<"hits">> => [], <<"a">> => 0,
+      <<"acts">> => [], <<"final">> => false}.
+
+rule_id(N) -> <<"R", (integer_to_binary(N))/binary>>.
+
+rule(Rid, Spec, By, Request) ->
+    #{<<"id">> => Rid, <<"spec">> => Spec, <<"by">> => By, <<"at">> => now_ms(),
+      <<"request_id">> => Request}.
+
 add(Id, {By, _} = Actor, Rule, Rid, S) ->
-    D = maps:merge(#{<<"schema">> => ?JOB_SCHEMA, <<"inert">> => false, <<"seq">> => 0,
-                     <<"h">> => 0, <<"rules">> => [], <<"states">> => #{},
-                     <<"hits">> => [], <<"final">> => false}, doc(Id)),
+    D = maps:merge(empty(), doc(Id)),
     #{<<"rules">> := Rules, <<"states">> := States, <<"seq">> := Seq} = D,
     Same = [X || #{<<"id">> := X, <<"request_id">> := Q} <- Rules, Q =:= Rid, Rid =/= null],
     Live = [X || #{<<"id">> := X} <- Rules,
@@ -211,7 +272,7 @@ add(Id, {By, _} = Actor, Rule, Rid, S) ->
         {ok, _} when length(Live) >= ?WATCH_RULES_MAX ->
             {{error, <<"too_many_rules_on_this_job">>}, S};
         {ok, _} ->
-            New = <<"R", (integer_to_binary(Seq + 1))/binary>>,
+            New = rule_id(Seq + 1),
             St = start_state(Id, opt(<<"from_now">>, Rule, false)),
             %% Finished rules make room; their hits stay.
             Kept = case length(Rules) >= 2 * ?WATCH_RULES_MAX of
@@ -219,9 +280,7 @@ add(Id, {By, _} = Actor, Rule, Rid, S) ->
                        false -> Rules
                    end,
             D1 = D#{<<"seq">> := Seq + 1, <<"final">> := false,
-                    <<"rules">> := Kept ++ [#{<<"id">> => New, <<"spec">> => Rule,
-                                              <<"by">> => By, <<"at">> => now_ms(),
-                                              <<"request_id">> => Rid}],
+                    <<"rules">> := Kept ++ [rule(New, Rule, By, Rid)],
                     <<"states">> := States#{New => St}},
             case write(Id, D1) of
                 ok ->
@@ -290,7 +349,8 @@ write(Id, D) -> pluto_job_store:write_json(path(Id), D, sync).
 load(#{<<"id">> := Id, <<"sched">> := Sched})
   when Sched =/= ?SCHED_IMPORTED, Sched =/= ?SCHED_SNAPSHOT ->
     case read(Id) of
-        #{<<"inert">> := false} = D -> ets:insert(?ETS_JOB_WATCH, {Id, D});
+        #{<<"inert">> := false} = D ->
+            ets:insert(?ETS_JOB_WATCH, {Id, maps:merge(empty(), D)});
         _ -> ok
     end;
 load(_) -> ok.
@@ -304,27 +364,59 @@ report(Id, #{<<"states">> := New, <<"hits">> := Hits, <<"final">> := Final}, S) 
         [{_, #{<<"rules">> := Rules} = D}] ->
             %% A rule removed meanwhile reports for the last time.
             Ids = [I || #{<<"id">> := I} <- Rules],
-            D1 = add_hits([X || #{<<"rule">> := Ru} = X <- Hits, lists:member(Ru, Ids)],
-                          D#{<<"states">> := maps:merge(maps:get(<<"states">>, D),
-                                                        maps:with(Ids, New)),
-                             <<"final">> := Final}),
-            save_and_deliver(Id, D1, S);
+            Known = [X || #{<<"rule">> := Ru} = X <- Hits, lists:member(Ru, Ids)],
+            {Acting, Telling} = lists:partition(fun(X) -> is_map_key(<<"act">>, X) end, Known),
+            %% The last hit of an acting rule is told as well: from here on
+            %% lines go unanswered.
+            Last = [maps:remove(<<"act">>, X#{<<"then">> := <<"notify">>})
+                    || #{<<"last">> := true} = X <- Acting],
+            D1 = add_acts(Acting, D#{<<"states">> := maps:merge(maps:get(<<"states">>, D),
+                                                                maps:with(Ids, New)),
+                                     <<"final">> := Final}),
+            save_and_deliver(Id, add_hits(Telling ++ Last, told(Id, S), D1), S);
         [] -> S
     end.
 
-add_hits(New, #{<<"h">> := H0, <<"hits">> := Old} = D) ->
+add_acts(New, #{<<"a">> := A0, <<"acts">> := Old} = D) ->
+    {Numbered, A1} = lists:mapfoldl(fun(#{<<"act">> := Act, <<"rule">> := Rule,
+                                          <<"name">> := Name, <<"line">> := Line}, N) ->
+        {Act#{<<"a">> => N + 1, <<"rule">> => Rule, <<"name">> => Name,
+              <<"line">> => Line}, N + 1} end, A0, New),
+    D#{<<"a">> := A1, <<"acts">> := Old ++ Numbered}.
+
+%% Keeps the newest, and whatever nobody was told about yet.
+add_hits(New, Told, #{<<"h">> := H0, <<"hits">> := Old} = D) ->
     At = now_ms(),
     {Numbered, H1} = lists:mapfoldl(fun(X, N) ->
         {X#{<<"h">> => N + 1, <<"at">> => At}, N + 1} end, H0, New),
-    All = Old ++ Numbered,
-    Keep = max(?WATCH_HITS_KEEP, length(Numbered)),
-    D#{<<"h">> := H1, <<"hits">> := lists:nthtail(max(0, length(All) - Keep), All)}.
+    Low = min(Told, H1 - ?WATCH_HITS_KEEP),
+    D#{<<"h">> := H1, <<"hits">> := [X || #{<<"h">> := N} = X <- Old ++ Numbered, N > Low]}.
+
+told(Id, #state{told = Told}) -> maps:get(Id, Told, 0).
+
+%% An action is over. Nobody is told unless it failed.
+done(Id, A, Result, S) ->
+    case ets:lookup(?ETS_JOB_WATCH, Id) of
+        [{_, #{<<"acts">> := Acts} = D}] ->
+            case lists:partition(fun(#{<<"a">> := N}) -> N =:= A end, Acts) of
+                {[], _} -> S;
+                {[Act], Left} ->
+                    Failed = [failure(Act, Why) || {error, Why} <- [Result]],
+                    D1 = add_hits(Failed, told(Id, S), D#{<<"acts">> := Left}),
+                    save_and_deliver(Id, D1, S)
+            end;
+        [] -> S
+    end.
+
+failure(#{<<"rule">> := Rule, <<"name">> := Name, <<"line">> := Line}, Why) ->
+    #{<<"rule">> => Rule, <<"name">> => Name, <<"line">> => Line,
+      <<"then">> => <<"notify">>, <<"text">> => <<"action failed: ", Why/binary>>}.
 
 save_and_deliver(Id, D, #state{unsaved = U} = S) ->
     case write(Id, D) of
         ok ->
             ets:insert(?ETS_JOB_WATCH, {Id, D}),
-            deliver(Id, S#state{unsaved = maps:remove(Id, U)});
+            deliver(Id, hand_over(Id, D, S#state{unsaved = maps:remove(Id, U)}));
         {error, R} ->
             %% The helper moved on, so keep what it said and try again.
             maps:is_key(Id, U) orelse ?LOG_ERROR("smartstreams: watch not saved: ~p", [R]),
@@ -332,19 +424,30 @@ save_and_deliver(Id, D, #state{unsaved = U} = S) ->
             S#state{unsaved = U#{Id => true}}
     end.
 
-%% Act on and announce hits the manager has not seen. Final and delivered
-%% documents leave the memory.
+%% Pass on actions that are on disk and not with the actor yet.
+hand_over(Id, #{<<"acts">> := Acts, <<"a">> := A}, #state{handed = Handed} = S) ->
+    From = maps:get(Id, Handed, 0),
+    case [X || #{<<"a">> := N} = X <- Acts, N > From] of
+        []    -> S;
+        Fresh ->
+            pluto_job_act:perform(Id, Fresh),
+            S#state{handed = Handed#{Id => A}}
+    end.
+
+%% Act on and announce hits the manager has not seen. Documents with
+%% nothing left to do leave the memory.
 deliver(Id, #state{told = Told} = S) ->
-    [{_, #{<<"h">> := H, <<"hits">> := Hits, <<"final">> := Final}}] =
+    [{_, #{<<"h">> := H, <<"hits">> := Hits, <<"final">> := Final, <<"acts">> := Acts}}] =
         ets:lookup(?ETS_JOB_WATCH, Id),
     Done = maps:get(Id, Told, 0),
     Fresh = [X || #{<<"h">> := N} = X <- Hits, N > Done],
     case Fresh =:= [] orelse pluto_job_mgr:watch_hits(Id, Fresh) of
         R when R =:= true; R =:= ok ->
-            case Final of
+            case Final andalso Acts =:= [] of
                 true ->
                     ets:delete(?ETS_JOB_WATCH, Id),
                     S#state{told = maps:remove(Id, Told),
+                            handed = maps:remove(Id, S#state.handed),
                             ended = maps:remove(Id, S#state.ended)};
                 false -> S#state{told = Told#{Id => H}}
             end;
@@ -355,31 +458,43 @@ deliver(Id, #state{told = Told} = S) ->
 %% Once a second
 %%====================================================================
 
-tick(S0) ->
+tick(Sa) ->
+    S0 = actor(Sa),
     S1 = lists:foldl(fun({Id, D}, S) ->
         case pluto_job_registry:pkg(Id) of
             {error, _} ->                      %% pruned or removed
                 ets:delete(?ETS_JOB_WATCH, Id),
                 tell(#{<<"op">> => <<"del">>, <<"job">> => Id}, S),
+                pluto_job_act:forget(Id),
                 S;
-            {ok, P} ->
-                Sa = end_of(Id, P, S),
-                case {maps:is_key(Id, S#state.unsaved), D} of
-                    {true, _} -> save_and_deliver(Id, D, Sa);
-                    {false, #{<<"h">> := H}} ->
-                        case H > maps:get(Id, S#state.told, 0) orelse
-                             maps:get(<<"final">>, D) of
-                            true  -> deliver(Id, Sa);
-                            false -> Sa
-                        end
-                end
+            {ok, P} -> tick(Id, P, D, S)
         end
     end, S0, ets:tab2list(?ETS_JOB_WATCH)),
     S2 = case S1#state.port =/= none andalso now_ms() - S1#state.heard > ?WATCH_SILENT_MS of
-             true  -> kill(S1#state.port), helper_died(true, S1);
+             true  -> pluto_job_store:kill_port(S1#state.port), helper_died(true, S1);
              false -> S1
          end,
     helper(S2).
+
+tick(Id, P, D, S) ->
+    S1 = end_of(Id, P, S),
+    case {is_map_key(Id, S#state.unsaved), D} of
+        {true, _} -> save_and_deliver(Id, D, S1);
+        {false, #{<<"h">> := H, <<"final">> := Final}} ->
+            S2 = hand_over(Id, D, S1),
+            case H > told(Id, S) orelse Final of
+                true  -> deliver(Id, S2);
+                false -> S2
+            end
+    end.
+
+%% An actor that was restarted knows nothing: hand over everything again.
+actor(#state{actor = Old} = S) ->
+    case whereis(pluto_job_act) of
+        Old                  -> S;
+        New when is_pid(New) -> S#state{actor = New, handed = #{}};
+        undefined            -> S
+    end.
 
 %% A job can end without its runner saying so (lost, cancelled in queue).
 end_of(Id, P, #state{ended = E, port = Port} = S) ->
@@ -458,17 +573,9 @@ disable(Id, Rid, S) ->
                     <<"text">> => <<"rule disabled: ", Why/binary>>},
             D1 = D#{<<"states">> := States#{Rid := St#{<<"done">> => true,
                                                        <<"why">> => Why}}},
-            save_and_deliver(Id, add_hits([Hit], D1), S);
+            save_and_deliver(Id, add_hits([Hit], told(Id, S), D1), S);
         _ -> S
     end.
-
-kill(Port) ->
-    case erlang:port_info(Port, os_pid) of
-        {os_pid, Pid} -> os:cmd("kill -9 " ++ integer_to_list(Pid));
-        undefined     -> ok
-    end,
-    catch port_close(Port),
-    ok.
 
 tell(_, #state{port = none}) -> ok;
 tell(M, #state{port = Port}) ->
@@ -478,8 +585,9 @@ tell(M, #state{port = Port}) ->
 tell_set(Id, Which, S) ->
     [{_, #{<<"rules">> := Rules, <<"states">> := States}}] =
         ets:lookup(?ETS_JOB_WATCH, Id),
+    {Name, Params} = described(Id),
     tell(#{<<"op">> => <<"set">>, <<"job">> => Id,
-           <<"name">> => name(Id),
+           <<"name">> => Name, <<"params">> => Params,
            <<"path">> => bin(pluto_job_store:file(Id, ?JOB_FILE_OUTPUT)),
            <<"state_path">> => bin(pluto_job_store:file(Id, ?JOB_FILE_STATE)),
            <<"rules">> => [#{<<"id">> => I, <<"spec">> => Sp,
@@ -487,10 +595,10 @@ tell_set(Id, Which, S) ->
                            || #{<<"id">> := I, <<"spec">> := Sp} <- Rules,
                               Which =:= all orelse lists:member(I, Which)]}, S).
 
-name(Id) ->
+described(Id) ->
     case pluto_job_registry:pkg(Id) of
-        {ok, P} -> opt(<<"name">>, P, null);
-        _       -> null
+        {ok, P} -> {opt(<<"name">>, P, null), opt(<<"params">>, P, #{})};
+        _       -> {null, #{}}
     end.
 
 bin(Path) -> unicode:characters_to_binary(Path).

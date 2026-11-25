@@ -22,6 +22,14 @@ check(R) ->
 valid(<<"timeout_s">>, V) -> is_number(V) andalso V > 0 andalso V < 1.0e12;
 %% One way to read lines, or several in order.
 valid(<<"extract">>, V) -> str(V) orelse (is_list(V) andalso lists:all(fun str/1, V));
+%% Rules and jobs within a start request hold to the same types.
+valid(K, V) when K =:= <<"watch">>; K =:= <<"batch">> ->
+    is_list(V) andalso lists:all(fun(X) -> is_map(X) andalso check(X) =:= ok end, V);
+%% Names of parameters become placeholders.
+valid(<<"params">>, M) ->
+    is_map(M) andalso lists:all(fun str/1, maps:values(M)) andalso
+        lists:all(fun(K) -> re:run(K, ?JOB_PARAM_RE, [{capture, none}]) =:= match end,
+                  maps:keys(M));
 %% A flag, or the fields to show.
 valid(<<"rows">>, V) when is_boolean(V) -> true;
 valid(<<"rows">>, V) -> is_list(V) andalso lists:all(fun str/1, V);

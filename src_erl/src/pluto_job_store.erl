@@ -13,7 +13,7 @@
 -export([home/0, jobs_dir/0, dir/1, file/2, valid_id/1, new_id/0, origin/0,
          ensure_home/0, key/0, host_id/0, lock_home/0,
          read_json/1, write_json/2, write_json/3, append_jsonl/2, read_jsonl/1,
-         run/2, run/4, python/0, script/1, ident/1, hex/1, opt/2, opt/3, now_ms/0]).
+         run/2, run/4, kill_port/1, python/0, script/1, ident/1, hex/1, opt/2, opt/3, now_ms/0]).
 
 -ifdef(TEST).
 -define(DEFAULT_HOME, "/tmp/pluto/test_smartstreams").
@@ -277,3 +277,14 @@ opt(K, M, Default) ->
         null -> Default;
         V    -> V
     end.
+
+%% @doc Kill the process behind a port. The port is still open, so the
+%% process cannot have been reaped and the pid is still its own.
+-spec kill_port(port()) -> ok.
+kill_port(Port) ->
+    _ = case erlang:port_info(Port, os_pid) of
+            {os_pid, Pid} -> os:cmd("kill -9 " ++ integer_to_list(Pid));
+            undefined     -> ok
+        end,
+    catch port_close(Port),
+    ok.

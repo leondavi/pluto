@@ -82,7 +82,10 @@ alive(PidKey, IdentKey, St) ->
 -spec request(job_id(), map()) -> ok | {error, binary()}.
 request(Id, Req) ->
     Dir = pluto_job_store:file(Id, ?JOB_DIR_CONTROL),
-    Name = io_lib:format("~20..0w.json", [erlang:system_time(nanosecond)]),
+    %% The clock may stand still between two requests.
+    Name = io_lib:format("~20..0w-~12..0w.json",
+                         [erlang:system_time(nanosecond),
+                          erlang:unique_integer([monotonic, positive])]),
     Pending = case file:list_dir(Dir) of
                   {ok, L} -> length(L);
                   _       -> 0

@@ -2,7 +2,7 @@
 """Answer one job_analyze request (stdlib only).
 
     pluto_job_analyze.py            request JSON line on stdin
-    pluto_job_analyze.py check      watch rules on stdin, only validated
+    pluto_job_analyze.py check      {"rules", "params"} on stdin, only validated
 
 Prints one JSON object: {"out": text, "scanned": ..., "resume": {...}} or
 {"error": why}. Runs confined: whatever a pattern or the output does, only
@@ -391,7 +391,7 @@ def main(argv):
         if argv[:1] == ["check"]:
             lines.confine(d.WATCH_MEMORY, d.ANALYZE_CPU_S, d.ANALYZE_CPU_S)
             from pluto_out_rules import check_rule
-            res = {"rule": check_rule(req)}
+            res = {"rules": [check_rule(r, req.get("params") or ()) for r in req["rules"]]}
         else:
             lines.confine(d.ANALYZE_MEMORY, d.ANALYZE_CPU_S,
                           d.ANALYZE_DEADLINE_S + 5)

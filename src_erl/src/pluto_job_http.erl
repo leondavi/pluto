@@ -162,41 +162,13 @@ source(R) ->
         {error, W} -> throw({job_error, W})
     end.
 
-start(R0) ->
-    Agent = agent(R0),
-    R = rerun(R0),
-    Cwd = opt(<<"cwd">>, R),
-    Given = [K || K <- [<<"command">>, <<"argv">>], V <- [opt(K, R)],
-                  V =/= undefined, V =/= <<>>, V =/= []],
-    if
-        length(Given) =/= 1 -> {error, <<"give_exactly_one_of_command_or_argv">>};
-        true ->
-            case Cwd =:= undefined orelse filelib:is_dir(Cwd) of
-                false -> {error, <<"cwd_is_not_a_directory">>};
-                true ->
-                    case pluto_job_mgr:start(R) of
-                        {ok, P} ->
-                            pluto_stats:inc(jobs_started),
-                            {ok, pluto_job_view:card(P, Agent)};
-                        E -> E
-                    end
-            end
-    end.
-
-%% The earlier job's spec, overridden by what this request gives.
-rerun(R) ->
-    case opt(<<"rerun_of">>, R) of
-        undefined -> R;
-        Id ->
-            Own = maps:filter(fun(_, V) -> V =/= null end, R),
-            Spec = maps:with(?JOB_RERUN_KEYS, job(#{<<"job_id">> => Id})),
-            Drop = case Own of
-                       #{<<"command">> := _} -> [<<"argv">>];
-                       #{<<"argv">> := _}    -> [<<"command">>];
-                       _ -> []
-                   end,
-            maps:merge(maps:without(Drop, Spec), Own)
-    end.
+start(R) ->
+    _ = agent(R),
+    Earlier = case opt(<<"rerun_of">>, R) of
+                  undefined -> none;
+                  Id        -> job(#{<<"job_id">> => Id})
+              end,
+    pluto_job_start:start(R, Earlier).
 
 transfer(R) ->
     _ = job(R),

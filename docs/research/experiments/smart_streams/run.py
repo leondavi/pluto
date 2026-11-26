@@ -312,6 +312,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--exp", default="all", help="all or a comma list of 1 to 8")
     p.add_argument("--exp", default="all", help="all (= 1-5) or a comma list of 1,2,3,4,5,9")
+    p.add_argument("--exp", default="all", help="all or a comma list of 1,2,3,4,5,10")
     p.add_argument("--condition", "--conditions", default="all",
                    help="all or a comma list of " + ", ".join(CONDITIONS))
     p.add_argument("--reps", type=int, default=1)
@@ -339,6 +340,7 @@ def parse_args(argv=None):
     if set(a.exps) - set(ss_prompts.EXPS):
         p.error("--exp takes " + ", ".join(ss_prompts.EXPS))
         p.error("--exp takes 1 to 5 or 9")
+        p.error("--exp takes 1 to 5 or 10")
     a.conditions = list(CONDITIONS) if a.condition == "all" else a.condition.split(",")
     if set(a.conditions) - set(CONDITIONS + VARIANTS) or len(set(a.conditions)) < len(a.conditions):
         p.error("--condition takes " + ", ".join(CONDITIONS))

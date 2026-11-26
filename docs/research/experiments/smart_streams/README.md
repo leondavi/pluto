@@ -436,6 +436,62 @@ file name does not tell what they do. Differences of a few percent between arms 
   behaviour depend on the CLI version.
 * Secrecy relies on prompt rules plus detection; agents share the OS user.
 
+## E10 colouring_campaign (v0.6.0, written blind)
+
+**Domain.** The chromatic number chi(G) is the least number of colours in a proper
+vertex colouring. A clique of size omega forces omega <= chi; a proper colouring with k
+colours shows chi <= k. Where omega < chi, only an exhaustive search (here DSATUR branch
+and bound) proves the lower bound, and that search prunes only as well as its best known
+colouring, which local search (TabuCol, simulated annealing) usually finds much sooner.
+Campaigns therefore race exact solvers against heuristics, feed the heuristics'
+colourings to the exact runs as upper bounds, give up on searches whose trees cannot be
+closed in time, and accept nothing without a checkable certificate.
+
+**Task** (w1..w4, 32 seeded graphs in DIMACS format, 8 per agent, at most 16 running solvers
+per agent, launches allowed for 420 s, exact runs stop after 480 s). `bin/gcol --graph G
+--method exact|tabu|anneal [--seed S]`. Per agent two graphs of each of four kinds:
+planted (chi = omega, by construction), random graphs that the exact solver closes on its
+own, random graphs that it closes in time only with a shared colouring, and dense random
+graphs whose search tree cannot be closed (gap between omega and the best colouring). All
+search is genuine and paced (fixed nodes or moves per second per graph). The exact solver
+reads `bounds/G.ub` about once a second, prints the share of its tree that is closed, and
+stops by itself at ub = lb or when the tree is exhausted. Some runs print wrong
+certificates; reruns with another seed are unaffected. Results are deterministic given the
+seed and, for exact runs, the hints and when they arrived.
+
+**Truth.** Planted graphs: chi = k by the planted colouring and clique. Other closable
+graphs: chi from an independent exact computation (`exp10_truth.py`: Bron-Kerbosch for
+omega, bitset colour-class backtracking for k-colourability), cross-checked against the
+plan's branch and bound. Hopeless graphs: lb = omega (independent), ub target = the best
+proper colouring of the documented heuristic runs; any proper colouring at least as good
+counts. The plan rejects candidates until each graph has its kind's property (measured by
+running the solvers offline), so building a seed takes about 35 s.
+
+**Score.** Graphs .55 (per graph: lb .35, ub .40 if backed by a proper colouring, clique of
+size omega .25), rejected runs .15 (F1 over graph and method), bound sharing .15 (a new best
+proper colouring found while an exact run of that graph had a worse incumbent must be
+adopted by that run within 45 s; per graph that is not hopeless), cut-offs .15 (exact runs
+on hopeless graphs: full credit if stopped within 150 s of start, none at 330 s).
+
+Scripted solvers (`verify_e10.py`, plain processes, no LLM): full size, M4, other load present.
+
+| | Score | Wall s | Output MB | Launches | Peak per agent / total | Program CPU s | Machine CPU mean; max | Max lag s |
+|---|---|---|---|---|---|---|---|---|
+| ref, seed 1 | 1.000 | 280 | 24.6 | 98 | 16 / 64 | 78 | 0.09; 0.41 | 0.00 |
+| ref, seed 2 | 1.000 | 329 | 24.7 | 98 | 16 / 64 | 57 | 0.09; 0.37 | 0.06 |
+| lazy, seed 1 | 0.552 | 481 | 39.5 | 96 | 16 / 64 | 148 | 0.08; 0.16 | 0.00 |
+
+Lazy parts: graphs .875, rejected 0, sharing .47 (exact runs find some colourings themselves),
+cut-offs 0. Wall time excludes the ~35 s build. Hopeless graphs are chosen so that even
+with the best colouring at the start less than 3% of the tree is closed after 1.5 time limits.
+
+**What the author read.** Only `docs/research/experiments/smart_streams` (exp1-5, wl_*,
+run.py, ss_*.py, verify_*.py, README apart from the tool descriptions) and the tests
+`tests/test_experiment_smart_streams*.py` (e1-5) for conventions, at commit cf75cd6. No
+product code or guide, no other branch or worktree, no results or notes, no other new
+experiment. The task shape was chosen to differ from E1-E5 (and from E2's shortest-path
+search). The task does not favour any tool: everything is files, processes and logs.
+
 ## Commands
 
     PY=<python with the mcp package>; H=docs/research/experiments/smart_streams
@@ -451,6 +507,12 @@ file name does not tell what they do. Differences of a few percent between arms 
     $PY $H/verify_e8.py SCRATCH [--policy wise|lazy]
 
     $PY $H/verify_e7.py SCRATCH [--policy wise|lazy]
+
+        tests/test_experiment_smart_streams_e10.py
+    $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style plain     # full size, no LLM
+    $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style jobs      # real server and client
+    $PY $H/verify_e45.py SCRATCH --exp 4,5 --style plain|jobs [--policy naive]
+    $PY $H/verify_e10.py SCRATCH --policy ref|lazy [--seed N] [--speed X]
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --dry-run
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --budget-usd 5 \
         [--exp 4,5] [--conditions smartstreams,native,native_sub]

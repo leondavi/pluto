@@ -85,6 +85,8 @@ def test_news_groups_jobs_and_leaves_out_what_is_no_news():
     assert meanwhile.summary(ns) == ("ended: z/1,2 succeeded, z/3 failed; "
                                      "handed over: z/9")
     assert meanwhile.summary([note(6, "job_watch", "1")]) == ""
+    assert meanwhile.summary([note(8, "job_finished", "late", "failed", tags=["=late"])]) \
+        == "ended: late failed"
 
 
 class Board:

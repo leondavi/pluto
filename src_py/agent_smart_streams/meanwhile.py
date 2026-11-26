@@ -58,7 +58,8 @@ def summary(notices: list[dict]) -> str:
     parts = []
     if ended:
         parts.append("ended: " + ", ".join(
-            f"{group + '/' if group else ''}{names.ranges(keys)} {state}"
+            f"{group if keys == [group] else (group + '/' if group else '') + names.ranges(keys)}"
+            f" {state}"
             for (group, state), keys in ended.items()))
     if given:
         parts.append("handed over: " + " ".join(dict.fromkeys(given)))

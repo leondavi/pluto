@@ -8,6 +8,7 @@ calls. The server starts a batch in one request.
 from __future__ import annotations
 
 import itertools
+import math
 import os
 import re
 import secrets
@@ -22,19 +23,25 @@ from pluto_sdk.jobs import smartstreams_home
 def expand(template: str, each: dict) -> list[dict]:
     """A job {name, command, params} for every combination of the
     parameters. Only {key} of a given key is replaced, so other braces stay
-    as they are."""
+    as they are. A key the command does not use names the job (and is
+    there for rules), but then there must be one job only: identical jobs
+    are a mistake."""
+    if not each:
+        raise PlutoError("each is empty")
+    lists = [names.values(v, SUBMIT_MAX) for v in each.values()]
+    if math.prod(map(len, lists)) > SUBMIT_MAX:
+        raise PlutoError(f"more than {SUBMIT_MAX} jobs in one call")
+    combos = list(itertools.product(*lists))
     missing = [k for k in each if "{%s}" % k not in template]
-    if missing or not each:
-        raise PlutoError(f"command has no {{{'}, {'.join(missing)}}}"
-                         if missing else "each is empty")
+    if missing and len(combos) > 1:
+        raise PlutoError(f"command has no {{{'}, {'.join(missing)}}}, so all "
+                         f"{len(combos)} jobs would be the same")
     pattern = re.compile("|".join(re.escape("{%s}" % k) for k in each))
     out = []
-    for combo in itertools.product(*(names.values(v, SUBMIT_MAX) for v in each.values())):
+    for combo in combos:
         params = dict(zip(each, combo))
         command = pattern.sub(lambda m: params[m[0][1:-1]], template)
         out.append({"name": ":".join(combo), "command": command, "params": params})
-        if len(out) > SUBMIT_MAX:
-            raise PlutoError(f"more than {SUBMIT_MAX} jobs in one call")
     if not out:
         raise PlutoError("each has a parameter without values")
     return out

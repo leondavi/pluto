@@ -38,6 +38,7 @@ LIVE_SERVER_MODULES = {
     "test_smart_streams_live.py",
     "test_smart_streams_cli.py", "test_smart_streams_output_live.py",
     "test_smart_streams_actions_live.py",
+    "test_smart_streams_admit_live.py",
     "test_v021_http_sessions.py",
     "test_v023_features.py",
 }

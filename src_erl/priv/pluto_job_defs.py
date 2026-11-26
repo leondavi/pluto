@@ -45,6 +45,8 @@ FOLLOWUP_STATUSES = ("open", "in_progress", "done", "dropped")
 
 # ── Runner ──────────────────────────────────────────────────────────────────
 TICK_S = 0.1
+TICK_QUIET_S = 0.5                 # after QUIET_AFTER_S without output or requests
+QUIET_AFTER_S = 2.0
 DRAIN_S = 0.5                      # late output of an exited command
 GRACE_S = 5.0                      # TERM, then KILL
 KILLED_S = 3.0                     # KILL, then stop waiting for the group

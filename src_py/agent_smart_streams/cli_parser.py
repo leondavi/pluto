@@ -16,25 +16,33 @@ HELP = """pss - run and follow many durable jobs. Example, complete:
   pss wait soak -t 540
   pss each soak 'python3 parse.py {log} {exit}' -o 'out/{k}.json'
 
-The server keeps the rules: no watcher script, ids or log paths needed, and
-all of it outlives your session. JOBS: soak  soak/3  soak/1-6,9  or an id.
+The server keeps the rules and runs everything: no watcher script, ids, log
+paths or nohup needed, and all of it outlives your session.
+JOBS: soak  soak/3  soak/1-6,9  r1,r2  or an id. Running a name again adds or
+replaces its keys.
 
-  run [-n NAME] [-e k=1-12].. [RULES] [-w S] CMD      start one or a batch
-  RULES, also: pss watch JOBS RULES    --on 'text {field}' | --where COND |
-        --idle S | --absent S, then --append FILE TEXT | --input TEXT | --stop |
-        --pause | --tell (default; ends pss wait)    list: pss watch JOBS
-  wait JOBS [-t S] [--any]   until all ended, or a rule tells
-  ps [JOBS] [-v] [--all]     tail|cat|log JOBS     grep RE JOBS
-  each JOBS CMD [-o FILE]    your program per job as it ends; {log} {key}
-        {state} {exit} and parameters are filled in; -o keeps its output
-  follow JOBS CMD            your program per job, live: reads all its output on
-        stdin. Wrong? Fix it and follow again: it restarts from the beginning,
-        the job is not disturbed
+  run [-n NAME] [-e k=1-12].. [RULES] [-w S] [--timeout S] CMD
+        {k} in CMD (and in rules) is the value; several -e: every combination
+        --slot NAME:N   at most N running jobs of this slot, all agents together
+        --after JOBS    start once they ended (--after-ok: and succeeded)
+        --lock RES[:read]  hold a Pluto lock while running ($PLUTO_LOCK_TOKEN)
+  RULES  a condition, then actions (several allowed):
+        --on 'text {field}' | --where 'field > 3' | --idle S | --absent S
+        --append FILE TEXT | --input TEXT | --stop | --pause | --tell
+        --tell (the default) ends pss wait with the line. Later: watch JOBS RULES
+  wait JOBS [-t S] [--any] [--match RE]   until all ended or a rule told; at
+        -t it prints where every job is, so wait instead of sleep and ps
+  ps [JOBS] [-v] [--all]     head|tail [-n N] JOBS     cat|log JOBS
+  grep [-C|-A|-B N] [-i -v -c -F -m N] RE JOBS
+  each JOBS CMD [-o FILE]    your program per job as it ends; {log} {k} {key}
+        {state} {exit} are filled in; -o keeps its output
+  follow JOBS CMD            your program per job, live: its stdin is the whole
+        output, closed when the job ends. Following again replaces it
   report JOBS -x 'E{e:int} p={p:int}'.. -f 'bad=first:e where p > 9'.. [-o FILE]
-        a record per job without a program; last.F is the value in force
-  analyze JOBS [...]         outline of any output; queries: pss help analyze
+        a record per job without a program: pss help report
+  analyze JOBS [...]         outline of any output: pss help analyze
   stop|pause|resume JOBS     give AGENT JOBS       brief [JOBS]  (handover)
-wait exits 1 if a job failed, 124 on timeout. More: pss help COMMAND"""
+wait exits 1 if a job failed, 124 on timeout."""
 
 MORE = {
     "analyze": """pss analyze JOBS            outline: line shapes, counts, likely errors, rare lines
@@ -51,9 +59,12 @@ MORE = {
   COND    'p > last.limit' (latest earlier value), 'abs(v - prev.v) > 3' (previous match)
 Several -x: the first that matches a line. Without -o the records are printed.""",
     "run": """pss run [-n NAME] [-e k=1-4,8 | k=a,b].. [RULES] [-C DIR] [-w S] [--timeout S]
+        [--slot NAME:N] [--after JOBS] [--after-ok] [--lock RES[:read]]
         [--tag T] [--parent JOB] [--stdin] [-q] CMD
 Several -e give every combination (soak/1:a). RULES in order: a condition, then
-its action; {field} is what --on captured, or a parameter. --once: first time only.""",
+its actions; {field} is what --on captured, or a parameter. --once: first time
+only. -w S waits like pss wait. A slot is a semaphore, --after a barrier, a
+lock is Pluto's (agents can hold it too: GET /locks shows the holder).""",
 }
 
 
@@ -66,14 +77,16 @@ class _Parser(argparse.ArgumentParser):
 
 
 def topic(op: str) -> str:
-    """Help on one command."""
+    """Help on one command: its entries in the list of commands."""
     if op in MORE:
         return MORE[op]
     found, take = [], False
-    for line in HELP.splitlines():
-        names = line.split()[:1]
-        if line.startswith("  ") and not line.startswith("   ") and names:
-            take = op in names[0].split("|") or f"     {op} " in line or f"     {op}|" in line
+    for line in HELP[HELP.index("\n  run "):].splitlines():
+        if line.startswith("  ") and not line.startswith("   "):
+            take = any(op in w.split("|") for w in line.split()
+                       if not w.startswith(("-", "[", "'")))
+        elif not line.startswith(" "):
+            take = False
         if take:
             found.append(line)
     return "\n".join(found) or "no such command; see pss help"
@@ -96,7 +109,9 @@ def build() -> argparse.ArgumentParser:
     run = op("run", (["-e", "--each"], many), (["-n", "--name"], {}),
              (["-C", "--cwd"], {}), (["-w", "--wait"], dict(type=int, default=0)),
              (["-q", "--quiet"], yes), (["--timeout"], dict(type=float)),
-             (["--tag"], many), (["--parent"], {}), (["--stdin"], yes), ids=None)
+             (["--tag"], many), (["--parent"], {}), (["--stdin"], yes),
+             (["--slot"], {}), (["--after"], many), (["--after-ok"], yes),
+             (["--lock"], {}), ids=None)
     run.add_argument("command")
     rules.add_options(run)
     op("wait", (["-t", "--timeout"], dict(type=int, default=CLI_WAIT_S)),
@@ -107,7 +122,8 @@ def build() -> argparse.ArgumentParser:
     op("analyze", (["-x", "--extract"], many), (["-w", "--where"], many),
        (["-b", "--by"], {}), (["-a", "--agg"], {}), (["-c", "--compare"], {}),
        (["--rows"], yes), (["-s", "--sort"], {}), (["-l", "--limit"], dict(type=int)))
-    op("report", (["-x", "--extract"], many), (["-f", "--field"], many), (["-o"], {}))
+    op("report", (["-x", "--extract"], many),
+       (["-f", "--field"], dict(action="extend", nargs="+", default=[])), (["-o"], {}))
     each = op("each", (["-o"], {}), (["-j"], dict(type=int, default=EACH_WORKERS)),
               (["--now"], yes), (["-t", "--timeout"], dict(type=int, default=CLI_WAIT_S)),
               ids=None)
@@ -121,14 +137,19 @@ def build() -> argparse.ArgumentParser:
                (["--list"], yes), (["--remove"], dict(nargs="?", const="")))
     rules.add_options(watch, aliases=True)
     grep = op("grep", (["-C", "--context"], dict(type=int, default=0)),
+              (["-A"], dict(type=int)), (["-B"], dict(type=int)),
               (["-m", "--max"], dict(type=int, default=20)), (["-i"], yes),
-              (["-F", "--fixed"], yes), ids=None)
+              (["-v", "--invert"], yes), (["-c", "--count"], yes),
+              (["-F", "--fixed"], yes),
+              # Habits from grep that change nothing here: always numbered, ERE.
+              (["-n", "-E", "-H"], dict(action="store_true", dest="habit")), ids=None)
     grep.add_argument("pattern")
     grep.add_argument("ids", nargs="+")
     follow = op("follow", (["-n", "--name"], {}), ids=None)
     follow.add_argument("ids", nargs="+")
     follow.add_argument("command")
-    op("tail", (["-n"], dict(type=int, default=10)))
+    for name in ("head", "tail"):
+        op(name, (["-n"], dict(type=int, default=10)))
     op("cat", (["-f", "--follow"], yes))
     op("log")
     for name in ("stop", "pause", "resume"):

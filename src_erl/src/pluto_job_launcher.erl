@@ -7,34 +7,21 @@
 -include("pluto.hrl").
 -include_lib("kernel/include/file.hrl").
 
--export([select/3, launch/3, probe/3, request/2, kill_orphan/1, abort/1, hb_age/1]).
+-export([launch/3, probe/3, request/2, kill_orphan/1, abort/1, hb_age/1]).
 
-%% @doc Queued jobs to start now, oldest first, within both limits.
-%% Pure: takes and returns packages.
--spec select([pkg()], pos_integer(), pos_integer()) -> [pkg()].
-select(Live, Max, PerAgent) ->
-    Running = [maps:get(<<"owner">>, P) || #{<<"sched">> := S} = P <- Live,
-                                           S =/= ?SCHED_QUEUED],
-    Queued = lists:sort(
-               fun(A, B) -> maps:get(<<"opened_ns">>, A, 0) =<
-                            maps:get(<<"opened_ns">>, B, 0) end,
-               [P || #{<<"sched">> := ?SCHED_QUEUED} = P <- Live]),
-    pick(Queued, Running, Max, PerAgent).
-
-pick([], _, _, _) -> [];
-pick(_, Running, Max, _) when length(Running) >= Max -> [];
-pick([#{<<"owner">> := O} = P | T], Running, Max, Per) ->
-    case length([X || X <- Running, X =:= O]) < Per of
-        true  -> [P | pick(T, [O | Running], Max, Per)];
-        false -> pick(T, Running, Max, Per)
-    end.
+%% A follower reads the output of the job it follows on its stdin, from
+%% the runner, which tails that job's log until the job has ended.
+follower(#{<<"follows">> := Of}) ->
+    #{<<"stdin">> => true,
+      <<"stdin_from">> => unicode:characters_to_binary(pluto_job_store:dir(Of))};
+follower(_) -> #{}.
 
 %% @doc Start a runner; sends {spawned, Id, ok | {error, Why} | unknown}.
 %% A separate process does it because starting Python takes a while and
 %% the manager must stay responsive.
 -spec launch(pkg(), map(), pid()) -> ok.
 launch(#{<<"id">> := Id} = P, Env, ReplyTo) ->
-    Spec = (maps:with(?JOB_LAUNCH_KEYS, P))
+    Spec = (maps:merge(maps:with(?JOB_LAUNCH_KEYS, P), follower(P)))
            #{<<"env">> => Env,
              <<"min_free_bytes">> => pluto_config:get(smartstreams_min_free_bytes,
                                                       ?DEFAULT_JOB_MIN_FREE_BYTES)},
@@ -121,7 +108,8 @@ abort(Id) ->
 %% @doc Milliseconds since the runner's last heartbeat.
 -spec hb_age(job_id()) -> integer().
 hb_age(Id) ->
-    case file:read_file_info(pluto_job_store:file(Id, ?JOB_FILE_HB), [{time, posix}]) of
+    case file:read_file_info(pluto_job_store:file_bin(Id, ?JOB_FILE_HB),
+                             [raw, {time, posix}]) of
         {ok, #file_info{mtime = T}} -> pluto_job_store:now_ms() - T * 1000;
         _ -> pluto_job_store:now_ms()
     end.

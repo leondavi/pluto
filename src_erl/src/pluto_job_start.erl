@@ -15,7 +15,8 @@
 
 -import(pluto_job_store, [opt/2, opt/3]).
 
--define(ITEM_KEYS, [<<"name">>, <<"command">>, <<"params">>]).
+-define(ITEM_KEYS, [<<"name">>, <<"command">>, <<"params">>, <<"follows">>,
+                    <<"after_jobs">>]).
 
 %% @doc Start the job or jobs; Earlier is the package named by rerun_of.
 -spec start(map(), pkg() | none) -> reply().
@@ -62,14 +63,37 @@ launch(R) ->
     Given = [K || K <- [<<"command">>, <<"argv">>], V <- [opt(K, R)],
                   V =/= undefined, V =/= <<>>, V =/= []],
     Cwd = opt(<<"cwd">>, R),
-    case {Given, Cwd =:= undefined orelse filelib:is_dir(Cwd)} of
-        {[_], true} ->
+    case {Given, Cwd =:= undefined orelse filelib:is_dir(Cwd), admission(R)} of
+        {[_], true, ok} ->
             case pluto_job_mgr:start(R) of
                 {ok, _} = Ok -> pluto_stats:inc(jobs_started), Ok;
                 E            -> E
             end;
-        {[_], false} -> {error, <<"cwd_is_not_a_directory">>};
-        _            -> {error, <<"give_exactly_one_of_command_or_argv">>}
+        {[_], false, _} -> {error, <<"cwd_is_not_a_directory">>};
+        {[_], _, E}     -> E;
+        _               -> {error, <<"give_exactly_one_of_command_or_argv">>}
+    end.
+
+%% What the job waits for, or reads, must exist when it is started.
+admission(R) ->
+    After = opt(<<"after_jobs">>, R, []),
+    Known = fun(Id) -> element(1, pluto_job_registry:pkg(Id)) =:= ok end,
+    Slot = {opt(<<"slot">>, R), opt(<<"slot_max">>, R)},
+    if
+        length(After) > ?JOB_AFTER_MAX -> {error, <<"too_many_after_jobs">>};
+        element(1, Slot) =:= undefined, element(2, Slot) =/= undefined ->
+            {error, <<"slot_max_without_slot">>};
+        element(2, Slot) =:= 0 -> {error, <<"slot_max_is_at_least_1">>};
+        true ->
+            case {opt(<<"follows">>, R), lists:all(Known, After)} of
+                {_, false} -> {error, <<"after_jobs_names_an_unknown_job">>};
+                {undefined, _} -> pluto_job_lock:check(R);
+                {Of, _} ->
+                    case Known(Of) of
+                        true  -> pluto_job_lock:check(R);
+                        false -> {error, <<"follows_an_unknown_job">>}
+                    end
+            end
     end.
 
 %% The earlier job's spec and rules, overridden by what this request gives.

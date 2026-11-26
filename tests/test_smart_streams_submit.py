@@ -42,10 +42,13 @@ def test_expand():
     assert got[0] == {"name": "1:{a}", "params": {"a": "1", "b": "{a}"},
                       "command": "p 1 {a} | awk '{print $1} {c}'"}    # no re-expansion
     assert [x["name"] for x in got] == ["1:{a}", "1:y", "2:{a}", "2:y"]
-    for tpl, each in (("p", {"a": "1"}), ("p", {}), ("p {a}", {"a": []}),
+    for tpl, each in (("p", {"a": "1-2"}), ("p", {}), ("p {a}", {"a": []}),
                       ("{a}{b}", {"a": "1-30", "b": "1-30"})):
         with pytest.raises(PlutoError):
             submit.expand(tpl, each)
+    # One job may be named by a key it does not use (repairs: -n zr -e k=8).
+    assert submit.expand("p --from 5", {"k": "8"}) == [
+        {"name": "8", "params": {"k": "8"}, "command": "p --from 5"}]
 
 
 class FakeJobs:
@@ -96,15 +99,18 @@ def test_selectors():
             keys(bad)
 
 
-def test_a_name_means_the_newest_round_of_each_agent_here():
+def test_a_name_means_the_newest_job_of_each_key_here():
     old = [card(i, str(i), tags=["=soak", "g00000a"]) for i in (1, 2, 3)]
     new = [card(10 + i, str(i), tags=["=soak", "g00000b"]) for i in (1, 2)]
     peer = [card(5, "7", tags=["=soak", "g00000c"], opener="p2", owner="p2")]
     far = [card(30, "9", cwd="/elsewhere", opener="p3", owner="p3", tags=["=soak", "g00000d"])]
     got = names.cards(Listing(*old, *new, *peer, *far), ["soak"])
-    assert sorted((c["name"], c["opened_at"]) for c in got) == [("1", 11), ("2", 12), ("7", 5)]
-    with pytest.raises(PlutoError, match="has no 3"):
-        names.cards(Listing(*old, *new), ["soak/3"])
+    # A key run again is replaced; one not run again stays (names grow).
+    assert sorted((c["name"], c["opened_at"]) for c in got) == [
+        ("1", 11), ("2", 12), ("3", 3), ("7", 5)]
+    assert [c["opened_at"] for c in names.cards(Listing(*old, *new), ["soak/3"])] == [3]
+    with pytest.raises(PlutoError, match="has no 4"):
+        names.cards(Listing(*old, *new), ["soak/4"])
     # As the user, who owns every job, a change needs the right directory.
     with pytest.raises(PlutoError, match="in this directory"):
         names.cards(Listing(*far), ["soak"], strict=True)
@@ -152,7 +158,11 @@ def test_rules_on_the_command_line():
         {"idle_s": 60.0, "then": "cancel"},
         {"match": "x", "where": ["v > 1", "w > 2"], "once": True, "then": "pause"},
         {"where": ["z > 3"]}]
-    for bad in (["--stop"], ["--on", "x", "--stop", "--pause"], ["--append", "f", "t"]):
+    # Several actions on one condition are several rules.
+    assert parse("--on", "x {t}", "--once", "--append", "f", "{t}", "--stop") == [
+        {"match": "x {t}", "once": True, "then": "append", "file": "f", "text": "{t}"},
+        {"match": "x {t}", "once": True, "then": "cancel"}]
+    for bad in (["--stop"], ["--append", "f", "t"]):
         with pytest.raises(SystemExit):
             parse(*bad)
 

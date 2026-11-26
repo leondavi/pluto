@@ -159,6 +159,53 @@ class Manifest:
         return self.total.hexdigest()
 
 
+def read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+class Feed:
+    """The output of another job, read as it grows until that job has ended
+    and all of it was read: the stdin of a follower. Read here, it costs no
+    process and no request to the server."""
+
+    def __init__(self, job_dir):
+        self.dir = job_dir
+        self.src = None
+        self.pos = 0
+        self.final = None            # its size once it has ended
+        self.checked = 0.0
+
+    def read(self, room):
+        """Up to *room* new bytes, b"" if there are none yet, None at the end."""
+        if self.src is None:
+            try:
+                self.src = open(os.path.join(self.dir, d.FILE_OUTPUT), "rb", 0)
+            except FileNotFoundError:            # not started yet
+                return None if self.ended() and self.final == 0 else b""
+        data = self.src.read(room) if room > 0 else b""
+        self.pos += len(data)
+        if data or room <= 0:
+            return data
+        return None if self.ended() and self.pos >= self.final else b""
+
+    def ended(self):
+        if self.final is not None:
+            return True
+        if time.monotonic() - self.checked < d.HEARTBEAT_S:
+            return False
+        self.checked = time.monotonic()
+        state = read_json(os.path.join(self.dir, d.FILE_STATE))
+        if "final_size" in state:
+            self.final = state["final_size"]
+        elif self.src is None and read_json(os.path.join(self.dir, d.FILE_PACKAGE)).get("done"):
+            self.final = 0                       # it ended without running
+        return self.final is not None
+
+
 class Runner:
     """Starts one command and supervises it until its group is empty."""
 
@@ -171,6 +218,9 @@ class Runner:
         self.reserve = self.path(d.FILE_RESERVE)
         self.stdin_buf = b""
         self.stdin_close = False
+        self.feed = Feed(spec["stdin_from"]) if spec.get("stdin_from") else None
+        self.control_seen = None     # mtime of control/ when last listed
+        self.disk_checked = 0.0
         self.kill_at = None          # when TERM escalates to KILL
         self.killed_at = None        # when KILL was sent
         self.verdict = None          # why we are stopping the command
@@ -311,14 +361,20 @@ class Runner:
             self.stdin_buf += base64.b64decode(req.get("data", ""))
             self.stdin_close = self.stdin_close or bool(req.get("close"))
 
-    def read_control(self):
+    def read_control(self, recheck=False):
         """Apply requests in order. Input that does not fit the buffer stays
-        on disk for a later tick; cancel and pause still overtake it."""
+        on disk for a later tick; cancel and pause still overtake it. True
+        if there were any. Listing a directory costs far more than looking
+        at its mtime, so it is listed when that changed, or on *recheck*."""
         try:
+            stamp = os.stat(self.control).st_mtime_ns
+            if stamp == self.control_seen and not recheck:
+                return False
+            self.control_seen = stamp
             names = sorted(n for n in os.listdir(self.control)
                            if n.endswith(".json"))
         except OSError:
-            return
+            return False
         input_blocked = False
         for name in names:
             path = os.path.join(self.control, name)
@@ -331,6 +387,7 @@ class Runner:
                             len(self.stdin_buf) + size > d.STDIN_BUFFER_MAX:
                         input_blocked = True
                     if input_blocked:
+                        self.control_seen = None      # look again next tick
                         continue
                 os.unlink(path)
                 self.handle(req)
@@ -340,11 +397,20 @@ class Runner:
                     os.unlink(path)
                 except OSError:
                     pass
+        return bool(names)
 
     def pump_stdin(self):
+        """True if anything was passed on."""
         pipe = self.proc.stdin
         if not pipe:
-            return
+            return False
+        if self.feed and not self.stdin_close:
+            data = self.feed.read(d.STDIN_BUFFER_MAX - len(self.stdin_buf))
+            if data is None:
+                self.stdin_close = True
+            else:
+                self.stdin_buf += data
+        before = len(self.stdin_buf)
         try:
             while self.stdin_buf:
                 n = os.write(pipe.fileno(), self.stdin_buf)
@@ -358,6 +424,7 @@ class Runner:
         except OSError:              # the command closed its stdin
             self.proc.stdin = None
             self.stdin_buf = b""
+        return len(self.stdin_buf) != before
 
     # ── limits ───────────────────────────────────────────────────────────
     def limits(self, size):
@@ -370,11 +437,13 @@ class Runner:
         if size > self.spec.get("max_output_bytes", d.DEFAULT_MAX_OUTPUT):
             self.stop("output_limit")
             return
-        st = os.statvfs(self.dir)
-        if st.f_bavail * st.f_frsize < self.spec.get("min_free_bytes", 0):
-            self.state["reason"] = "low_disk"
-            self.stop("output_limit", signal.SIGKILL)   # every MB counts
-            return
+        if time.monotonic() - self.disk_checked > d.HEARTBEAT_S:
+            self.disk_checked = time.monotonic()
+            st = os.statvfs(self.dir)
+            if st.f_bavail * st.f_frsize < self.spec.get("min_free_bytes", 0):
+                self.state["reason"] = "low_disk"
+                self.stop("output_limit", signal.SIGKILL)   # every MB counts
+                return
         limit = self.spec.get("timeout_s")
         if limit and self.paused_since is None:
             ran = now_ms() - self.state["started_at"] - self.state["paused_ms"]
@@ -383,21 +452,27 @@ class Runner:
 
     # ── main loop ────────────────────────────────────────────────────────
     def loop(self):
+        """A job that has been quiet for a while is looked at less often:
+        most of a long job's life is waiting, and dozens of jobs run at once."""
         man = Manifest(self.dir)
-        last_hb = 0.0
+        last_hb = quiet_since = 0.0
         while True:
-            self.read_control()
-            self.pump_stdin()
+            now = time.monotonic()
+            busy = self.read_control(recheck=now - last_hb > d.HEARTBEAT_S)
+            busy = self.pump_stdin() or busy
+            grown = self.state["size"]
             size = self.observe(man)
             self.limits(size)
             caught_up = man.feed(size)
             if self.finished():
                 break
-            if time.monotonic() - last_hb > d.HEARTBEAT_S:
-                last_hb = time.monotonic()
+            if now - last_hb > d.HEARTBEAT_S:
+                last_hb = now
                 self.heartbeat()
+            if busy or size != grown or self.verdict is not None or self.stdin_buf:
+                quiet_since = now
             if caught_up:
-                time.sleep(d.TICK_S)
+                time.sleep(d.TICK_S if now - quiet_since < d.QUIET_AFTER_S else d.TICK_QUIET_S)
         self.finalize(man)
 
     def observe(self, man):

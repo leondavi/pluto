@@ -68,7 +68,9 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None,
         timeout_s: Optional[float] = None, stdin: bool = False,
         parent: Optional[str] = None, rerun_of: Optional[str] = None,
         task_id: Optional[str] = None, max_output_bytes: Optional[int] = None,
-        wait_s: int = 0,
+        wait_s: int = 0, slot: Optional[str] = None, slot_max: Optional[int] = None,
+        after_jobs: Optional[list[str]] = None, after_ok: bool = False,
+        lock: Optional[str] = None, lock_mode: Optional[str] = None,
     ) -> str:
         """Launch a shell command (or argv) as a durable background job and
         return at once. All output is kept on the server; it outlives this
@@ -76,13 +78,19 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None,
         each={"n": "1-12"} ("1-4,8" or a list; several keys give every
         combination), or with a commands list. Many get a group handle that
         works as a job id in other calls. wait_s also waits for all of them,
-        like job_wait. parent nests under a job; rerun_of repeats one."""
+        like job_wait. parent nests under a job; rerun_of repeats one.
+        A job stays queued until: fewer than slot_max jobs of its slot run (a
+        semaphore over all agents); after_jobs have ended (after_ok: and
+        succeeded, else it is cancelled); it holds the Pluto lock on `lock`
+        (lock_mode read or write), which it keeps while it runs."""
         here = cwd or (None if rerun_of else os.getcwd())
         if here:
             here = os.path.abspath(here)
         spec = dict(cwd=here, env=env, tags=tags, timeout_s=timeout_s,
                     stdin=stdin or None, parent=parent, rerun_of=rerun_of,
-                    task_id=task_id, max_output_bytes=max_output_bytes)
+                    task_id=task_id, max_output_bytes=max_output_bytes,
+                    slot=slot, slot_max=slot_max, after_ok=after_ok or None,
+                    lock=lock, lock_mode=lock_mode)
 
         def batch():
             if each:
@@ -99,6 +107,8 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None,
                     zip(names or [name] * len(commands), commands)]
 
         def work():
+            if after_jobs:                      # names and groups too
+                spec["after_jobs"] = fleet.ids_of(jobs, None, after_jobs)
             if each or commands:
                 out = submit.start_all(jobs, batch(), spec, name if each else None)
                 handle = out["group"]

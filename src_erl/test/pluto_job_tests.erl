@@ -135,17 +135,6 @@ schema_test() ->
               #{<<"env">> => #{<<"A=">> => <<"b">>}}, #{<<"timeout_s">> => 0},
               #{<<"tags">> => [1]}]].
 
-select_respects_limits_and_order_test() ->
-    P = fun(N, O, S) -> #{<<"id">> => N, <<"owner">> => O, <<"sched">> => S,
-                          <<"opened_ns">> => N} end,
-    Live = [P(4, b, ?SCHED_QUEUED), P(1, a, ?SCHED_SPAWNED), P(2, a, ?SCHED_QUEUED),
-            P(3, a, ?SCHED_QUEUED), P(5, c, ?SCHED_QUEUED)],
-    Ids = fun(Max, Per) -> [maps:get(<<"id">>, X) ||
-                               X <- pluto_job_launcher:select(Live, Max, Per)] end,
-    ?assertEqual([2, 3, 4, 5], Ids(9, 9)),
-    ?assertEqual([2, 3], Ids(3, 9)),
-    ?assertEqual([2, 4, 5], Ids(9, 2)).
-
 cursor_plan_test() ->
     C = #{<<"pos">> => 9, <<"last_req">> => <<"r">>, <<"last_start">> => 4,
           <<"last_end">> => 9},

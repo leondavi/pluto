@@ -802,7 +802,7 @@ def test_fleet_tools_over_mcp(srv):
             # Another agent can use the handle, and a wait reports it once.
             assert (await call("job_wait", job_id=t["group"], timeout_s=1))["jobs"]
             assert "no job is called" in (await call("job_wait", job_id="gffffff"))["error"]
-            for bad in (dict(command="x", each={"n": "1"}),
+            for bad in (dict(command="x", each={"n": "1-2"}),
                         dict(command="x {n}", each={"n": "1-900"}),
                         dict(command="{n}", each={"n": ""}, names=["q"]),
                         dict(commands=["true"] * 65)):

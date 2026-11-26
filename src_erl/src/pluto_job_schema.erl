@@ -62,8 +62,12 @@ full_ids(R) ->
     Full = fun pluto_job_registry:resolve/1,
     maps:map(fun(K, V) when is_binary(V), K =:= <<"job_id">>;
                             is_binary(V), K =:= <<"parent">>;
-                            is_binary(V), K =:= <<"rerun_of">> -> Full(V);
-                (<<"job_ids">>, V) when is_list(V) -> lists:map(Full, V);
+                            is_binary(V), K =:= <<"rerun_of">>;
+                            is_binary(V), K =:= <<"follows">> -> Full(V);
+                (K, V) when is_list(V), K =:= <<"job_ids">>;
+                            is_list(V), K =:= <<"after_jobs">> -> lists:map(Full, V);
+                (<<"batch">>, V) when is_list(V) ->
+                     [case I of #{} -> full_ids(I); _ -> I end || I <- V];
                 (<<"from_offsets">>, V) when is_map(V) ->
                      maps:from_list([{Full(I), N} || {I, N} <- maps:to_list(V)]);
                 (_, V) -> V

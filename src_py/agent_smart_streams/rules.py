@@ -1,8 +1,9 @@
 """Rules on a command line: --on MATCH --append FILE TEXT, --idle 60 --stop.
 
 A condition (--on, --where, --idle, --absent) begins a rule; what follows
-belongs to it. So a whole supervisor fits into the command that starts the
-jobs it supervises.
+belongs to it. Several actions after one condition (--append F T --stop) are
+several rules on that condition. So a whole supervisor fits into the command
+that starts the jobs it supervises.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import argparse
 _CONDITIONS = {"on": "match", "idle": "idle_s", "absent": "absent_s"}
 _ALIASES = {"match": "on", "w": "where"}
 _ACTIONS = {"stop": "cancel", "pause": "pause", "tell": "notify"}
+#: What an action leaves of its rule for the next action on that condition.
+_DONE = ("then", "file", "text")
 
 
 class _Rule(argparse.Action):
@@ -41,7 +44,8 @@ class _Rule(argparse.Action):
             last["once"] = True
             return
         if "then" in last:
-            parser.error(f"{option}: this rule already has an action; begin another with --on")
+            last = {k: v for k, v in last.items() if k not in _DONE}
+            rules.append(last)
         if what == "append":
             last.update(then="append", file=value[0], text=value[1])
         elif what == "input":

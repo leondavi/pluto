@@ -203,6 +203,11 @@
 -define(JOB_CALL_MS,       30000).
 -define(JOB_SCRIPT_MS,     10000).  %% ident/kill helpers
 -define(JOB_PACKAGE_MS,    900000). %% export/import
+%% A job's Pluto lock lives this long unless renewed, and is renewed
+%% after a third of it: a server that stops leaves it to expire.
+-define(JOB_LOCK_TTL_MS,   30000).
+-define(JOB_LOCK_RENEW_MS, 10000).
+-define(JOB_AFTER_MAX,     200).    %% jobs one job may wait for
 
 %% ── Field lists ─────────────────────────────────────────────────────────────
 %% Copied from a start request into the package.
@@ -210,20 +215,26 @@
                         <<"timeout_s">>, <<"max_output_bytes">>, <<"name">>,
                         <<"tags">>, <<"task_id">>, <<"framework">>,
                         <<"session_id">>, <<"parent">>, <<"rerun_of">>,
-                        <<"base_env">>, <<"request_id">>, <<"params">>]).
+                        <<"base_env">>, <<"request_id">>, <<"params">>,
+                        <<"follows">> | ?JOB_ADMIT_KEYS]).
+%% What decides when a queued job may start (pluto_job_admit).
+-define(JOB_ADMIT_KEYS, [<<"slot">>, <<"slot_max">>, <<"after_jobs">>,
+                         <<"after_ok">>, <<"lock">>, <<"lock_mode">>]).
 %% Handed to the runner.
 -define(JOB_LAUNCH_KEYS, [<<"command">>, <<"argv">>, <<"cwd">>, <<"stdin">>,
                           <<"timeout_s">>, <<"max_output_bytes">>, <<"base_env">>]).
 %% Repeated by rerun_of.
 -define(JOB_RERUN_KEYS, [<<"command">>, <<"argv">>, <<"cwd">>, <<"stdin">>,
                          <<"timeout_s">>, <<"max_output_bytes">>, <<"name">>,
-                         <<"params">>]).
+                         <<"params">>, <<"slot">>, <<"slot_max">>, <<"lock">>,
+                         <<"lock_mode">>]).
 %% Meaningful on this host only; stripped from exports.
 -define(JOB_LOCAL_KEYS, [<<"base_env">>, <<"request_id">>, <<"spawn_at">>,
-                         <<"sched_ended_at">>]).
+                         <<"sched_ended_at">>, <<"lock_ref">>, <<"lock_token">>]).
 -define(JOB_CARD_KEYS, [<<"name">>, <<"user">>, <<"opener">>, <<"owner">>,
                         <<"opened_at">>, <<"tags">>, <<"task_id">>, <<"parent">>,
-                        <<"rerun_of">>, <<"framework">>, <<"params">>, <<"cwd">>]).
+                        <<"rerun_of">>, <<"framework">>, <<"params">>, <<"cwd">>,
+                        <<"follows">>, <<"lock_lost">> | ?JOB_ADMIT_KEYS]).
 -define(JOB_OPEN_KEYS, [<<"command">>, <<"argv">>, <<"cwd">>, <<"origin">>,
                         <<"ownership">>, <<"imported">>, <<"env_keys">>,
                         <<"timeout_s">>]).
@@ -240,21 +251,22 @@
                        <<"scope">>, <<"until">>, <<"status">>, <<"assignee">>,
                        <<"followup_id">>, <<"framework">>, <<"session_id">>,
                        <<"sort">>, <<"match">>, <<"stalled">>,
-                       <<"then">>, <<"rule">>, <<"file">>]).
+                       <<"then">>, <<"rule">>, <<"file">>, <<"follows">>,
+                       <<"slot">>, <<"lock">>, <<"lock_mode">>]).
 -define(JOB_INT_KEYS, [<<"max_bytes">>, <<"from_offset">>, <<"to_offset">>,
                        <<"offset">>, <<"line">>, <<"lines">>, <<"tail">>,
                        <<"before">>, <<"after">>, <<"limit">>, <<"from">>,
                        <<"ack">>, <<"from_line">>, <<"to_line">>,
                        <<"max_matches">>, <<"timeout_ms">>, <<"idle_ms">>,
                        <<"max_output_bytes">>, <<"older_than_ms">>, <<"count">>,
-                       <<"max_hits">>, <<"stalled_n">>]).
+                       <<"max_hits">>, <<"stalled_n">>, <<"slot_max">>]).
 -define(JOB_BOOL_KEYS, [<<"stdin">>, <<"tree">>, <<"verify">>, <<"strip_ansi">>,
                         <<"fixed">>, <<"invert">>, <<"ignore_case">>,
                         <<"close">>, <<"all">>, <<"as_user">>, <<"dry_run">>,
-                        <<"cursor">>, <<"once">>, <<"from_now">>]).
+                        <<"cursor">>, <<"once">>, <<"from_now">>, <<"after_ok">>]).
 -define(JOB_STRS_KEYS, [<<"argv">>, <<"tags">>, <<"job_ids">>, <<"states">>,
                         <<"where">>, <<"by">>, <<"agg">>, <<"compare">>,
-                        <<"columns">>]).
+                        <<"columns">>, <<"after_jobs">>]).
 -define(JOB_NUM_KEYS, [<<"window_s">>, <<"idle_s">>, <<"absent_s">>, <<"cooldown_s">>]).
 -define(ANALYZE_KEYS, [<<"extract">>, <<"where">>, <<"by">>, <<"agg">>, <<"sort">>,
                        <<"limit">>, <<"rows">>, <<"compare">>, <<"columns">>]).

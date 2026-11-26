@@ -1,10 +1,12 @@
 """A program of the agent's own on live output, one per job.
 
-The program is a job itself and reads the followed job's output from the
-beginning, so it may be wrong at first: following again ends it and starts
-the corrected one from byte 0, and the followed job never notices. A program
-piped into the command instead (``prog | filter``) cannot be replaced, and
-takes the output away from everybody else.
+The program is a job itself (a follower). Its runner hands it the followed
+job's output on stdin, from the beginning and as it grows, and closes stdin
+once that job has ended; no process sits in between. It may be wrong at
+first: following again ends it and starts the corrected one from byte 0, and
+the followed job never notices. A program piped into the command instead
+(``prog | filter``) cannot be replaced, and takes the output away from
+everybody else. Followers do not count against the limits on running jobs.
 """
 
 from __future__ import annotations
@@ -43,8 +45,7 @@ def start(jobs: PlutoJobsClient, cards: list[dict], command: str, name: str,
         fleet.each(lambda j: jobs.call("control", job_id=j, action="cancel"), ids)
         jobs.wait(job_ids=ids, until="exit", all=True, timeout_ms=FOLLOW_END_MS)
     batch = [{"name": key, "params": {**(c.get("params") or {}), _OF: short(c["job_id"])},
-              "command": f"pss cat -f {short(c['job_id'])} | "
-                         f"( {each.fill(command, each.facts(c))} )"}
+              "follows": c["job_id"], "command": each.fill(command, each.facts(c))}
              for c, key in zip(cards, keys)]
     r = submit.start_all(jobs, batch, {"cwd": cwd}, name)
     return dict(r, replaced=len(old))

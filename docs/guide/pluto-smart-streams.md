@@ -33,10 +33,13 @@ pss give other-agent soak; pss brief soak        # handover
 
 - **Names.** `soak`, `soak/3`, `soak/1-6,9`: the key is the parameter the job was
   started with (`soak/1:a` with two). A name means jobs whose directory is the
-  current one or that you own, and of each agent's rounds the newest. Ids and
-  group handles (`g3f09ac`, `g3f09ac/3`) always work.
+  current one or that you own, and of each key the newest job: running a key again
+  replaces it, and a key started later joins the name (`pss run -n zr -e k=8 ...`
+  adds `zr/8`). Lists with commas (`r1,r2,soak/3`), ids and group handles
+  (`g3f09ac`, `g3f09ac/3`) always work.
 - **Rules** are a condition (`--on`, `--where`, `--idle`, `--absent`) and what to do
-  (`--append FILE TEXT`, `--input TEXT`, `--stop`, `--pause`, `--tell`). They come
+  (`--append FILE TEXT`, `--input TEXT`, `--stop`, `--pause`, `--tell`); several
+  actions after one condition are several rules on it. They come
   with the start request and are stored before the job can run, so the shortest job
   cannot outrun them; they stay with the job when the session ends or it is given
   away, and `rerun_of` repeats them. `pss watch JOBS RULES` adds them later.
@@ -48,13 +51,39 @@ pss give other-agent soak; pss brief soak        # handover
   and checks that a `.json` file is JSON.
 - **`follow`** runs your own program on live output, one per job, as jobs of their own:
   `pss follow soak 'python3 -u judge.py {k}'` reads everything from the beginning on
-  stdin. Following again replaces it, again from the beginning, and the followed jobs
-  never notice. Prefer it to `prog | filter`, where a bug in the filter cannot be fixed
-  without starting the program again.
+  stdin, which its runner feeds from the followed job's log and closes when that job
+  has ended (no process in between). Following again replaces it, again from the
+  beginning, and the followed jobs never notice. Followers do not count against the
+  limits on running jobs, so a busy server never leaves a job unwatched. Prefer it to
+  `prog | filter`, where a bug in the filter cannot be fixed without starting the
+  program again.
 - **`report`** makes a record per job without a program:
   `-x 'E{e:int} probe={p:int}' -x 'E{e:int} CAL limit={limit:int}'
   -f 'bad=first:e where p > last.limit' -f 'code=_exit' -o 'out/{k}.json'`.
-- `ps` and `wait` put jobs in the same state on one line; `-v` lists them.
+- `ps` and `wait` put jobs in the same state on one line; `-v` lists them. `wait -t S`
+  prints where every job is when the time is up, so it replaces `sleep; ps`.
+- `head`, `tail`, `grep` take the usual options (`-n`, `-A/-B/-C`, `-c`, `-v`, `-i`).
+- **News.** After any command, one line on stderr says which of your jobs ended or
+  were handed to you since the last one (`pss: meanwhile ended: z/3 failed, ...`).
+  Each is said once; nothing is said inside a job.
+
+### When a queued job starts
+
+`pss run` takes three conditions besides the server's limits, also from `job_start`:
+
+| Option | Is | Meaning |
+|---|---|---|
+| `--slot NAME:N` | a counting semaphore | at most N running jobs of this slot, all agents together |
+| `--after JOBS` | a barrier | start once these have ended; with `--after-ok` only if all succeeded, else it is cancelled |
+| `--lock RES[:read]` | Pluto's lock | hold the write (or shared read) lock on RES while running |
+
+The lock is Pluto's own, held by `job:<id>`: agents taking the same resource through
+`/locks/acquire` and jobs exclude each other, and `GET /locks` shows who holds it. It is
+only tried, never queued, so a waiting job is not in the deadlock graph; it is renewed
+while the job runs (`$PLUTO_LOCK_TOKEN` is the fencing token) and released when the job
+ends. If it is lost, for instance across a server restart while someone else took it,
+the job shows `lost-lock=RES`. `ps` says what a queued job waits for:
+`queued (after 2 jobs ok, slot gpu/2, lock db)`.
 
 Without `PSS_AGENT` it acts as you (`user:<name>`), who may change every job; a name
 then changes jobs of the current directory only.
@@ -218,7 +247,7 @@ every hash and never runs anything.
 ## Configuration
 
 Optional `smartstreams` section in `config/pluto_config.json`: `home`,
-`python`, `max_running` (128), `max_per_agent` (32; a follower counts), `idle_after_ms` (30000),
+`python`, `max_running` (128), `max_per_agent` (32; followers are counted apart, with the same limits), `idle_after_ms` (30000),
 `min_free_bytes` (256 MiB; below it jobs are stopped), `allow_remote` (false).
 `PLUTO_SMARTSTREAMS_HOME` overrides the storage directory and must match for
 server and clients; a directory is used by one server at a time. The server

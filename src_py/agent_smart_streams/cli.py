@@ -20,11 +20,11 @@ if _SRC_PY not in sys.path:
 
 from agent_friend.frameworks import load_pluto_config  # noqa: E402
 from agent_smart_streams import (  # noqa: E402
-    brief, cli_parser, compact, each, fleet, follow as live, names, render, report, rules,
-    submit,
+    brief, cli_parser, compact, each, fleet, follow as live, meanwhile, names, render,
+    report, rules, submit,
 )
 from agent_smart_streams.constants import (  # noqa: E402
-    CLI_AGENT_ENV, CLI_HOST_ENV, CLI_PORT_ENV, GROUP_MAX, WAIT_FOREVER_S,
+    CLI_AGENT_ENV, CLI_HOST_ENV, CLI_PORT_ENV, GREP_MATCHES_CALL, GROUP_MAX, WAIT_FOREVER_S,
 )
 from agent_smart_streams.lease import state_path  # noqa: E402
 from pluto_sdk import PlutoError, PlutoHttpClient, PlutoJobsClient  # noqa: E402
@@ -60,11 +60,31 @@ def fields(text):
     return [x.strip() for x in text.split(",") if x.strip()] if text else None
 
 
+def admission(jobs, a) -> dict:
+    """--slot, --after and --lock as fields of the start request."""
+    out: dict = {}
+    if a.slot:
+        slot, _, n = a.slot.rpartition(":")
+        if not slot or not n.isdigit() or int(n) < 1:
+            raise PlutoError(f"--slot {a.slot!r}: use NAME:N, N at least 1")
+        out.update(slot=slot, slot_max=int(n))
+    if a.after:
+        out["after_jobs"] = [c["job_id"] for c in names.cards(jobs, a.after)]
+        out["after_ok"] = a.after_ok or None
+    elif a.after_ok:
+        raise PlutoError("--after-ok needs --after JOBS")
+    if a.lock:
+        res, _, mode = a.lock.rpartition(":") if a.lock.endswith((":read", ":write")) \
+            else (a.lock, "", "")
+        out.update(lock=res, lock_mode=mode or None)
+    return out
+
+
 def do_run(jobs, a, waiter):
     cwd = os.path.abspath(a.cwd or os.getcwd())
     spec = dict(cwd=cwd, tags=a.tag or None, timeout_s=a.timeout, parent=a.parent,
                 stdin=a.stdin or any(r.get("then") == "input" for r in a.rules or ()) or None,
-                watch=a.rules or None)
+                watch=a.rules or None, **admission(jobs, a))
     if a.each:
         params = dict(e.partition("=")[::2] for e in a.each)
         r = submit.start_all(jobs, submit.expand(a.command, params), spec, a.name)
@@ -148,7 +168,10 @@ def do_analyze(jobs, a, _w):
 
 
 def do_report(jobs, a, _w):
-    r = report.records(jobs, names.cards(jobs, a.ids), a.extract, a.field)
+    # -f takes several columns; what is not a column is a job.
+    columns = [f for f in a.field if "=" in f]
+    ids = a.ids + [f for f in a.field if "=" not in f]
+    r = report.records(jobs, names.cards(jobs, ids), a.extract, columns)
     for note in r["notes"]:
         print("note: " + note)
     if a.o:
@@ -179,33 +202,48 @@ def do_watch(jobs, a, _w):
                          **{"where": None, "by": None, **rule})
              for rule in ({**more, **first}, *others)]
     print("\n".join(compact.dumps(x) for x in r))
+    if any(e == "not_owner" for x in r for e in (x.get("errors") or {}).values()):
+        print("pss: rules go on your own jobs only; on others' jobs, "
+              "pss wait --match RE JOBS waits for a line", file=sys.stderr)
 
 
 def do_grep(jobs, a, _w):
-    r = fleet.grep(jobs, None, a.ids, max_matches=a.max, pattern=a.pattern,
-                   before=a.context or None, after=a.context or None,
-                   ignore_case=a.i or None, fixed=a.fixed or None)
+    cards = names.cards(jobs, a.ids)
+    label = {compact.short(c["job_id"]): names.label(c) for c in cards}
+    before, after = (a.B if a.B is not None else a.context), (a.A if a.A is not None else a.context)
+    # -c counts up to what one call may return, and says when there are more.
+    most = GREP_MATCHES_CALL // len(label) if a.count else a.max
+    r = fleet.grep(jobs, None, list(label), max_matches=most,
+                   pattern=a.pattern, before=before or None, after=after or None,
+                   ignore_case=a.i or None, fixed=a.fixed or None, invert=a.invert or None)
     found = 0
     for jid, g in r.items():
         if jid == "no_match":
+            for j in g if a.count else ():
+                print(f"{label.get(j, j)}:0")
             continue
         if "error" in g:
-            print(f"{jid}: {g['error']}", file=sys.stderr)
+            print(f"{label.get(jid, jid)}: {g['error']}", file=sys.stderr)
             continue
         found += g["matches"]
+        if a.count:
+            print(f"{label.get(jid, jid)}:{g['matches']}{'+' if 'resume_at' in g else ''}")
+            continue
         for line in g["lines"].splitlines():
-            print(f"{jid}:{line}")
+            print(f"{label.get(jid, jid)}:{line}")
         if "resume_at" in g:
-            print(f"{jid}: more (first {g['matches']} shown)")
+            print(f"{label.get(jid, jid)}: more (first {g['matches']} shown)")
     return 0 if found else 1
 
 
 def do_tail(jobs, a, _w):
+    """tail, and head: the last or first lines of each job."""
     cards = names.cards(jobs, a.ids)
+    where = dict(tail=a.n) if a.op == "tail" else dict(line=1, lines=a.n)
     for c in cards:
         if len(cards) > 1:
             print(f"==> {names.label(c)}")
-        print(jobs.call("window", job_id=c["job_id"], tail=a.n, strip_ansi=True)["text"], end="")
+        print(jobs.call("window", job_id=c["job_id"], strip_ansi=True, **where)["text"], end="")
 
 
 def do_log(jobs, a, _w):
@@ -273,9 +311,13 @@ def do_call(jobs, a, _w):
 
 DO = {"run": do_run, "wait": do_wait, "ps": do_ps, "analyze": do_analyze,
       "watch": do_watch, "grep": do_grep, "tail": do_tail, "cat": do_cat,
-      "log": do_log, "stop": do_control, "pause": do_control,
+      "head": do_tail, "log": do_log, "stop": do_control, "pause": do_control,
       "resume": do_control, "give": do_give, "brief": do_brief, "each": do_each,
       "report": do_report, "follow": do_follow, "call": do_call}
+
+
+#: Commands whose output already says how the jobs are.
+_SHOWS_JOBS = ("wait", "ps", "each", "brief", "call")
 
 
 def connect() -> PlutoJobsClient:
@@ -302,6 +344,7 @@ def main(argv=None) -> int:
         jobs = connect()
         code = DO[a.op](jobs, a, fleet.Waiter(jobs)) or 0
         sys.stdout.flush()
+        meanwhile.tell(jobs, quiet=a.op in _SHOWS_JOBS)
         return code
     except BrokenPipeError:
         # The reader (head, grep -q) has seen enough.

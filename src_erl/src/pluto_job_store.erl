@@ -10,7 +10,7 @@
 -include("pluto.hrl").
 -include_lib("kernel/include/file.hrl").
 
--export([home/0, jobs_dir/0, dir/1, file/2, valid_id/1, new_id/0, origin/0,
+-export([home/0, jobs_dir/0, dir/1, is_dir/1, file/2, file_bin/2, valid_id/1, new_id/0, origin/0,
          ensure_home/0, key/0, host_id/0, lock_home/0,
          read_json/1, write_json/2, write_json/3, append_jsonl/2, read_jsonl/1,
          run/2, run/4, kill_port/1, python/0, script/1, ident/1, hex/1, opt/2, opt/3, now_ms/0]).
@@ -34,15 +34,45 @@ home() ->
         _ -> pluto_config:get(smartstreams_home, ?DEFAULT_HOME)
     end.
 
+%% Paths of live jobs are made several times a second each, so the
+%% joined root is kept for as long as the home stays the same.
 -spec jobs_dir() -> file:filename().
-jobs_dir() -> filename:join(home(), ?HOME_DIR_JOBS).
+jobs_dir() -> element(1, roots()).
 
-%% @doc Directory of a job; the id must have passed valid_id/1.
+roots() ->
+    Home = home(),
+    case persistent_term:get(?MODULE, undefined) of
+        {Home, Dir, Bin} -> {Dir, Bin};
+        _ ->
+            Dir = filename:join(Home, ?HOME_DIR_JOBS),
+            Bin = unicode:characters_to_binary(Dir),
+            persistent_term:put(?MODULE, {Home, Dir, Bin}),
+            {Dir, Bin}
+    end.
+
+%% @doc Directory of a job; the id must have passed valid_id/1, so it
+%% needs no normalising.
 -spec dir(job_id()) -> file:filename().
-dir(Id) -> filename:join(jobs_dir(), binary_to_list(Id)).
+dir(Id) -> jobs_dir() ++ [$/ | binary_to_list(Id)].
+
+%% @doc Like filelib:is_dir/1, without a round trip to the file server:
+%% the manager asks this for every live job on every tick.
+-spec is_dir(file:filename()) -> boolean().
+is_dir(Path) ->
+    case file:read_file_info(Path, [raw]) of
+        {ok, #file_info{type = directory}} -> true;
+        _ -> false
+    end.
 
 -spec file(job_id(), file:filename()) -> file:filename().
+file(Id, Name) when is_list(Name) -> dir(Id) ++ [$/ | Name];
 file(Id, Name) -> filename:join(dir(Id), Name).
+
+%% @doc The same as a binary, which the file system takes without
+%% normalising it character by character: for what runs on every tick.
+-spec file_bin(job_id(), string()) -> binary().
+file_bin(Id, Name) ->
+    <<(element(2, roots()))/binary, $/, Id/binary, $/, (list_to_binary(Name))/binary>>.
 
 %% Ids become path components, so nothing else may ever pass.
 -spec valid_id(term()) -> boolean().

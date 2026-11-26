@@ -16,14 +16,19 @@
 %%%      to be alive) show whatever state.json says;
 %%%   3. otherwise `sched' itself is the state.
 %%%
-%%% ?ETS_JOBS holds {Id, Package, FinalState | undefined}. The final state
-%%% of a finished job never changes, so it is cached. ?ETS_JOBS_LIVE lists
-%%% unfinished ids, so periodic work does not grow with history.
+%%% ?ETS_JOBS holds {Id, Package, FinalState | Seen | undefined}. The final
+%%% state of a finished job never changes, so it is cached. For a live job,
+%%% Seen is the last state.json read, with the inode, mtime and size it had:
+%%% the runner replaces the file to change it, so the same three mean the
+%%% same content, and the manager's ticks only stat what did not change.
+%%% ?ETS_JOBS_LIVE lists unfinished ids, so periodic work does not grow
+%%% with history.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(pluto_job_registry).
 
 -include("pluto.hrl").
+-include_lib("kernel/include/file.hrl").
 
 -export([pkg/1, resolve/1, fresh_id/0, all/0, live/0, children/1, state/1, is_done/1,
          save/1, forget/1, load_all/0]).
@@ -85,7 +90,26 @@ is_done(P) -> maps:get(<<"done">>, P, false).
 state(#{<<"id">> := Id} = P) ->
     case ets:lookup(?ETS_JOBS, Id) of
         [{_, _, Final}] when is_map(Final) -> Final;
-        _ -> combine(P, read_state(Id))
+        [{_, _, Seen}] -> combine(P, live_state(Id, Seen));
+        []             -> combine(P, read_state(Id))
+    end.
+
+live_state(Id, Seen) ->
+    %% raw: straight to the file system, not through the file server.
+    case file:read_file_info(pluto_job_store:file_bin(Id, ?JOB_FILE_STATE),
+                             [raw, {time, posix}]) of
+        {ok, #file_info{inode = I, mtime = M, size = Z}} ->
+            case Seen of
+                {I, M, Z, St} -> St;
+                _ ->
+                    St = read_state(Id),
+                    %% Never over a final state that insert/1 put meanwhile.
+                    ets:select_replace(?ETS_JOBS, [{{Id, '$1', '$2'},
+                                                    [{'not', {is_map, '$2'}}],
+                                                    [{{Id, '$1', {const, {I, M, Z, St}}}}]}]),
+                    St
+            end;
+        _ -> #{}
     end.
 
 read_state(Id) ->

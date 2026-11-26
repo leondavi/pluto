@@ -3,7 +3,8 @@
 ``soak`` is a batch, ``soak/3`` one of its jobs, ``soak/1-6,9`` some of
 them: the key of a job is the parameter it was started with, so an agent
 never needs a table of ids. A batch without a name goes by its handle
-(``g3f09ac/3``). Ids are accepted as before.
+(``g3f09ac/3``). Ids are accepted as before, and so are lists with commas
+(``r1,r2,soak/3``).
 """
 
 from __future__ import annotations
@@ -101,16 +102,12 @@ def _here(card: dict) -> bool:
 
 
 def _current(cards: list[dict]) -> list[dict]:
-    """Of every agent's batches the newest, and of one key the newest job:
-    an earlier round under the same name is never meant."""
-    cards = sorted(cards, key=lambda c: c["opened_at"], reverse=True)
-    newest: dict[str, str | None] = {}
+    """Of one key the newest job. A key started again under the same name
+    replaces its earlier run; a key started later joins the others, so a
+    name can grow one job at a time."""
     out: dict[str, dict] = {}
-    for c in cards:
-        batch = next((t for t in c.get("tags") or () if re.fullmatch(GROUP_RE, t)),
-                     c["job_id"])
-        if newest.setdefault(c["opener"], batch) == batch:
-            out.setdefault(c.get("name") or c["job_id"], c)
+    for c in sorted(cards, key=lambda c: c["opened_at"], reverse=True):
+        out.setdefault(c.get("name") or c["job_id"], c)
     return sorted(out.values(), key=lambda c: c["opened_at"])
 
 
@@ -151,9 +148,26 @@ def cards(jobs: PlutoJobsClient, handles: list[str], *, strict: bool = False) ->
     means jobs of this directory only."""
     out: dict[str, dict] = {}
     for h in handles:
-        for c in _named(jobs, h, strict) if is_name(h) else [jobs.call("status", job_id=h)]:
+        for c in _resolve(jobs, h, strict):
             out.setdefault(c["job_id"], c)
     return list(out.values())
+
+
+def _resolve(jobs: PlutoJobsClient, handle: str, strict: bool) -> list[dict]:
+    """``soak/1,4`` names keys; ``r1,r2`` or ``a/1-3,b`` that are no keys are
+    read as several handles, as people write them."""
+    def one(h):
+        return _named(jobs, h, strict) if is_name(h) else [jobs.call("status", job_id=h)]
+    try:
+        return one(handle)
+    except PlutoError as exc:
+        parts = [p for p in handle.split(",") if p]
+        if len(parts) < 2:
+            raise
+        try:
+            return [c for p in parts for c in one(p)]
+        except PlutoError:
+            raise exc from None
 
 
 def members(jobs: PlutoJobsClient, handles: list[str], *, strict: bool = False) -> list[str]:

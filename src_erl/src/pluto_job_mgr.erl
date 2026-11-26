@@ -33,9 +33,11 @@
     env     = #{}   :: #{job_id() => map()},      %% never written to disk
     retry   = #{}   :: #{job_id() => integer()},  %% do not touch before (ms)
     probes  = #{}   :: #{job_id() => integer()},  %% last probe (ms)
+    hb_next = #{}   :: #{job_id() => integer()},  %% heartbeat cannot be stale before
     aborted = #{}   :: #{job_id() => integer()},  %% abort written at (ms)
     board   = #{}   :: map(),                     %% see pluto_job_notice
     told    = #{}   :: #{job_id() => integer()},  %% last watch hit announced
+    renewed = #{}   :: #{job_id() => integer()},  %% lock last renewed (ms)
     seen    = #{}   :: map(),                     %% request id -> reply
     seen_old = #{}  :: map()                      %% previous generation
 }).
@@ -275,19 +277,35 @@ new_package(R) ->
 schedule(S) ->
     Ready = [P || #{<<"id">> := Id} = P <- pluto_job_registry:live(),
                   maps:get(<<"sched">>, P) =/= ?SCHED_QUEUED orelse not backing_off(Id, S)],
-    Chosen = pluto_job_launcher:select(
-               Ready,
-               pluto_config:get(smartstreams_max_running, ?DEFAULT_JOB_MAX_RUNNING),
-               pluto_config:get(smartstreams_max_per_agent, ?DEFAULT_JOB_MAX_PER_AGENT)),
+    {Chosen, Cancel} = pluto_job_admit:select(Ready, #{
+        max => pluto_config:get(smartstreams_max_running, ?DEFAULT_JOB_MAX_RUNNING),
+        per_agent => pluto_config:get(smartstreams_max_per_agent, ?DEFAULT_JOB_MAX_PER_AGENT),
+        ended => fun ended/1, lock => fun pluto_job_lock:take/1}),
+    S1 = lists:foldl(fun({#{<<"id">> := Id} = P, Why}, Acc) ->
+        isolate(Id, fun() ->
+            P1 = P#{<<"sched">> := ?SCHED_CANCELLED, <<"sched_reason">> => Why},
+            finish(P1, state(P1), Acc)
+        end, Acc)
+    end, S, Cancel),
     lists:foldl(fun(#{<<"id">> := Id} = P, Acc) ->
         isolate(Id, fun() ->
             Now = now_ms(),
             P1 = P#{<<"sched">> := ?SCHED_SPAWNING, <<"spawn_at">> => Now},
             save(P1),
-            pluto_job_launcher:launch(P1, maps:get(Id, Acc#state.env, #{}), self()),
-            Acc#state{env = maps:remove(Id, Acc#state.env)}
+            Env = maps:merge(maps:get(Id, Acc#state.env, #{}), pluto_job_lock:env(P1)),
+            pluto_job_launcher:launch(P1, Env, self()),
+            Acc#state{env = maps:remove(Id, Acc#state.env),
+                      renewed = (Acc#state.renewed)#{Id => Now}}
         end, Acc)
-    end, S, Chosen).
+    end, S1, Chosen).
+
+%% For after_jobs. A job no longer known (pruned) ended long ago.
+ended(Id) ->
+    case pkg(Id) of
+        {ok, #{<<"done">> := true} = P} -> {ended, maps:get(<<"state">>, state(P))};
+        {ok, _} -> running;
+        _       -> {ended, ?JOB_LOST}
+    end.
 
 spawned(Id, Result, S) ->
     case {pkg(Id), Result} of
@@ -325,7 +343,8 @@ backing_off(Id, #state{retry = R}) -> maps:get(Id, R, 0) > now_ms().
 check(#{<<"id">> := Id, <<"sched">> := Sched} = P, S) ->
     St = state(P),
     Pid = is_map_key(<<"pid">>, St),
-    case filelib:is_dir(pluto_job_store:dir(Id)) of
+    %% A state.json from the runner means the directory is there.
+    case Pid orelse pluto_job_store:is_dir(pluto_job_store:dir(Id)) of
         false -> vanished(P, S);
         true when is_map_key(<<"final_size">>, St) -> finish(P, St, S);
         true ->
@@ -338,7 +357,7 @@ check(#{<<"id">> := Id, <<"sched">> := Sched} = P, S) ->
                 ?SCHED_SPAWNING when Pid ->
                     save(P#{<<"sched">> := ?SCHED_SPAWNED}), S;
                 ?SCHED_SPAWNING -> overdue(P, S);
-                _ -> maybe_probe(P, St, S)
+                _ -> maybe_probe(P, St, keep_lock(P, S))
             end
     end.
 
@@ -361,17 +380,36 @@ overdue(#{<<"id">> := Id} = P, #state{aborted = Ab} = S) ->
             end
     end.
 
-%% A silent runner is probed, at most every few seconds.
-maybe_probe(#{<<"id">> := Id} = P, St, #state{probes = Pr} = S) ->
+%% A job's Pluto lock is renewed well before it expires.
+keep_lock(#{<<"id">> := Id, <<"lock">> := _} = P, #state{renewed = R} = S) ->
     Now = now_ms(),
-    %% A runner that just started has not written a heartbeat yet.
-    Quiet = min(pluto_job_launcher:hb_age(Id), Now - opt(<<"spawn_at">>, P, 0)),
-    case Quiet > ?JOB_HB_STALE_MS andalso is_map_key(<<"pid">>, St) andalso
-         Now - maps:get(Id, Pr, 0) > ?JOB_HB_STALE_MS of
+    case Now - maps:get(Id, R, 0) > ?JOB_LOCK_RENEW_MS of
         true ->
-            pluto_job_launcher:probe(Id, St, self()),
-            S#state{probes = Pr#{Id => Now}};
+            P1 = pluto_job_lock:keep(P),
+            P1 =:= P orelse save(P1),
+            S#state{renewed = R#{Id => Now}};
         false -> S
+    end;
+keep_lock(_, S) -> S.
+
+%% A silent runner is probed, at most every few seconds.
+%% A fresh heartbeat cannot go stale before its age reaches the limit, so
+%% until then it is not looked at again.
+maybe_probe(#{<<"id">> := Id} = P, St, #state{probes = Pr, hb_next = Next} = S) ->
+    Now = now_ms(),
+    case Now < maps:get(Id, Next, 0) of
+        true -> S;
+        false ->
+            %% A runner that just started has not written a heartbeat yet.
+            Quiet = min(pluto_job_launcher:hb_age(Id), Now - opt(<<"spawn_at">>, P, 0)),
+            S1 = S#state{hb_next = Next#{Id => Now + ?JOB_HB_STALE_MS - Quiet}},
+            case Quiet > ?JOB_HB_STALE_MS andalso is_map_key(<<"pid">>, St) andalso
+                 Now - maps:get(Id, Pr, 0) > ?JOB_HB_STALE_MS of
+                true ->
+                    pluto_job_launcher:probe(Id, St, self()),
+                    S1#state{probes = Pr#{Id => Now}};
+                false -> S1
+            end
     end.
 
 probed(Id, Runner, Child, S) ->
@@ -406,7 +444,8 @@ vanished(#{<<"id">> := Id, <<"owner">> := O} = P, S) ->
     S#state{board = pluto_job_notice:notify(O, ?EVT_JOB_FINISHED, P, ?JOB_LOST,
                                             S#state.board)}.
 
-finish(#{<<"id">> := Id, <<"owner">> := O} = P, St, S) ->
+finish(#{<<"id">> := Id, <<"owner">> := O} = P0, St, S) ->
+    P = pluto_job_lock:drop(P0),
     P1 = case is_map_key(<<"ended_at">>, St) of
              true  -> P#{<<"done">> => true};
              false -> P#{<<"done">> => true, <<"sched_ended_at">> => now_ms()}
@@ -424,7 +463,9 @@ finish(#{<<"id">> := Id, <<"owner">> := O} = P, St, S) ->
     S#state{board = pluto_job_notice:notify(O, ?EVT_JOB_FINISHED, P1, Name,
                                             S#state.board),
             retry = maps:remove(Id, S#state.retry),
+            renewed = maps:remove(Id, S#state.renewed),
             probes = maps:remove(Id, S#state.probes),
+            hb_next = maps:remove(Id, S#state.hb_next),
             env = maps:remove(Id, S#state.env)}.
 
 %% The owner of the moment is told, and acts. The action comes first: if
@@ -531,6 +572,7 @@ do_input(Actor, #{<<"job_id">> := Id} = R) ->
         Stdin = opt(<<"stdin">>, P, false),
         Running = maps:get(<<"sched">>, P) =:= ?SCHED_SPAWNED andalso not is_done(P),
         if
+            is_map_key(<<"follows">>, P) -> {error, <<"stdin_of_a_follower_is_the_followed_output">>};
             Stdin =/= true -> {error, <<"job_was_started_without_stdin">>};
             not Running    -> {error, <<"job_is_not_running">>};
             byte_size(Text) > ?JOB_INPUT_MAX -> {error, <<"input_too_large">>};

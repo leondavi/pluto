@@ -42,7 +42,25 @@ def status(card: dict) -> str:
         out += f" ({card['reason']})"
     if not ended(card) and card.get("activity") == "idle":
         out += " idle"
+    if out == "queued":
+        out += waits_for(card)
+    if card.get("lock_lost"):
+        out += f" lost-lock={card['lock']}"
     return out
+
+
+def waits_for(card: dict) -> str:
+    """What may keep a queued job back: " after 3 jobs, slot gpu/2"."""
+    why = []
+    if card.get("after_jobs"):
+        n = len(card["after_jobs"])
+        why.append(f"after {short(card['after_jobs'][0]) if n == 1 else f'{n} jobs'}"
+                   + (" ok" if card.get("after_ok") else ""))
+    if card.get("slot"):
+        why.append(f"slot {card['slot']}/{card.get('slot_max', 1)}")
+    if card.get("lock"):
+        why.append(f"lock {card['lock']}")
+    return " (" + ", ".join(why) + ")" if why else ""
 
 
 def row(card: dict, me: str, last: str = "") -> str:

@@ -37,6 +37,8 @@ notify(Agent, Event, #{<<"id">> := Id} = P, St, Extra, Board) ->
     N = Extra#{<<"seq">> => seq(), <<"agent">> => Agent,
           <<"event">> => Event, <<"job_id">> => Id, <<"state">> => St,
           <<"name">> => pluto_job_store:opt(<<"name">>, P, null),
+          <<"tags">> => pluto_job_store:opt(<<"tags">>, P, []),
+          <<"follows">> => pluto_job_store:opt(<<"follows">>, P, null),
           <<"at">> => pluto_job_store:now_ms()},
     append(N),
     catch pluto_msg_hub:push_event_to_agent(

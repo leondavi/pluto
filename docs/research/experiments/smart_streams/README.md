@@ -459,3 +459,22 @@ file name does not tell what they do. Differences of a few percent between arms 
 
 `--out` must be outside git. `--http-port N` (with `--pluto-host` and
 `--smartstreams-home`) uses a running server instead of private ones.
+
+## Confirmatory run, protocol 5 (fixed 26 Nov 2026, before its first run)
+
+* Code: the commit recorded in `v5main.commit`; no product or harness change during the run. A harness
+  fault (a run that cannot be graded, or an agent ended from outside its arm) stops the run; it is fixed,
+  disclosed and the affected pairs are repeated, never dropped silently.
+* Arms: native and smartstreams (pss, no MCP tools). native_sub is not run: no agent used a sub-agent in
+  the pilots, so the arm is reported as "not used", not as evidence about sub-agents.
+* Tasks E1 to E8, 8 pairs each (one seed per pair, order random), 128 runs, budget 5 USD per agent. Pilot runs are
+  not pooled with these.
+* **Primary decision, blind tasks only (E7 and E8, 16 pairs):** SmartStreams is better if the mean paired cost
+  difference (A - B) / B is below 0 with a one-sided 95% bootstrap bound below 0, AND the mean paired score difference
+  A - B is above -0.05 with its one-sided 95% bound above -0.05. Worse if the cost bound is above 0 or the
+  score bound below -0.05. Otherwise inconclusive.
+* Secondary, per task and pooled over E1-E8: the same two quantities with 95% intervals, wall time, turns,
+  tool-result bytes, and feature adoption. E1-E6 are labelled tuned (E1-E3 shaped v4, E6 shaped follow).
+* H1 to H7 above are reported as they stand; pairs per task are 8, not 5.
+* Planning figures from the pilots: paired cost sd about 15%, score sd about 0.07; 8 pairs detect about 15% / 0.07
+  per task, 16 pairs about 10.5% / 0.05, 64 pairs about 5% / 0.025 (80% power, two-sided 5%).

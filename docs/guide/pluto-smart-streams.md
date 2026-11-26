@@ -85,6 +85,25 @@ ends. If it is lost, for instance across a server restart while someone else too
 the job shows `lost-lock=RES`. `ps` says what a queued job waits for:
 `queued (after 2 jobs ok, slot gpu/2, lock db)`.
 
+Example: build once, then test on at most 4 workers, each holding the shared database,
+and report only if every test passed.
+
+```
+pss run -n build 'make -j8'
+pss run -n t -e k=1-12 --after build --after-ok --slot workers:4 --lock db:read \
+    'pytest tests/shard_{k}.py'
+pss run -n report --after t --after-ok 'python report.py'
+pss ps        # t waits for build, then runs 4 at a time
+pss wait report -t 600
+```
+
+In `job_start` the same fields are `slot` and `slot_max`, `after_jobs` (a list of job ids
+or names), `after_ok`, and `lock` and `lock_mode` (`write`, the default, or `read`).
+Wrong combinations are refused when the job is started: `slot_max_without_slot`,
+`lock_mode_without_lock`, `after_jobs_names_an_unknown_job`, more than 200 `after_jobs`.
+Claude Code itself has none of these for processes; see
+[the comparison](../research/claude-code-vs-pluto-coordination.md).
+
 Without `PSS_AGENT` it acts as you (`user:<name>`), who may change every job; a name
 then changes jobs of the current directory only.
 

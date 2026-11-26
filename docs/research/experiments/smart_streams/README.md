@@ -482,3 +482,43 @@ file name does not tell what they do. Differences of a few percent between arms 
 * Secondary, per task: the same two quantities with 95% intervals, wall time, turns, tool-result bytes, feature adoption.
 * Planning figures from the pilots: paired cost sd about 15%, score sd about 0.07. 8 pairs detect about
   15% / 0.07 per task; 40 pairs about 6.6% / 0.031 pooled (80% power, two-sided 5%).
+
+## E9 sequencing_cohort (written blind, after protocol v3)
+
+**Domain.** A sequencing core runs a 48-sample cohort on a targeted SNP panel (480 unlinked
+SNPs on a 48 kb panel reference with one segmental duplication). Each run is a real simulation:
+the program builds the sample's diploid haplotypes from a simulated population with families,
+draws library molecules (PCR duplicates, short inserts with adapter read-through, junk, and for
+some libraries another person's DNA), sequences them with a base-quality model (some flowcells
+degrade part way) and aligns every read to the reference with a seeded ungapped local aligner,
+printing SAM records (15000 reads, ~1.2 MB per run in 300 s). What a bioinformatician would do is
+needed: pileups with read and base filters, genotype likelihoods, contamination estimates
+(mixture models), sample identity against genotyping-array fingerprints, kinship/IBS0 for
+relatives and cohort allele frequencies. Quality control runs while the data come in: some runs
+must be stopped by a deadline and partly or wholly re-sequenced (`--library 2`, `--flowcell 2
+--from K`), and needless stops or re-runs cost. The cohort questions need every agent's
+genotypes, so agents share them through board/. Truth comes from the simulation (`truth(seed)`
+recomputes it from the seed, never from program output); results do not depend on scheduling.
+
+Files: `exp9_cohort.py` (plan, truth, build, grader), `exp9_text.py` (prompt, workspace docs),
+`wl_seq.py` (the program), `e9_analysis.py` + `verify_e9.py` (scripted solvers),
+`tests/test_experiment_smart_streams_e9.py`. Registered as `--exp 9`; `--exp all` still means 1-5.
+
+Scoring: genotype calls at 16 reportable sites 0.25, identity 0.15, contamination (estimate,
+source, clean samples) 0.15, degradation onset 0.05, relatives (pairwise F1, wrong relation half)
+0.15, allele frequencies 0.10, QC reactions 0.15 (stopped in time .6 + re-run started .4 per QC
+sample, minus .5 per healthy run stopped or needless re-run). Partial credit with tolerances.
+
+    $PY -m pytest tests/test_experiment_smart_streams_e9.py
+    $PY $H/verify_e9.py SCRATCH --seed N [--policy reference|lazy]   # full size, no LLM
+
+Scripted results (full size, plain processes, Apple M4, shared machine): reference 1.000 (seed 1)
+and 0.996 (seed 2, one contamination estimate half right), wall 309-310 s; lazy 0.497 (seed 1).
+Every agent's peak is 12 streams (48 at once); program CPU 54-136 s per run of the fleet (2-5% of
+the 10 cores), largest pacing lag 0.23 s, output about 61 MB per run (1.2 MB per stream).
+
+**What the author read.** Only this directory's experiment code (exp1-5, `wl_*`, `run.py`,
+`ss_*.py`, `verify_*.py`), this README except the descriptions of the tools under test, and the
+tests of this directory. Not read: product code, product docs, other branches or worktrees,
+article notes, results, and anything of experiments 6-8. The task was designed to be
+tool-neutral and not shaped for or against any tool.

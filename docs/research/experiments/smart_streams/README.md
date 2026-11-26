@@ -548,6 +548,19 @@ search). The task does not favour any tool: everything is files, processes and l
 * Planning figures from the pilots: paired cost sd about 15%, score sd about 0.07. 8 pairs detect about
   15% / 0.07 per task; 40 pairs about 6.6% / 0.031 pooled (80% power, two-sided 5%).
 
+## Confirmatory run, protocol 6 (fixed 26 Nov 2026, before its first run)
+
+* Protocol 5 was stopped early (70 of 80 runs in `v5main`) and is not pooled with this run. Protocol 6 is
+  protocol 5 with exactly three differences; every other rule above (blind tasks E7-E11, Sonnet only, arms
+  native and smartstreams, 8 pairs per task, 80 runs, 5 USD per agent, primary decision, load sensitivity,
+  secondary measures, harness-fault handling) applies unchanged.
+* Code: the commit recorded in `v6main.commit`. It adds job admission (`pss run --slot NAME:N`, `--after JOBS`,
+  `--after-ok`, `--lock RES[:read]`), runner-fed followers, news lines, and accepts more agent habits (`head`,
+  `grep -A/-B/-c`, comma-separated names). No product or harness change during the run.
+* Output: `v6main` (log `v6main.log`).
+* Prompt: unchanged from protocol 5. Agents learn the new options only from `pss help`; adoption of each new
+  option is reported as a secondary measure.
+
 ## E9 sequencing_cohort (written blind, after protocol v3)
 
 **Domain.** A sequencing core runs a 48-sample cohort on a targeted SNP panel (480 unlinked

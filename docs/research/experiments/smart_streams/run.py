@@ -310,7 +310,7 @@ def run_block(exp, rep, conds, master, args):
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--exp", default="all", help="all or a comma list of 1,2,3,4,5,6,8")
+    p.add_argument("--exp", default="all", help="all or a comma list of 1 to 8")
     p.add_argument("--condition", "--conditions", default="all",
                    help="all or a comma list of " + ", ".join(CONDITIONS))
     p.add_argument("--reps", type=int, default=1)

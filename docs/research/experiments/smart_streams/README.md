@@ -153,6 +153,34 @@ Scripted results (`verify_e8.py`, reads only program output): reference 0.997 (s
 and 0.997 (seed 777, 369 s), lazy 0.199 (184 s); 12 streams per agent, 48 in total, 46 MB, programs 1.2 cores on average
 (machine 25 %, short peaks 74 % include the solver's own analysis), largest lag 0.05 s (lazy 0.10 s).
 
+**E7 zeta_campaign** (w1..w4, 48 windows, 12 per agent, 5 to 8 minutes, about 1 MB each). Held-out task whose author
+is an LLM agent that read E1 to E5, the runner, `ss_*.py`, `verify_solvers.py`, `verify_e45.py`, the tests and
+the task and scoring parts of this README, but no product code, product guide, article notes or results, and no E6
+source. Incidental exposure: the E6 entries of this README (task and scoring), some tool paragraphs of `ss_prompts.py`
+(the sub-agent paragraph) and `exp4_crash.py` (`TOOLS_EXTRA`), and the jobs-arm client classes in `verify_solvers.py`
+and `verify_e45.py`. No LLM has run it yet.
+
+*Domain.* The Riemann hypothesis says that all non-trivial zeros of zeta lie on the line 1/2 + it. Up to a finite height it
+can be verified: Hardy's Z(t) is real with |Z(t)| = |zeta(1/2 + it)|, so every sign change is a zero on the line,
+and the Riemann-Siegel formula evaluates Z with about sqrt(t / 2pi) terms. Gram points g_n (theta(g_n) = n pi)
+predict where signs alternate. Gram's law, (-1)^n Z(g_n) > 0, fails at 10 to 15% of them; between two good points
+(a Gram block) Rosser's rule gives the exact number of zeros. The rule is known to hold below n = 13 999 525, and all
+windows lie below. It is the completeness test here (for larger n one needs Turing's bound on the integral of S).
+A coarse grid misses close pairs of zeros; the most famous is Lehmer's, at 7005.0629 and 7005.1006. The
+spacings follow GUE statistics (Montgomery, Odlyzko).
+
+*Task.* Eight bands (g_n with n from 5e3 to 1.13e7, t up to 5.7e6), each cut into six windows that belong to different
+agents. The programs compute everything they print. Blocks short of zeros must be refined
+(control file, 75 s), evaluators that go wrong must be stopped and repaired (`--safe --from N`, 120 s). Five kinds of trouble exist;
+they are real changes of the arithmetic, visible only through the values. Afterwards: counts, the trouble and
+its onset per window; closest pairs, spacing variance, Gram blocks and S(g_n) per joined band; campaign statistics.
+
+*Truth.* `zeta_ref.py` shares no code with the programs (remainder up to C3 by Cauchy's integral, adaptive grid, every block certified
+by Rosser's rule). Tests compare it with Euler-Maclaurin summation (1e-8), the first zeros, N(100) = 29,
+N(1000) = 649, N(10000) = 10142, the 10000th zero, the bad Gram points below 400 and Lehmer's pair. Truth takes about 50 s of CPU.
+
+Scripted results for E7 at full size: not yet measured (`verify_e7.py`, policies wise and lazy). The post-run analysis of `verify_e7.py` alone, on unpaced scans of 300 intervals, gets full marks in counts, bands and campaign.
+
 **Arm C `native_sub`.** B's tools, prompt and limits plus Claude Code's Agent/Task tool. Its
 paragraph is B's plus a neutral offer (foreground or background, at most four at a time). Rules: the same
 Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`), depth 1 and 4 in parallel
@@ -185,6 +213,10 @@ is not matched against leak patterns (it may repeat the rules).
 * E8: samples 0.50 (order .30, T_c .35, honest error bar .10, 1/nu or latent heat .25 each; without a transition order .6, null
   T_c .4), faulty nodes 0.25 (F1, kind counts half), exchange answers 0.10 (right minus wrong, of 96), resets 0.15 (right
   minus wrong, of 48).
+
+* E7: refinement F1 0.25 (a short block asked for in time .7, with a grid fine enough .3), repairs 0.25 (credit
+  minus unneeded interventions, over the jobs with trouble), diagnosis F1 0.15 (kind .6, onset .4), counts per window
+  0.15, bands 0.15, campaign 0.05. Reactions are thus half of the score; a window that was never launched earns nothing.
 
 Largest single item: E4 .0075, E5 about .005 (v2: up to .058).
 Missing shards or jobs in `final.json` fall back to the per-shard/job file.
@@ -410,11 +442,15 @@ file name does not tell what they do. Differences of a few percent between arms 
     (cd src_erl && rebar3 compile)
     $PY -m pytest tests/test_experiment_smart_streams.py tests/test_experiment_smart_streams_e45.py \
         tests/test_experiment_smart_streams_e6.py tests/test_experiment_smart_streams_e8.py
+
+        tests/test_experiment_smart_streams_e6.py tests/test_experiment_smart_streams_e7.py
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style plain     # full size, no LLM
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style jobs      # real server and client
     $PY $H/verify_e45.py SCRATCH --exp 4,5 --style plain|jobs [--policy naive]
     $PY $H/verify_e6.py SCRATCH [--policy wise|lazy|errors]
     $PY $H/verify_e8.py SCRATCH [--policy wise|lazy]
+
+    $PY $H/verify_e7.py SCRATCH [--policy wise|lazy]
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --dry-run
     $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --budget-usd 5 \
         [--exp 4,5] [--conditions smartstreams,native,native_sub]

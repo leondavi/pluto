@@ -464,7 +464,7 @@ file name does not tell what they do. Differences of a few percent between arms 
 
 * **Blind tasks only.** E1-E6 are excluded: E1-E3 shaped v4, E6 shaped `follow`, and E4/E5 were written
   alongside the product. The study uses E7 (mathematics), E8 (physics), E9 (computational biology),
-  E10 (security fuzzing) and E11 (numerical weather prediction), each written by an author who saw neither the
+  E10 (graph theory) and E11 (numerical weather prediction), each written by an author who saw neither the
   product code nor the plan, on a commit older than the product under test, and not opened by the implementer.
   E9-E11 are written after the product was frozen; E7 and E8 had two pilot pairs each, not pooled.
 * Code: the commit recorded in `v5main.commit`; no product or harness change during the run. A harness

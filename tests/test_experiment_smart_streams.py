@@ -442,7 +442,7 @@ EVENTS = [
 ]
 RESULT = {"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.5,
           "permission_denials": [{"tool_name": "Write"}],
-          "modelUsage": {"s": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 30,
+          "modelUsage": {"claude-sonnet-x": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 30,
                                "cacheCreationInputTokens": 40}}}
 
 
@@ -455,6 +455,8 @@ def test_metrics_parsing():
     assert m["tool_result_bytes_by_tool"]["mcp__smartstreams__job_grep"] == 3
     assert m["tool_errors"] == 1 and sum(m["tool_calls"].values()) == 3
     assert ss_metrics.failures(m, {}, "smartstreams") == ["permission_denied"]
+    other = dict(m, models=["claude-sonnet-x", "claude-haiku-y"])
+    assert "wrong_model" in ss_metrics.failures(other, {}, "native")
     killed = ss_metrics.parse_agent(EVENTS)
     assert killed["cost_usd"] is None and killed["tokens"]["input_tokens"] == 9
     assert "timeout" in ss_metrics.failures(killed, {"timed_out": True}, "native")

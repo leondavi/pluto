@@ -196,6 +196,8 @@ class Scan:
                 if j == 0:
                     bad += (v > 0) == bool(n % 2)
                     self.printed = n
+                    if self.led:                # a SIGTERM writes the ledger as it is
+                        self.led.rec["pos"] = n
                     self.closed_at[n] = time.time()
                     yield frac, f"G n={n} t={t:.8f} Z={v:+.8f}"
                 else:

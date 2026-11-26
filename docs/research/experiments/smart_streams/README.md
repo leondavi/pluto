@@ -462,19 +462,23 @@ file name does not tell what they do. Differences of a few percent between arms 
 
 ## Confirmatory run, protocol 5 (fixed 26 Nov 2026, before its first run)
 
+* **Blind tasks only.** E1-E6 are excluded: E1-E3 shaped v4, E6 shaped `follow`, and E4/E5 were written
+  alongside the product. The study uses E7 (mathematics), E8 (physics), E9 (computational biology),
+  E10 (security fuzzing) and E11 (numerical weather prediction), each written by an author who saw neither the
+  product code nor the plan, on a commit older than the product under test, and not opened by the implementer.
+  E9-E11 are written after the product was frozen; E7 and E8 had two pilot pairs each, not pooled.
 * Code: the commit recorded in `v5main.commit`; no product or harness change during the run. A harness
   fault (a run that cannot be graded, or an agent ended from outside its arm) stops the run; it is fixed,
   disclosed and the affected pairs are repeated, never dropped silently.
+* Model: every agent is Claude Sonnet (`--model sonnet`); a run in which any other model appears is a
+  protocol failure (`wrong_model`).
 * Arms: native and smartstreams (pss, no MCP tools). native_sub is not run: no agent used a sub-agent in
   the pilots, so the arm is reported as "not used", not as evidence about sub-agents.
-* Tasks E1 to E8, 8 pairs each (one seed per pair, order random), 128 runs, budget 5 USD per agent. Pilot runs are
-  not pooled with these.
-* **Primary decision, blind tasks only (E7 and E8, 16 pairs):** SmartStreams is better if the mean paired cost
-  difference (A - B) / B is below 0 with a one-sided 95% bootstrap bound below 0, AND the mean paired score difference
-  A - B is above -0.05 with its one-sided 95% bound above -0.05. Worse if the cost bound is above 0 or the
-  score bound below -0.05. Otherwise inconclusive.
-* Secondary, per task and pooled over E1-E8: the same two quantities with 95% intervals, wall time, turns,
-  tool-result bytes, and feature adoption. E1-E6 are labelled tuned (E1-E3 shaped v4, E6 shaped follow).
-* H1 to H7 above are reported as they stand; pairs per task are 8, not 5.
-* Planning figures from the pilots: paired cost sd about 15%, score sd about 0.07; 8 pairs detect about 15% / 0.07
-  per task, 16 pairs about 10.5% / 0.05, 64 pairs about 5% / 0.025 (80% power, two-sided 5%).
+* 8 pairs per task (one seed per pair, order random), 80 runs, budget 5 USD per agent.
+* **Primary decision, pooled over the 40 pairs:** SmartStreams is better if the mean paired cost difference
+  (A - B) / B has a one-sided 95% bootstrap bound below 0, AND the mean paired score difference A - B has its
+  one-sided 95% bound above -0.05 (resampling pairs within tasks). Worse if the cost bound is above 0 or the score bound
+  is below -0.05. Otherwise inconclusive.
+* Secondary, per task: the same two quantities with 95% intervals, wall time, turns, tool-result bytes, feature adoption.
+* Planning figures from the pilots: paired cost sd about 15%, score sd about 0.07. 8 pairs detect about
+  15% / 0.07 per task; 40 pairs about 6.6% / 0.031 pooled (80% power, two-sided 5%).

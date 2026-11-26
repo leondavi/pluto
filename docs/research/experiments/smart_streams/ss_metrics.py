@@ -34,6 +34,9 @@ PRICE = {"input_tokens": 2.0, "output_tokens": 10.0, "cache_read_input_tokens": 
 OUT_FIT = (0.82, 0.27, 174.0)
 
 
+#: Every agent and sub-agent must be this model family; anything else fails the run.
+REQUIRED_MODEL = "sonnet"
+
 def price(tokens):
     return sum(PRICE[k] * tokens[k] for k in KEYS) / 1e6
 
@@ -156,6 +159,7 @@ def parse_agent(events):
     m["permission_denials"] = denied
     m["turns"] = len(seen_msg) or (result or {}).get("num_turns") or 0
     mu = (result or {}).get("modelUsage") or {}
+    m["models"] = sorted({*mu, *m["sub"]["models"], *([m["model"]] if m["model"] else [])})
     src = list(mu.values()) if mu else list(seen_msg.values())
     for u in src:
         for k in KEYS:
@@ -194,6 +198,8 @@ def failures(m, status, condition):
         return ["crash_injected"]
     if not m["has_result"] and not status.get("timed_out"):
         out.append("no_result_event")
+    if any(REQUIRED_MODEL not in x for x in m.get("models", ())):
+        out.append("wrong_model")
     if m["subtype"] and m["subtype"] != "success":
         out.append(m["subtype"])
     elif m["has_result"] and m["is_error"]:

@@ -29,6 +29,7 @@ REPO = os.path.abspath(os.path.join(HERE, *[".."] * 4))
 ADAPTER = os.path.join(REPO, "src_py", "agent_smart_streams", "smart_streams.py")
 PROTOCOL_VERSION = 3
 MIN_PEAK = 8
+PREREGISTERED = ("1", "2", "3", "4", "5")                 # "all"; E11 runs only on request
 CONDITIONS = ("smartstreams", "native", "native_sub")      # the arms
 VARIANTS = ("ss_mcp", "ss_cli")                            # only to choose the SS design
 SS_MODES = ss_prompts.SS_MODES
@@ -307,7 +308,7 @@ def run_block(exp, rep, conds, master, args):
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--exp", default="all", help="all or a comma list of 1,2,3,4,5")
+    p.add_argument("--exp", default="all", help="all (= 1 to 5) or a comma list of 1,2,3,4,5,11")
     p.add_argument("--condition", "--conditions", default="all",
                    help="all or a comma list of " + ", ".join(CONDITIONS))
     p.add_argument("--reps", type=int, default=1)
@@ -329,9 +330,9 @@ def parse_args(argv=None):
     p.add_argument("--dry-run", action="store_true", help="print commands and prompts only")
     a = p.parse_args(argv)
     a.out = os.path.realpath(a.out)
-    a.exps = list(ss_prompts.EXPS) if a.exp == "all" else a.exp.split(",")
+    a.exps = list(PREREGISTERED) if a.exp == "all" else a.exp.split(",")
     if set(a.exps) - set(ss_prompts.EXPS):
-        p.error("--exp takes 1 to 5")
+        p.error("--exp takes 1 to 5 and 11")
     a.conditions = list(CONDITIONS) if a.condition == "all" else a.condition.split(",")
     if set(a.conditions) - set(CONDITIONS + VARIANTS) or len(set(a.conditions)) < len(a.conditions):
         p.error("--condition takes " + ", ".join(CONDITIONS))

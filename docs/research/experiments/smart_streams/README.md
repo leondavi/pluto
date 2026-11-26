@@ -584,3 +584,64 @@ the 10 cores), largest pacing lag 0.23 s, output about 61 MB per run (1.2 MB per
 tests of this directory. Not read: product code, product docs, other branches or worktrees,
 article notes, results, and anything of experiments 6-8. The task was designed to be
 tool-neutral and not shaped for or against any tool.
+
+## E11 surge_ensemble (added after v3, not pre-registered)
+
+Run only on request (`--exp 11`; `--exp all` stays E1 to E5). Files: `exp11_surge.py` (entry),
+`exp11_plan.py` (plan, agent docs), `exp11_score.py` (parsing, products, truth, grader),
+`wl_swm.py` (the model), `verify_e11.py` (scripted solvers), `tests/test_experiment_smart_streams_e11.py`.
+
+**Domain.** Ensemble prediction of a storm surge. Each member integrates the 1-D nonlinear
+shallow-water equations on a closed periodic channel (100 cells of 10 km, about 20 m deep, bottom
+ridges) driven by a moving storm's wind stress: Arakawa C-grid, flux-form continuity (mass is
+conserved to rounding), vector-invariant momentum, leapfrog with a Robert-Asselin filter, linear
+drag and lagged viscosity. Members perturb the initial state, mean depth, drag and the storm's
+strength, speed (near-resonant with the shallow-water wave speed, so the surge grows), track and
+timing; a nature run is the verifying truth of the hindcast. The step's stability number is the
+exact von Neumann bound of leapfrog C-grid gravity waves Doppler-shifted by the local current; it
+grows with the surge, so a member whose configured step is too long goes unstable in mid-forecast
+and its fields turn to nan within a few model hours, while the program carries on. Some members
+use a positivity floor that silently adds water when set-down deepens (a classic wetting-and-drying
+fault); they are only visible as mass drift. All of it is genuine stdlib floating point.
+
+**Task** (w1..w4, 48 members, 12 per agent, plus the nature run for w1; 150 s per run whatever
+the step; 600 s sessions). Per agent: three members go unstable at 27 to 40 h of the 72 h
+forecast (57 to 85 s into the run); two are non-conservative (relative drift 1e-7 to 1e-3, onset
+when set-down is deepest); one stays just below the stability limit (peak 0.95 to 0.995, a
+trap for a loose threshold); six are clean. A run must be stopped within 40 s of its first unstable
+step and the member rerun with `--substeps 2`; every valid run must finish within 400 s of the
+session start (the issue time). Products over the 40 valid members: rmse and spread at six lead
+times, a rank histogram over 16 stations x 72 hourly times, an exceedance probability, a median
+peak time, the member closest to nature, and a mean flooded-cell count from the field dumps.
+Output is 0.3 to 0.7 MB per run, 25 to 27 MB in total; all programs together used about 7 % of the machine.
+Results are a pure function of (member, substeps), so they do not depend on scheduling.
+
+**Scoring.** members .25 (status; onset step of unstable members within .01 h; drift of
+non-conservative ones within 5 %), operations .20 (per member a valid run by the issue time; for
+unstable members half for stopping the configured run within 40 s of its onset and half for the
+rerun; -.02 per unneeded launch), skill .20 (12 values, full within 1 %, half within 5 %), rank
+histogram .10 (1 - L1 / cases), questions .25 (four, partial credit). Truth integrates every member
+again (`wl_swm.trace`) and reads the printed values, as an agent does; the plan's own
+integrations only choose the configuration and are cross-checked in the tests.
+
+**Scripted results** (`verify_e11.py`, plain processes, full size, M4 shared with other work):
+
+| Solver | Score | Wall s | Peak per agent | Total peak | CPU share mean / max | Max lag | MB |
+|---|---|---|---|---|---|---|---|
+| ref, seed 1 | 1.000 | 221 | 13/12/12/12 | 49 | .074 / .18 | .02 s | 25.1 |
+| ref, seed 2 | 1.000 | 238 | 13/12/12/12 | 49 | .075 / .19 | .06 s | 25.8 |
+| lazy, seed 1 | .674 | 309 | 13/12/12/12 | 49 | .070 / .36 | .01 s | 27.1 |
+
+Lazy waits for all runs and reruns those whose output went nan: no stop within 40 s, onsets read
+off the first nan, non-conservative members kept (members .76, operations .88, skill .33, rank .55,
+questions .75). The plan (about 15 s CPU, cached per process) and truth (about 7 s) were checked on
+seeds 1 to 8: every member behaves as planned and the ensemble has 40 valid members.
+
+**What the author read.** Written blind, on a commit older than the product under test: E1 to E5
+sources (`exp3_relay.py`, `exp5_probe.py` and the parts of `exp1_shards.py` that grade reactions
+in full, the others in part), `wl_common.py`, `wl_soak.py`, `ss_build.py`, `ss_prompts.py`,
+`run.py`, `ss_procs.py` (process tracking), `verify_solvers.py`, the head of `verify_e45.py`,
+the offline tests of E1 to E5, and this README's task, scoring and commands sections. Those files
+contain the tool paragraphs of the prompt and the E1 to E3 feature table, which were therefore
+seen; no product code, guide, other branch, result or later experiment was read. The task was not
+designed for or against any tool.

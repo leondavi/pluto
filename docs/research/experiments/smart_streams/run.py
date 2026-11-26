@@ -30,6 +30,7 @@ REPO = os.path.abspath(os.path.join(HERE, *[".."] * 4))
 ADAPTER = os.path.join(REPO, "src_py", "agent_smart_streams", "smart_streams.py")
 PROTOCOL_VERSION = 5
 MIN_PEAK = 8
+PREREGISTERED = ("1", "2", "3", "4", "5")                 # "all"; E11 runs only on request
 CONDITIONS = ("smartstreams", "native", "native_sub")      # the arms
 VARIANTS = ("ss_mcp", "ss_both")                          # only to choose the SS design
 SS_MODES = ss_prompts.SS_MODES
@@ -313,6 +314,7 @@ def parse_args(argv=None):
     p.add_argument("--exp", default="all", help="all or a comma list of 1 to 8")
     p.add_argument("--exp", default="all", help="all (= 1-5) or a comma list of 1,2,3,4,5,9")
     p.add_argument("--exp", default="all", help="all or a comma list of 1,2,3,4,5,10")
+    p.add_argument("--exp", default="all", help="all (= 1 to 5) or a comma list of 1,2,3,4,5,11")
     p.add_argument("--condition", "--conditions", default="all",
                    help="all or a comma list of " + ", ".join(CONDITIONS))
     p.add_argument("--reps", type=int, default=1)
@@ -341,6 +343,9 @@ def parse_args(argv=None):
         p.error("--exp takes " + ", ".join(ss_prompts.EXPS))
         p.error("--exp takes 1 to 5 or 9")
         p.error("--exp takes 1 to 5 or 10")
+    a.exps = list(PREREGISTERED) if a.exp == "all" else a.exp.split(",")
+    if set(a.exps) - set(ss_prompts.EXPS):
+        p.error("--exp takes 1 to 5 and 11")
     a.conditions = list(CONDITIONS) if a.condition == "all" else a.condition.split(",")
     if set(a.conditions) - set(CONDITIONS + VARIANTS) or len(set(a.conditions)) < len(a.conditions):
         p.error("--condition takes " + ", ".join(CONDITIONS))

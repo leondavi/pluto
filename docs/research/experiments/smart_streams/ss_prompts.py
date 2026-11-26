@@ -20,6 +20,10 @@ import exp10_coloring
 
 EXPS = {"1": exp1_shards, "2": exp2_sssp, "3": exp3_relay, "4": exp4_crash, "5": exp5_probe,
         "10": exp10_coloring}
+import exp11_surge
+
+EXPS = {"1": exp1_shards, "2": exp2_sssp, "3": exp3_relay, "4": exp4_crash, "5": exp5_probe,
+        "11": exp11_surge}
 
 CORE = """You are agent {me} in a team of four equal agents: {team}. {phase_note}Every agent works in the same directory: {ws}
 Agents coordinate only through files there: use board/ for notes (one file per author, so nobody overwrites another) and answers/ for results. Write a JSON answer to a temporary name and rename it when complete.

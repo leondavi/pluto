@@ -393,7 +393,7 @@ def test_all_arms_share_everything_but_the_tools_paragraph(tmp_path):
         p = ss_prompts.agent_prompt(exp, "native", "w1", "/w", ids, 900)
         assert all(c in p for c in cs)
     args = ss_run.parse_args(["--out", str(tmp_path)])
-    assert args.conditions == list(ARMS) and len(args.exps) == len(ss_prompts.EXPS)
+    assert args.conditions == list(ARMS) and args.exps == ss_prompts.BLIND_EXPS
     cmd = {c: ss_run.claude_command(c, "/cfg", args) for c in ARMS}
     at = {c: dict(zip(cmd[c], cmd[c][1:])) for c in ARMS}
     assert "Agent" in at["native_sub"]["--allowedTools"].split(",")
@@ -429,7 +429,7 @@ def test_condition_list_and_order(tmp_path):
 
 # ── metrics: sub-agents, estimates, classes ──────────────────────────────────
 
-def asst(mid, blocks, parent=None, model="m", **usage):
+def asst(mid, blocks, parent=None, model="sonnet-m", **usage):
     return {"type": "assistant", "parent_tool_use_id": parent,
             "message": {"id": mid, "model": model, "usage": usage, "content": blocks}}
 
@@ -443,7 +443,7 @@ def res(tid, content, parent=None, **kw):
         dict(type="tool_result", tool_use_id=tid, content=content, **kw)]}}
 
 
-INIT = {"type": "system", "subtype": "init", "model": "m", "mcp_servers": []}
+INIT = {"type": "system", "subtype": "init", "model": "sonnet-m", "mcp_servers": []}
 SUB = [INIT,
        asst("a1", [use("T", "Agent", prompt="do not read .runs/ or bin/img")],
             cache_read_input_tokens=100),
@@ -455,7 +455,7 @@ SUB = [INIT,
 
 def result(cache_read, **kw):
     return dict({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 1.0,
-                 "modelUsage": {"m": {"inputTokens": 1, "outputTokens": 500,
+                 "modelUsage": {"sonnet-m": {"inputTokens": 1, "outputTokens": 500,
                                       "cacheReadInputTokens": cache_read,
                                       "cacheCreationInputTokens": 0}}}, **kw)
 
@@ -464,7 +464,7 @@ def test_subagents_are_counted():
     m = ss_metrics.parse_agent(SUB + [result(200, subagent_stats={"spawned": 1, "max_depth": 1})])
     assert m["turns"] == 3 and m["tool_calls"] == {"Agent": 1, "Bash": 1}
     assert m["tool_result_bytes"] == 11
-    assert m["sub"] == {"turns": 2, "tool_calls": 1, "tool_result_bytes": 5, "models": ["m"],
+    assert m["sub"] == {"turns": 2, "tool_calls": 1, "tool_result_bytes": 5, "models": ["sonnet-m"],
                         "agents": 1, "cache_read_input_tokens": 100}
     assert m["usage_missing"] == 0 and m["cost_est_usd"] == 1.0
     assert ss_metrics.failures(m, {}, "native_sub") == []
@@ -559,10 +559,10 @@ import json, os, subprocess, sys, time
 prompt = sys.stdin.read()
 me = prompt.split("You are agent ")[1].split()[0]
 def emit(**e): print(json.dumps(e), flush=True)
-emit(type="system", subtype="init", model="fake", mcp_servers=[])
-emit(type="assistant", message=dict(id="m1", model="fake", usage=dict(cache_read_input_tokens=10**6),
+emit(type="system", subtype="init", model="sonnet-fake", mcp_servers=[])
+emit(type="assistant", message=dict(id="m1", model="sonnet-fake", usage=dict(cache_read_input_tokens=10**6),
      content=[dict(type="tool_use", id="T", name="Agent", input=dict(prompt="help"))]))
-emit(type="assistant", parent_tool_use_id="T", message=dict(id="m2", model="fake",
+emit(type="assistant", parent_tool_use_id="T", message=dict(id="m2", model="sonnet-fake",
      usage=dict(cache_read_input_tokens=5), content=[dict(type="tool_use", id="t", name="Bash",
      input=dict(command="ls board"))]))
 emit(type="user", parent_tool_use_id="T", message=dict(content=[dict(type="tool_result",
@@ -580,8 +580,8 @@ else:
                    start_new_session=True, **kw)                            # survives
     time.sleep(4.5)
 emit(type="result", subtype="success", is_error=False, total_cost_usd=0.1,
-     modelUsage=dict(fake=dict(inputTokens=0, outputTokens=10, cacheReadInputTokens=1000005,
-                               cacheCreationInputTokens=0)),
+     modelUsage=dict([("sonnet-fake", dict(inputTokens=0, outputTokens=10, cacheReadInputTokens=1000005,
+                               cacheCreationInputTokens=0))]),
      subagent_stats=dict(spawned=1, max_depth=1))
 """
 

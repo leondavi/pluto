@@ -190,7 +190,7 @@ def test_registration_and_prompt():
     p = ss_prompts.agent_prompt("9", "native", "w2", "/w", {n: n for n in "w1 w2 w3 w4".split()}, 900)
     assert "docs/SEQUENCING.md" in p and "smartstreams" not in p.lower()
     assert ss_run.parse_args(["--out", "/tmp/x", "--exp", "9"]).exps == ["9"]
-    assert ss_run.parse_args(["--out", "/tmp/x"]).exps == ["1", "2", "3", "4", "5"]
+    assert ss_run.parse_args(["--out", "/tmp/x"]).exps == ss_prompts.BLIND_EXPS
 
 
 def test_files_stay_small():

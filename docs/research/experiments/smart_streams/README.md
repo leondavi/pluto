@@ -541,6 +541,9 @@ search). The task does not favour any tool: everything is files, processes and l
   (A - B) / B has a one-sided 95% bootstrap bound below 0, AND the mean paired score difference A - B has its
   one-sided 95% bound above -0.05 (resampling pairs within tasks). Worse if the cost bound is above 0 or the score bound
   is below -0.05. Otherwise inconclusive.
+* Load: every pair records peak machine CPU share and the largest pacing lag. A sensitivity analysis repeats the
+  primary decision without pairs whose lag exceeds 0.25 s in either run; if the two analyses disagree, both are
+  reported and the conclusion is "load-dependent".
 * Secondary, per task: the same two quantities with 95% intervals, wall time, turns, tool-result bytes, feature adoption.
 * Planning figures from the pilots: paired cost sd about 15%, score sd about 0.07. 8 pairs detect about
   15% / 0.07 per task; 40 pairs about 6.6% / 0.031 pooled (80% power, two-sided 5%).

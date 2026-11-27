@@ -95,11 +95,9 @@ NAMED: set[str] = set()
 # ── Finding ───────────────────────────────────────────────────────────────────
 
 def _listed(jobs: PlutoJobsClient, wanted: str) -> list[dict]:
-    r = jobs.call("list", scope="all", tags=[wanted], limit=GROUP_MAX)
-    if r["total"] > len(r["jobs"]):
-        raise PlutoError(f"{r['total']} jobs are called {wanted.removeprefix(NAME_TAG)}; "
-                         "use group handles or ids")
-    return r["jobs"]
+    # The server lists the newest first: a long history of a name keeps the
+    # newest GROUP_MAX, which are the ones a name can mean.
+    return jobs.call("list", scope="all", tags=[wanted], limit=GROUP_MAX)["jobs"]
 
 
 def _here(card: dict) -> bool:
@@ -134,7 +132,9 @@ def _batch(jobs: PlutoJobsClient, group: str, strict: bool, own: bool = False) -
                              "name them by id, see pst ps -v)")
         theirs = not mine and not strict and cards
         near = mine or [c for c in cards if _here(c)]
-        cards = _current(near or ([] if strict else cards))
+        # Others' jobs only of this directory: a stranger's job of the same
+        # name elsewhere is never meant.
+        cards = _current(near)
         if theirs and cards:
             print(f"pst: none of {group} is yours; these are "
                   f"{', '.join(sorted({c['owner'] for c in cards}))}'s", file=sys.stderr)

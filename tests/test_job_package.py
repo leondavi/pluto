@@ -154,3 +154,21 @@ def test_watch_rules_are_rewritten_as_inert(job, tmp_path):
         at = tmp_path / f"bad{n}"
         at.mkdir()
         assert "watch" in call("import", rewrite(job, tmp_path / f"b{n}", add(bad)), at)["error"]
+
+
+def test_parameters_and_several_templates_survive_an_import(job, tmp_path):
+    """Names and {param} placeholders need params; a rule may read lines with
+    several templates (extract as a list)."""
+    def change(f):
+        edit(f, "package.json", b'"schema"', b'"params": {"k": "3"}, "slot": "gpu", "schema"')
+        rule = {"id": "R1", "by": "a", "at": 1,
+                "spec": {"name": "x", "extract": ["a {n:int}", "b {m:int}"]}}
+        f["watch.json"] = json.dumps({"schema": 1, "inert": False, "rules": [rule],
+                                      "states": {}, "hits": [], "final": False}).encode()
+    dest = tmp_path / "in"
+    dest.mkdir()
+    assert "id" in call("import", rewrite(job, tmp_path / "p.pjob", change), dest)
+    pkg = json.loads((dest / "package.json").read_text())
+    assert pkg["params"] == {"k": "3"} and pkg["slot"] == "gpu"
+    rules = json.loads((dest / "watch.json").read_text())["rules"]
+    assert rules[0]["spec"]["extract"] == ["a {n:int}", "b {m:int}"]

@@ -185,3 +185,13 @@ def test_news_tells_a_cancel_nobody_asked_for_and_skips_only_what_was_shown(
     b = Board([note(3, "job_finished", "3", "failed"), note(4, "job_finished", "4", "failed")])
     meanwhile.tell(b, shown={note(3, "", "")["job_id"]})
     assert capsys.readouterr().err == "pst: meanwhile ended: z/4 failed\n"
+
+
+def test_each_output_paths_stay_in_their_directory():
+    from agent_smart_tasks import each
+    assert each.out_path("out/{k}.json", {"k": "3"}) == "out/3.json"
+    for bad in ("../x", "a/b", ".hidden", ""):
+        with pytest.raises(PlutoError, match="cannot be part of an -o path"):
+            each.out_path("out/{k}.json", {"k": bad})
+    ok, why = each.run_one("printf 1", "out/{k}.json", {"job_id": "J-20260101-0123456789abcdef", "state": "succeeded", "params": {"k": "../x"}})
+    assert not ok and "cannot be part" in why

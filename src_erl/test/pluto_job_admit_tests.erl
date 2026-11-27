@@ -92,3 +92,22 @@ a_job_held_by_its_own_limit_keeps_no_place_test() ->
     G = #{<<"slot">> => <<"cpu">>, <<"slot_max">> => 4},
     Live = [job(1, a, ?SCHED_SPAWNED), job(2, a, ?SCHED_QUEUED, G), job(3, b, ?SCHED_QUEUED, G)],
     ?assertEqual([3], ids(pluto_job_admit:select(Live, limits(9, 1)))).
+
+a_job_waiting_for_its_lock_leaves_its_slot_free_test() ->
+    %% b's older job wants a busy lock and the gpu slot; the slot has room, so
+    %% a's younger job in the same slot must not wait behind it (that could
+    %% deadlock with whoever holds the lock).
+    Live = [job(1, b, ?SCHED_QUEUED, #{<<"slot">> => <<"gpu">>, <<"slot_max">> => 2,
+                                         <<"lock">> => <<"file:/data">>}),
+            job(2, a, ?SCHED_QUEUED, #{<<"slot">> => <<"gpu">>, <<"slot_max">> => 2})],
+    L = (limits(9, 9))#{lock := fun(#{<<"lock">> := _}) -> busy; (P) -> {ok, P} end},
+    ?assertEqual([2], ids(pluto_job_admit:select(Live, L))).
+
+a_job_held_by_a_full_slot_leaves_its_lock_free_test() ->
+    %% b's older job waits for a full slot; a's younger job with the same lock
+    %% but no slot may take the lock.
+    G = #{<<"slot">> => <<"cpu">>, <<"slot_max">> => 1},
+    Live = [job(1, c, ?SCHED_SPAWNED, G),
+            job(2, b, ?SCHED_QUEUED, G#{<<"lock">> => <<"db">>}),
+            job(3, a, ?SCHED_QUEUED, #{<<"lock">> => <<"db">>})],
+    ?assertEqual([3], ids(pluto_job_admit:select(Live, limits(9, 9)))).

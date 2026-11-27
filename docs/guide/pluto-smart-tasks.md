@@ -57,8 +57,9 @@ pst give other-agent soak; pst brief soak        # handover
   `pst follow soak 'python3 -u judge.py {k}'` reads everything from the beginning on
   stdin, which its runner feeds from the followed job's log and closes when that job
   has ended (no process in between). Following again replaces it, again from the
-  beginning, and the followed jobs never notice. Followers do not count against the
-  limits on running jobs, so a busy server never leaves a job unwatched. Prefer it to
+  beginning, and the followed jobs never notice. Followers are counted apart from other
+  jobs, under limits of their own of the same size, so jobs never crowd out the
+  programs that watch them. Prefer it to
   `prog | filter`, where a bug in the filter cannot be fixed without starting the
   program again.
 - **`report`** makes a record per job without a program:

@@ -126,6 +126,12 @@ def is_hash(v):
     return isinstance(v, str) and bool(HEX64.match(v))
 
 
+def is_params(v):
+    return (isinstance(v, dict) and len(v) <= 64
+            and all(isinstance(k, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,29}", k)
+                    and is_str(x) for k, x in v.items()))
+
+
 PACKAGE_FIELDS = {
     "schema": lambda v: v == d.SCHEMA and type(v) is int, "id": is_job,
     "owner": is_agent, "opener": is_agent, "user": is_agent,
@@ -135,7 +141,10 @@ PACKAGE_FIELDS = {
     "timeout_s": is_num, "max_output_bytes": is_int, "name": is_str,
     "tags": is_strs, "task_id": is_str, "framework": is_str,
     "session_id": is_str, "parent": is_job, "rerun_of": is_job,
-    "env_keys": is_strs,
+    "env_keys": is_strs, "params": is_params, "slot": is_str, "slot_max": is_int,
+    "lock": is_str, "lock_mode": lambda v: v in ("read", "write"),
+    "after_jobs": lambda v: isinstance(v, list) and all(is_job(x) for x in v),
+    "after_ok": lambda v: isinstance(v, bool), "follows": is_job,
 }
 PACKAGE_NEED = ("schema", "id", "owner", "opener", "user", "opened_at", "origin")
 STATE_FIELDS = {
@@ -160,8 +169,8 @@ def is_secs(v):
 
 
 # Watch rules are only ever shown after an import, never evaluated.
-WATCH_SPEC = dict.fromkeys(("name", "match", "extract", "stalled", "then",
-                            "file", "text"), is_str)
+WATCH_SPEC = dict.fromkeys(("name", "match", "stalled", "then", "file", "text"), is_str)
+WATCH_SPEC["extract"] = lambda v: is_str(v) or is_strs(v)     # one template, or several in order
 WATCH_SPEC.update(dict.fromkeys(("where", "by"), is_strs))
 WATCH_SPEC.update(dict.fromkeys(("window_s", "idle_s", "absent_s", "cooldown_s"), is_secs))
 WATCH_SPEC.update(dict.fromkeys(("count", "max_hits", "stalled_n"), is_int))

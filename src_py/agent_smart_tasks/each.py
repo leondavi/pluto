@@ -41,6 +41,23 @@ def fill(template: str, known: dict[str, str], quote=str) -> str:
     return _HOLE.sub(lambda m: quote(known[m[1]]) if m[1] in known else m[0], template)
 
 
+#: A value filled into the -o path: one plain file-name part, as rules require.
+_SAFE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._\-]{0,99}\Z")
+
+
+def _part(value: str) -> str:
+    if not _SAFE.match(value):
+        raise PlutoError(f"{value!r} cannot be part of an -o path "
+                         "(letters, digits, . _ - only)")
+    return value
+
+
+def out_path(out: str, known: dict[str, str]) -> str:
+    """-o with the placeholders filled; a value that could leave the
+    directory (a slash, '..', a leading dot) is refused."""
+    return fill(out, known, _part)
+
+
 def run_one(command: str, out: str | None, card: dict) -> tuple[bool, str]:
     """(success, text): what the program printed, or why it failed."""
     known = facts(card)
@@ -57,7 +74,10 @@ def run_one(command: str, out: str | None, card: dict) -> tuple[bool, str]:
         return True, r.stdout[:4 * EACH_TEXT].decode("utf-8", "replace").strip()
     if len(r.stdout) > EACH_BYTES:
         return False, "printed too much for a file"
-    path = fill(out, known)
+    try:
+        path = out_path(out, known)
+    except PlutoError as exc:
+        return False, str(exc)
     if path.endswith(".json"):
         try:
             json.loads(r.stdout)
@@ -85,7 +105,7 @@ def check_outputs(out: str | None, cards: list[dict]) -> None:
         return
     paths: dict[str, str] = {}
     for c in cards:
-        path, label = fill(out, facts(c)), names.label(c)
+        path, label = out_path(out, facts(c)), names.label(c)
         if path in paths:
             raise PlutoError(f"{paths[path]} and {label} would both write {path}; "
                              "put {key} or a parameter into -o")

@@ -6,7 +6,8 @@ once that job has ended; no process sits in between. It may be wrong at
 first: following again ends it and starts the corrected one from byte 0, and
 the followed job never notices. A program piped into the command instead
 (``prog | filter``) cannot be replaced, and takes the output away from
-everybody else. Followers do not count against the limits on running jobs.
+everybody else. Followers are counted apart from other jobs, under limits of
+their own of the same size.
 """
 
 from __future__ import annotations

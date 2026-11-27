@@ -82,6 +82,7 @@ class Listing:
         if op == "status":
             return next(c for c in self.cards if c["job_id"].endswith(kw["job_id"]))
         found = [c for c in self.cards if not kw["tags"] or kw["tags"][0] in c["tags"]]
+        found.sort(key=lambda c: c["opened_at"], reverse=True)      # newest first, as the server
         return {"total": len(found), "jobs": found[:kw["limit"]]}
 
 
@@ -117,7 +118,9 @@ def test_a_name_means_the_newest_job_of_each_key_here():
     # As the user, who owns every job, a change needs the right directory.
     with pytest.raises(PlutoError, match="in this directory"):
         names.cards(Listing(*far), ["soak"], strict=True)
-    assert names.cards(Listing(*far), ["soak"])          # looking is harmless
+    # A stranger's job of that name in another directory is never meant.
+    with pytest.raises(PlutoError, match="no job is called"):
+        names.cards(Listing(*far), ["soak"])
     # Jobs handed over keep their name for the new owner elsewhere.
     assert names.cards(Listing(card(30, "9", cwd="/elsewhere")), ["soak/9"])
 
@@ -136,10 +139,10 @@ def test_agents_sharing_a_directory_and_a_name_keep_to_their_own_jobs():
     assert names.cards(w2, [team[0]["job_id"]])[0]["owner"] == "w1"   # by id, still
 
 
-def test_an_incomplete_listing_is_refused(monkeypatch):
+def test_a_long_history_of_a_name_keeps_the_newest(monkeypatch):
     monkeypatch.setattr(names, "GROUP_MAX", 3)
-    with pytest.raises(PlutoError, match="8 jobs"):
-        names.cards(Listing(*[card(i, str(i)) for i in range(8)]), ["soak"])
+    got = names.cards(Listing(*[card(i, str(i)) for i in range(8)]), ["soak"])
+    assert [c["name"] for c in got] == ["5", "6", "7"]
 
 
 def test_rows_say_the_same_thing_once():

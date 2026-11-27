@@ -50,20 +50,31 @@ pick([P | T], Running, #{ended := Ended, lock := Lock, held := Held} = L, Go, Ca
         {cancel, Why} -> pick(T, Running, L, Go, [{P, Why} | Cancel]);
         wait -> pick(T, Running, L, Go, Cancel);      %% may wait long: holds nothing
         go ->
-            Free = not lists:any(fun(K) -> is_map_key(K, Held) end, keys(P)),
+            Behind = [K || K <- keys(P), is_map_key(K, Held)],
             case room(P, Running, L) of
                 false -> pick(T, Running, L, Go, Cancel);   %% its owner's limit
+                true when Behind =/= [] ->
+                    pick(T, Running, L, Go, Cancel);         %% waits behind an older job
                 true ->
-                    case Free andalso slot_free(P, Running) andalso Lock(P) of
-                        {ok, P1} -> pick(T, [P1 | Running], L, [P1 | Go], Cancel);
-                        _        -> pick(T, Running, hold(P, L), Go, Cancel)
+                    case slot_free(P, Running) of
+                        false -> pick(T, Running, hold(slot_key(P), L), Go, Cancel);
+                        true ->
+                            case Lock(P) of
+                                {ok, P1} -> pick(T, [P1 | Running], L, [P1 | Go], Cancel);
+                                busy     -> pick(T, Running, hold(lock_key(P), L), Go, Cancel)
+                            end
                     end
             end
     end.
 
-%% A job held back keeps its lock resource and its slot for itself in this
-%% pass: younger jobs that want them wait behind it.
-hold(P, #{held := H} = L) -> L#{held := maps:merge(H, maps:from_keys(keys(P), true))}.
+%% A job held back keeps only the resource that held it back for itself in
+%% this pass (its full slot, or its busy lock): younger jobs that want that
+%% resource wait behind it, so readers cannot starve a writer, while its other
+%% resource stays free for others.
+hold(Keys, #{held := H} = L) -> L#{held := maps:merge(H, maps:from_keys(Keys, true))}.
+
+slot_key(P) -> [K || {<<"slot">>, _} = K <- keys(P)].
+lock_key(P) -> [K || {<<"lock">>, _} = K <- keys(P)].
 
 keys(P) -> [{K, V} || K <- [<<"lock">>, <<"slot">>], {ok, V} <- [maps:find(K, P)]].
 

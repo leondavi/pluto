@@ -46,7 +46,7 @@ done
 hit=1
 for p in $pids; do
   case "$anc" in *" $p "*) continue;; esac
-  c=$(ps -o command= -p "$p" 2>/dev/null) || continue
+  c=$(ps -ww -o command= -p "$p" 2>/dev/null) || continue
   case "$c" in
     *"claude -p "*|*beam.smp*|*agent_smart_tasks/smart_tasks.py*) continue;;
   esac

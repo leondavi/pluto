@@ -37,8 +37,15 @@ for a in "$@"; do
 done
 {find}
 [ -z "$pids" ] && exit 1
+# Never this command or its callers: BSD pgrep leaves them out, Linux pgrep only
+# itself, and this script's own command line holds the pattern.
+anc=" $$ "; q=$$
+while [ "${q:-1}" -gt 1 ]; do
+  q=$(ps -o ppid= -p "$q" 2>/dev/null | tr -d ' '); anc="$anc$q "
+done
 hit=1
 for p in $pids; do
+  case "$anc" in *" $p "*) continue;; esac
   c=$(ps -o command= -p "$p" 2>/dev/null) || continue
   case "$c" in
     *"claude -p "*|*beam.smp*|*agent_smart_tasks/smart_tasks.py*) continue;;

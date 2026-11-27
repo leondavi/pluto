@@ -156,8 +156,9 @@ def test_grep_matches_system_grep(srv):
         mine = "\n--\n".join("\n".join(
             f"{e['line']}{':' if e['match'] else '-'}{e['text']}" for e in g)
             for g in m["groups"])
-        if c == 0:          # grep prints no separators without context
+        if c == 0:          # without context: BSD grep prints no separators, GNU grep does
             mine = mine.replace("\n--\n", "\n")
+            out = out.replace("\n--\n", "\n")
         assert mine == out.rstrip("\n") and m["complete"]
     m = j.call("grep", job_id=jid, pattern="7", max_matches=3)
     assert m["matches"] == 3 and not m["complete"]

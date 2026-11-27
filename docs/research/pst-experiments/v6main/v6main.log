@@ -1,0 +1,40 @@
+[exp9 rep1 smarttasks] score=0.972 wall=552.1s cost=$1.26 result_bytes=83507 failures=0 tainted=False
+[exp9 rep1 native] score=0.940 wall=491.2s cost=$0.96 result_bytes=61122 failures=0 tainted=False
+[exp10 rep1 native] score=0.946 wall=555.3s cost=$0.57 result_bytes=33693 failures=0 tainted=False
+[exp10 rep1 smarttasks] score=0.970 wall=343.8s cost=$0.67 result_bytes=43130 failures=0 tainted=False
+[exp11 rep1 native] score=0.912 wall=362.9s cost=$0.37 result_bytes=32654 failures=0 tainted=False
+[exp11 rep1 smarttasks] score=1.000 wall=316.0s cost=$0.46 result_bytes=45112 failures=0 tainted=False
+[exp7 rep1 native] score=0.857 wall=562.0s cost=$2.42 result_bytes=105407 failures=0 tainted=False
+[exp7 rep1 smarttasks] score=0.505 wall=444.6s cost=$1.34 result_bytes=71562 failures=2 tainted=False
+[exp8 rep1 smarttasks] score=0.795 wall=525.4s cost=$1.45 result_bytes=95943 failures=0 tainted=False
+[exp8 rep1 native] score=0.835 wall=523.6s cost=$1.34 result_bytes=79471 failures=0 tainted=False
+[exp8 rep2 native] score=0.841 wall=565.7s cost=$1.70 result_bytes=97306 failures=0 tainted=False
+[exp8 rep2 smarttasks] score=0.643 wall=515.2s cost=$1.39 result_bytes=90885 failures=1 tainted=False
+[exp7 rep2 native] score=0.629 wall=708.2s cost=$2.71 result_bytes=116233 failures=0 tainted=False
+[exp7 rep2 smarttasks] score=0.428 wall=590.8s cost=$1.86 result_bytes=96190 failures=0 tainted=False
+[exp11 rep2 smarttasks] score=0.996 wall=283.5s cost=$0.46 result_bytes=44027 failures=0 tainted=False
+[exp11 rep2 native] score=1.000 wall=316.4s cost=$0.34 result_bytes=27663 failures=0 tainted=False
+[exp10 rep2 smarttasks] score=0.970 wall=800.2s cost=$0.71 result_bytes=45256 failures=0 tainted=False
+[exp10 rep2 native] score=0.889 wall=582.3s cost=$0.72 result_bytes=37562 failures=0 tainted=False
+[exp9 rep2 smarttasks] score=0.960 wall=534.9s cost=$1.09 result_bytes=82718 failures=0 tainted=False
+[exp9 rep2 native] score=0.985 wall=629.6s cost=$1.14 result_bytes=74893 failures=0 tainted=False
+[exp11 rep3 smarttasks] score=0.998 wall=289.5s cost=$0.48 result_bytes=45899 failures=0 tainted=False
+Traceback (most recent call last):
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/run.py", line 382, in <module>
+    main()
+    ~~~~^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/run.py", line 378, in main
+    run_block(exp, rep, conds, master, args)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/run.py", line 294, in run_block
+    row, d = run_one(exp, c, rep, run_seed(master, exp, rep), args)
+             ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/run.py", line 235, in run_one
+    status.update(pst_procs.run_phase(agents, cutoff if short else timeout, short, chaos))
+                  ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/pst_procs.py", line 260, in run_phase
+    time.sleep(0.2)
+    ~~~~~~~~~~^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/run.py", line 375, in on_term
+    raise KeyboardInterrupt
+KeyboardInterrupt

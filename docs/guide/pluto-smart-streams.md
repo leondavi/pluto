@@ -32,11 +32,15 @@ pss give other-agent soak; pss brief soak        # handover
 ```
 
 - **Names.** `soak`, `soak/3`, `soak/1-6,9`: the key is the parameter the job was
-  started with (`soak/1:a` with two). A name means jobs whose directory is the
-  current one or that you own, and of each key the newest job: running a key again
-  replaces it, and a key started later joins the name (`pss run -n zr -e k=8 ...`
-  adds `zr/8`). Lists with commas (`r1,r2,soak/3`), ids and group handles
-  (`g3f09ac`, `g3f09ac/3`) always work.
+  started with (`soak/1:a` with two). A name means **your own** jobs of that name,
+  and of each key the newest job: running a key again replaces it, and a key
+  started later joins the name (`pss run -n zr -e k=8 ...` adds `zr/8`); a round
+  with other parameters (`-e seed=...` after `-e n=...`) replaces the name. Agents
+  sharing a directory often pick the same name: if you have none of that name, a
+  command that only reads uses the others' jobs of this directory and says whose
+  they are on stderr, while `follow` and `--after` refuse (name others' jobs by id).
+  Lists with commas (`r1,r2,soak/3`, `l2/7,8`), ids and group handles (`g3f09ac`,
+  `g3f09ac/3`) always work.
 - **Rules** are a condition (`--on`, `--where`, `--idle`, `--absent`) and what to do
   (`--append FILE TEXT`, `--input TEXT`, `--stop`, `--pause`, `--tell`); several
   actions after one condition are several rules on it. They come
@@ -82,7 +86,10 @@ The lock is Pluto's own, held by `job:<id>`: agents taking the same resource thr
 only tried, never queued, so a waiting job is not in the deadlock graph; it is renewed
 while the job runs (`$PLUTO_LOCK_TOKEN` is the fencing token) and released when the job
 ends. If it is lost, for instance across a server restart while someone else took it,
-the job shows `lost-lock=RES`. `ps` says what a queued job waits for:
+the job shows `lost-lock=RES`. Order is kept per lock resource and per slot: once an
+older job that wants one is held back by it, younger ones wait behind it, so readers
+cannot starve a writer; a slot's limit is the strictest `slot_max` of its jobs. A job
+cancelled by `--after-ok` is reported in the news line. `ps` says what a queued job waits for:
 `queued (after 2 jobs ok, slot gpu/2, lock db)`.
 
 Example: build once, then test on at most 4 workers, each holding the shared database,
@@ -93,6 +100,7 @@ pss run -n build 'make -j8'
 pss run -n t -e k=1-12 --after build --after-ok --slot workers:4 --lock db:read \
     'pytest tests/shard_{k}.py'
 pss run -n report --after t --after-ok 'python report.py'
+pss run -n an -e k=1-12 --after 't/{k}' 'python analyse.py {k}'   # each after its own
 pss ps        # t waits for build, then runs 4 at a time
 pss wait report -t 600
 ```

@@ -87,25 +87,30 @@ t_register_unique_sessions(Port) ->
     ?assertNotEqual(S1, S2).
 
 t_acquire_release(Port) ->
-    AId = rand_agent(),
-    Cmds = [
-        #{<<"op">> => <<"register">>, <<"agent_id">> => AId},
-        #{<<"op">> => <<"acquire">>, <<"resource">> => <<"test:ar">>,
-          <<"mode">> => <<"write">>, <<"ttl_ms">> => 5000}
-    ],
-    {ok, [RegR, AcqR]} = send_multi(Port, Cmds),
-    ?assertEqual(<<"ok">>, maps:get(<<"status">>, RegR)),
-    ?assertEqual(<<"ok">>, maps:get(<<"status">>, AcqR)),
-    LockRef = maps:get(<<"lock_ref">>, AcqR),
-    ?assert(is_binary(LockRef)),
-    ?assert(is_integer(maps:get(<<"fencing_token">>, AcqR))),
-    %% Release on same session
-    RelCmds = [
-        #{<<"op">> => <<"register">>, <<"agent_id">> => AId},
-        #{<<"op">> => <<"release">>, <<"lock_ref">> => LockRef}
-    ],
-    {ok, [_, RelR]} = send_multi(Port, RelCmds),
-    ?assertEqual(<<"ok">>, maps:get(<<"status">>, RelR)).
+    %% One connection throughout: releasing from a second connection would
+    %% race the first one's disconnect, which may release the lock itself.
+    {ok, Sock} = gen_tcp:connect({127, 0, 0, 1}, Port,
+                                 [binary, {packet, line}, {active, false}], 2000),
+    Ask = fun(Req) ->
+                  ok = gen_tcp:send(Sock, pluto_protocol_json:encode_line(Req)),
+                  {ok, Data} = gen_tcp:recv(Sock, 0, 2000),
+                  pluto_protocol_json:decode(string:trim(Data))
+          end,
+    try
+        {ok, RegR} = Ask(#{<<"op">> => <<"register">>, <<"agent_id">> => rand_agent()}),
+        ?assertEqual(<<"ok">>, maps:get(<<"status">>, RegR)),
+        {ok, AcqR} = Ask(#{<<"op">> => <<"acquire">>,
+                           <<"resource">> => <<"test:ar-", (rand_id())/binary>>,
+                           <<"mode">> => <<"write">>, <<"ttl_ms">> => 5000}),
+        ?assertEqual(<<"ok">>, maps:get(<<"status">>, AcqR)),
+        LockRef = maps:get(<<"lock_ref">>, AcqR),
+        ?assert(is_binary(LockRef)),
+        ?assert(is_integer(maps:get(<<"fencing_token">>, AcqR))),
+        {ok, RelR} = Ask(#{<<"op">> => <<"release">>, <<"lock_ref">> => LockRef}),
+        ?assertEqual(<<"ok">>, maps:get(<<"status">>, RelR))
+    after
+        gen_tcp:close(Sock)
+    end.
 
 t_fencing_monotonic(Port) ->
     AId = rand_agent(),

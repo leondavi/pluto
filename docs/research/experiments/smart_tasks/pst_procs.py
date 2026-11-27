@@ -16,16 +16,18 @@ import time
 
 
 def ps_table():
-    """{pid: {"ppid", "tty", "start", "cmd"}}; start is the lstart string."""
+    """{pid: {"ppid", "tty", "start", "cmd"}}; start is the lstart string.
+    Zombies are left out: they are already dead, cannot be signalled and hold
+    nothing, but stay listed until their parent reaps them."""
     env = dict(os.environ, LC_ALL="C")
-    out = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,uid=,tty=,lstart=,command="],
+    out = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,uid=,stat=,tty=,lstart=,command="],
                          capture_output=True, text=True, errors="replace", env=env).stdout
     tab = {}
     for line in out.splitlines():
-        f = line.split(None, 9)
-        if len(f) < 10 or not f[0].isdigit() or f[2] != str(os.getuid()):
+        f = line.split(None, 10)
+        if len(f) < 11 or not f[0].isdigit() or f[2] != str(os.getuid()) or f[3].startswith("Z"):
             continue
-        tab[int(f[0])] = {"ppid": int(f[1]), "tty": f[3], "start": " ".join(f[4:9]), "cmd": f[9]}
+        tab[int(f[0])] = {"ppid": int(f[1]), "tty": f[4], "start": " ".join(f[5:10]), "cmd": f[10]}
     return tab
 
 

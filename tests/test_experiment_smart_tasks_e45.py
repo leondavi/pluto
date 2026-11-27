@@ -625,7 +625,16 @@ def test_runner_crashes_and_replaces_agents(tmp_path, monkeypatch):
         assert by[11]["t_last"] - row["chaos"][0]["at"] < 1.5
         assert row["grade"]["detail"]["11"]["died_in_agent_crash"] == 1
         assert row["grade"]["process"]["orphans"] >= 1 and row["leftovers_killed"]
-        assert pst_procs.own_processes(None, ws, 0) == {}
+        # Killed processes may need a moment to go on a loaded machine; a real
+        # leftover stays, and the message says what it is.
+        left = pst_procs.own_processes(None, ws, 0)
+        for _ in range(50):
+            if not left:
+                break
+            time.sleep(0.1)
+            left = pst_procs.own_processes(None, ws, 0)
+        tab = pst_procs.ps_table()
+        assert left == {}, {p: tab.get(p, {}).get("cmd") for p in left}
     f = {r["condition"]: r["protocol_failures"]["w1"] for r in rows}
     assert f == {"native": ["subagent_call"], "native_sub": []}
     s = summarize.summarize([json.loads(x) for x in open(out / "results.jsonl")])

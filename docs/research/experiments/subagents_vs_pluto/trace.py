@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print a timeline of tool calls, results and text from one transcript.
 
-    python3 experiments/subagents_vs_pluto/trace.py RUN_DIR/w1.jsonl [--width 200]
+    python3 docs/research/experiments/subagents_vs_pluto/trace.py RUN_DIR/w1.jsonl [--width 200]
 """
 
 import argparse

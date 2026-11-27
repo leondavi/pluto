@@ -23,8 +23,8 @@ Every run uses the model and the shared storage CLI. The write-up is in [`docs/r
 
 ```bash
 ./PlutoServer.sh --build                        # once: builds beams into /tmp/pluto/build
-python3 experiments/subagents_vs_pluto/run_experiment.py --scenario all --condition all --reps 5
-python3 experiments/subagents_vs_pluto/analyze.py
+python3 docs/research/experiments/subagents_vs_pluto/run_experiment.py --scenario all --condition all --reps 5
+python3 docs/research/experiments/subagents_vs_pluto/analyze.py
 ```
 
 Requirements:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the subagents-vs-Pluto experiment.
 
-    python3 experiments/subagents_vs_pluto/run_experiment.py \
+    python3 docs/research/experiments/subagents_vs_pluto/run_experiment.py \
         --scenario all --condition all --reps 5 --model claude-sonnet-5
 
 Each run gets a fresh directory under --out/runs/<scenario>/<condition>/rep<k>/
@@ -29,7 +29,7 @@ import metrics  # noqa: E402
 import pluto_sandbox  # noqa: E402
 from scenarios import SCENARIOS, validate  # noqa: E402
 
-DEFAULT_OUT = os.path.join(HERE, "..", "..", "docs", "research", "data", "subagents-vs-pluto")
+DEFAULT_OUT = os.path.join(HERE, "..", "..", "data", "subagents-vs-pluto")
 
 
 def _pump(stream, path):

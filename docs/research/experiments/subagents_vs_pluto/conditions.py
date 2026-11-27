@@ -11,7 +11,7 @@ import os
 
 from scenarios import WORKERS, orchestrator_prompt, worker_prompt
 
-REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 FRIEND = os.environ.get("PLUTO_FRIEND_SCRIPT",
                         os.path.join(REPO, "src_py", "agent_mcp_friend", "pluto_mcp_friend.py"))
 FRIEND_PY = os.environ.get("PLUTO_FRIEND_PYTHON", "/tmp/pluto/.venv/bin/python")

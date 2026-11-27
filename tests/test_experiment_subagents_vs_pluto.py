@@ -1,4 +1,4 @@
-"""Offline tests for experiments/subagents_vs_pluto (no server, no LLM)."""
+"""Offline tests for docs/research/experiments/subagents_vs_pluto (no server, no LLM)."""
 
 import json
 import os
@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-EXP = os.path.join(os.path.dirname(__file__), "..", "experiments", "subagents_vs_pluto")
+EXP = os.path.join(os.path.dirname(__file__), "..", "docs", "research", "experiments", "subagents_vs_pluto")
 sys.path.insert(0, os.path.abspath(EXP))
 
 import metrics  # noqa: E402

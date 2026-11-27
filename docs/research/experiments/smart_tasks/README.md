@@ -516,11 +516,11 @@ search). The task does not favour any tool: everything is files, processes and l
     $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style jobs      # real server and client
     $PY $H/verify_e45.py SCRATCH --exp 4,5 --style plain|jobs [--policy naive]
     $PY $H/verify_e10.py SCRATCH --policy ref|lazy [--seed N] [--speed X]
-    $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --dry-run
-    $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --budget-usd 5 \
+    $PY $H/run.py --out ~/Workspace/pst-experiments/v3 --reps 5 --dry-run
+    $PY $H/run.py --out ~/Workspace/pst-experiments/v3 --reps 5 --budget-usd 5 \
         [--exp 4,5] [--conditions smarttasks,native,native_sub]
-    $PY $H/summarize.py ~/Workspace/ss-experiments/v3 [--exclude-tainted]
-    $PY $H/pst_classify.py ~/Workspace/ss-experiments/v3 [--sample 40 --seed N --hide]
+    $PY $H/summarize.py ~/Workspace/pst-experiments/v3 [--exclude-tainted]
+    $PY $H/pst_classify.py ~/Workspace/pst-experiments/v3 [--sample 40 --seed N --hide]
 
 `--out` must be outside git. `--http-port N` (with `--pluto-host` and
 `--smarttasks-home`) uses a running server instead of private ones.

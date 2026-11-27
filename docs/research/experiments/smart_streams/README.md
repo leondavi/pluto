@@ -560,6 +560,13 @@ search). The task does not favour any tool: everything is files, processes and l
 * Output: `v6main` (log `v6main.log`).
 * Prompt: unchanged from protocol 5. Agents learn the new options only from `pss help`; adoption of each new
   option is reported as a secondary measure.
+* Deviation, decided 27 Nov 2026 after 8 of 80 runs: in E7 pair 1, smartstreams agent w1 had one Bash
+  command refused by `dontAsk` mode (a `python3 - <<EOF` edit of its own script) and ended after 72 s, leaving
+  its jobs unwatched (score 0.505 vs native 0.857). This is not a harness fault under the rules above, so the
+  run is not stopped and the pair stays in the primary analysis. As a sensitivity analysis, every pair in
+  which an agent of **either** arm had a permission denial gets one fresh pair of the same task (rep 9 and
+  up, new seed) after `v6main` ends, in `v6rerun` (plan in `v6rerun.plan`). Results are reported as run, and
+  with each affected pair replaced by its rerun. The trigger is chosen by arm-blind rule, not by score.
 
 ## E9 sequencing_cohort (written blind, after protocol v3)
 

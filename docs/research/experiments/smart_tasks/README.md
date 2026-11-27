@@ -12,8 +12,8 @@ scores were at the ceiling in both conditions (0.97 to 1.0 in the pilot, 0.92 to
 B and returned more tool-result text. v1 gave an agent only 2 to 4 streams. v1
 rows have no `protocol_version`; v2 rows have 2, and the two are never mixed.
 
-**Name.** The product was renamed from SmartStreams to SmartTasks on 27 Nov 2026, and data
-recorded earlier uses the old labels (the analysis scripts map them to the new names on load).
+**Data.** The published copies of the results and transcripts are in
+[`docs/research/pst-experiments/`](../../pst-experiments/TECHNICAL.md), with current names throughout.
 
 **Independence of E4 and E5.** The product was changed after pilot 1 (see Threats).
 Features for log analysis and watching are being added by other people while E4 and E5
@@ -601,6 +601,23 @@ search). The task does not favour any tool: everything is files, processes and l
   agent asked for it by id (a deliberate link), it is reported, not a fault, and the run resumes with
   the pairs not yet run. Otherwise it is a product fault: fixed, disclosed, and restarted as a new
   protocol.
+
+### Protocol 7 outcome (27 Nov 2026)
+
+All 80 runs and 14 reruns completed; no cross-agent link, timeout or budget stop. An
+independent audit recomputed every cost and step from the transcripts and re-ran every
+grader on the archived workspaces: all values matched. `analyze_protocol7.py` computes
+everything below from `docs/research/pst-experiments/`.
+
+* Primary decision, as run: cost +3.2% (90% [-0.7, +7.0]), score +0.003 (lower bound -0.018):
+  **inconclusive**. With reruns: inconclusive. Load check (pacing lag <= 0.25 s, 32 pairs, 7 of
+  8 E7 pairs dropped): worse on cost. The analyses disagree, so the result is **load-dependent**.
+* Secondary, per task: cost ratio 0.77 (E7), 0.77 (E8), 1.03 (E9), 1.24 (E10), 1.29 (E11);
+  score gaps small except E8 (-0.11 with reruns) and E10 (+0.03). Stray processes killed after
+  18 of 40 native and 3 of 40 smarttasks runs.
+* Disclosed: smarttasks agents also received PST's tool instructions (with an example) and
+  wake-up notices; Claude Code blocked long `sleep` in 12 smarttasks runs and 1 native run.
+  Details and discussion: [`TECHNICAL.md`](../../pst-experiments/TECHNICAL.md).
 
 ## E9 sequencing_cohort (written blind, after protocol v3)
 

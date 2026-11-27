@@ -41,22 +41,6 @@ def price(tokens):
     return sum(PRICE[k] * tokens[k] for k in KEYS) / 1e6
 
 
-# runs recorded before the rename to SmartTasks
-LEGACY = {"smartstreams": "smarttasks", "pss": "pst"}
-_LEGACY_RX = re.compile(r"(?<![A-Za-z0-9])(%s)(?![A-Za-z0-9])" % "|".join(LEGACY))
-
-
-def renamed(x):
-    """x (a row, a tool name or input, a command) with old labels in today's names."""
-    if isinstance(x, str):
-        return _LEGACY_RX.sub(lambda mt: LEGACY[mt.group(1)], x)
-    if isinstance(x, dict):
-        return {renamed(k): renamed(v) for k, v in x.items()}
-    if isinstance(x, list):
-        return [renamed(v) for v in x]
-    return x
-
-
 def read_jsonl(path):
     out = []
     try:
@@ -121,7 +105,7 @@ def parse_agent(events):
             think += int(ev.get("estimated_tokens_delta") or 0)
         if t == "system" and ev.get("subtype") == "init" and m["model"] is None:
             m["model"] = ev.get("model")
-            m["mcp_status"] = {renamed(s.get("name")): s.get("status") for s in ev.get("mcp_servers") or []
+            m["mcp_status"] = {s.get("name"): s.get("status") for s in ev.get("mcp_servers") or []
                                if isinstance(s, dict)}
         elif t == "result":
             result = ev            # totals are cumulative, durations are not
@@ -143,9 +127,9 @@ def parse_agent(events):
                     m["agent_calls"] += b.get("name") in ("Agent", "Task")
                 chars, sub_chars = chars + n, sub_chars + (n if parent else 0)
                 if b.get("type") == "tool_use" and b.get("id") not in uses:
-                    uses[b.get("id")] = renamed(b.get("name") or "?")
+                    uses[b.get("id")] = b.get("name") or "?"
                     m["tool_calls"][uses[b["id"]]] = m["tool_calls"].get(uses[b["id"]], 0) + 1
-                    m["pst_calls"] += len(re.findall(r"\bpst\s+[a-z]", renamed(str(
+                    m["pst_calls"] += len(re.findall(r"\bpst\s+[a-z]", (str(
                         (b.get("input") or {}).get("command") or ""))))
         elif t == "user":
             for b in blocks(ev):

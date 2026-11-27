@@ -124,7 +124,6 @@ def by_path(path, default):
 
 def classify(name, arg):
     """Class of one tool call."""
-    name, arg = pst_metrics.renamed(name), pst_metrics.renamed(arg)
     arg = arg if isinstance(arg, dict) else {}
     short = name.rsplit("__", 1)[-1]
     if name in ("Bash", "Monitor"):
@@ -212,7 +211,7 @@ def main():
     ap.add_argument("--json")
     a = ap.parse_args()
     with open(os.path.join(a.out_dir, "results.jsonl"), encoding="utf-8") as f:
-        rows = [pst_metrics.renamed(json.loads(x)) for x in f if x.strip()]
+        rows = [json.loads(x) for x in f if x.strip()]
     table, pool = [], []
     for r in rows:
         cats = {}

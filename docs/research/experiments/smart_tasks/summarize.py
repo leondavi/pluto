@@ -182,7 +182,7 @@ def main():
     p.add_argument("--exclude-tainted", action="store_true")
     a = p.parse_args()
     with open(os.path.join(a.out_dir, "results.jsonl"), encoding="utf-8") as f:
-        rows = [pst_metrics.renamed(json.loads(x)) for x in f if x.strip()]
+        rows = [json.loads(x) for x in f if x.strip()]
     vs = {r.get("protocol_version", 1) for r in rows}
     if not vs <= {2, 3}:
         raise SystemExit("rows of protocol v1: use the v1 code (git a9eab16)")

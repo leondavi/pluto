@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Aggregate results.jsonl into summary tables.
 
-    python3 experiments/subagents_vs_pluto/analyze.py [--data DIR]
+    python3 docs/research/experiments/subagents_vs_pluto/analyze.py [--data DIR]
 
 Writes DIR/summary.csv and DIR/summary.md (markdown tables with mean ± sd
 and a 95% t-interval per scenario × condition) and prints the markdown.

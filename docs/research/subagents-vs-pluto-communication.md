@@ -3,7 +3,7 @@
 **Status:** research / experiment report. The experiment found three queued-lock delivery defects; their fixes ship in v0.5.1 (§6).
 **Date:** 7 October 2026.
 **Model:** `claude-sonnet-5` for every agent.
-**Harness:** `experiments/subagents_vs_pluto/`.
+**Harness:** `docs/research/experiments/subagents_vs_pluto/`.
 **Raw data:** `docs/research/data/subagents-vs-pluto/`.
 
 ---
@@ -179,7 +179,7 @@ The fencing also caught a hazard in the other direction. In Pluto run 3, w3 was 
 
 ### 4.6 Fan-out (S4)
 
-Both conditions ran every job exactly once in 5/5 runs, with no duplicates and no misses. The makespans are close, 51 ± 33 s for subagents against 48 ± 7 s for Pluto, but **the subagent number is confounded.** The job-duration table is visible in `ledger.py` (`experiments/subagents_vs_pluto/ledger.py:38`):
+Both conditions ran every job exactly once in 5/5 runs, with no duplicates and no misses. The makespans are close, 51 ± 33 s for subagents against 48 ± 7 s for Pluto, but **the subagent number is confounded.** The job-duration table is visible in `ledger.py` (`docs/research/experiments/subagents_vs_pluto/ledger.py:38`):
 - In 4 of 5 runs the subagent orchestrator read it and built a near-optimal static partition (14–15 s of work per worker), reaching a 23–32 s task span when the background subagents started promptly.
 - Its two slow runs (82 s and 92 s) came from subagents starting tens of seconds apart.
 - The Pluto orchestrators scheduled dynamically through `pluto_task_assign`/`task_update`, reaching 41–55 s.
@@ -268,9 +268,9 @@ The v0.5.0 runs still passed. The agents recovered by noticing the silence, poll
 # pin the server and adapter to the build under test
 export PLUTO_EBIN=<build>/src_erl/_build/default/lib/pluto/ebin
 export PLUTO_FRIEND_SCRIPT=<build>/src_py/agent_mcp_friend/pluto_mcp_friend.py
-python3 experiments/subagents_vs_pluto/run_experiment.py --scenario all --condition all --reps 5
-python3 experiments/subagents_vs_pluto/analyze.py
-python3 experiments/subagents_vs_pluto/trace.py docs/research/data/subagents-vs-pluto/runs/s2_contention/pluto/rep1/w1.jsonl
+python3 docs/research/experiments/subagents_vs_pluto/run_experiment.py --scenario all --condition all --reps 5
+python3 docs/research/experiments/subagents_vs_pluto/analyze.py
+python3 docs/research/experiments/subagents_vs_pluto/trace.py docs/research/data/subagents-vs-pluto/runs/s2_contention/pluto/rep1/w1.jsonl
 ```
 
 Each run directory holds:

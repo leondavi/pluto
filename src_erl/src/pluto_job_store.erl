@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc pluto_job_store — On-disk layout of PlutoSmartStreams packages.
+%%% @doc pluto_job_store — On-disk layout of PlutoSmartTasks packages.
 %%%
 %%% Owns paths, atomic JSON files, the per-user key, and the helper that
 %%% calls the bundled Python scripts. Holds no process state.
@@ -16,22 +16,22 @@
          run/2, run/4, kill_port/1, python/0, script/1, ident/1, hex/1, opt/2, opt/3, now_ms/0]).
 
 -ifdef(TEST).
--define(DEFAULT_HOME, "/tmp/pluto/test_smartstreams").
+-define(DEFAULT_HOME, "/tmp/pluto/test_smarttasks").
 -else.
 -define(DEFAULT_HOME, filename:join([os:getenv("HOME", "/tmp"), ".pluto",
-                                     "smartstreams"])).
+                                     "smarttasks"])).
 -endif.
 
 -spec now_ms() -> integer().
 now_ms() -> erlang:system_time(millisecond).
 
-%% @doc Root of all SmartStreams data. Clients resolve it the same way
+%% @doc Root of all SmartTasks data. Clients resolve it the same way
 %% (pluto_sdk/jobs.py).
 -spec home() -> file:filename().
 home() ->
-    case os:getenv("PLUTO_SMARTSTREAMS_HOME") of
+    case os:getenv("PLUTO_SMARTTASKS_HOME") of
         Dir when is_list(Dir), Dir =/= "" -> Dir;
-        _ -> pluto_config:get(smartstreams_home, ?DEFAULT_HOME)
+        _ -> pluto_config:get(smarttasks_home, ?DEFAULT_HOME)
     end.
 
 %% Paths of live jobs are made several times a second each, so the
@@ -266,7 +266,7 @@ run(Script, Args, Input, Timeout) ->
 %% @doc The interpreter for the bundled scripts.
 -spec python() -> file:filename_all() | false.
 python() ->
-    case pluto_config:get(smartstreams_python, undefined) of
+    case pluto_config:get(smarttasks_python, undefined) of
         undefined -> os:find_executable("python3");
         Path      -> Path
     end.

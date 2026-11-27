@@ -1,5 +1,5 @@
-%%% Unit tests for the SmartStreams modules that need no running server.
-%%% End-to-end behaviour: tests/test_smart_streams_live.py.
+%%% Unit tests for the SmartTasks modules that need no running server.
+%%% End-to-end behaviour: tests/test_smart_tasks_live.py.
 -module(pluto_job_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include("pluto.hrl").
@@ -96,7 +96,7 @@ ids_test() ->
 key_permissions_test() ->
     Home = filename:join(?DIR, "home"),
     _ = file:del_dir_r(Home),
-    application:set_env(pluto, smartstreams_home, Home),
+    application:set_env(pluto, smarttasks_home, Home),
     try
         ok = pluto_job_store:ensure_home(),
         {ok, K} = pluto_job_store:key(),
@@ -112,15 +112,15 @@ key_permissions_test() ->
         ok = file:change_mode(File, 8#600),
         ok = pluto_job_store:ensure_home(),
         ?assertMatch({ok, _}, pluto_job_store:key())
-    after application:unset_env(pluto, smartstreams_home)
+    after application:unset_env(pluto, smarttasks_home)
     end.
 
 script_failures_are_not_death_test() ->
-    application:set_env(pluto, smartstreams_python, "/no/such/python"),
+    application:set_env(pluto, smarttasks_python, "/no/such/python"),
     ?assertEqual(unknown, pluto_job_store:ident(1)),
-    application:set_env(pluto, smartstreams_python, "/usr/bin/false"),
+    application:set_env(pluto, smarttasks_python, "/usr/bin/false"),
     ?assertEqual(unknown, pluto_job_store:ident(1)),
-    application:unset_env(pluto, smartstreams_python),
+    application:unset_env(pluto, smarttasks_python),
     {ok, Me} = pluto_job_store:ident(list_to_binary(os:getpid())),
     ?assertNotEqual(<<>>, Me),
     ?assertEqual({ok, <<>>}, pluto_job_store:ident(4194300)).
@@ -151,13 +151,13 @@ with_home(Fun) ->
     Home = filename:join(?DIR, "home"),
     _ = file:del_dir_r(Home),
     ok = filelib:ensure_path(Home),
-    Old = os:getenv("PLUTO_SMARTSTREAMS_HOME", ""),
-    os:putenv("PLUTO_SMARTSTREAMS_HOME", Home),
+    Old = os:getenv("PLUTO_SMARTTASKS_HOME", ""),
+    os:putenv("PLUTO_SMARTTASKS_HOME", Home),
     Tabs = [T || T <- [?ETS_JOBS], ets:info(T) =:= undefined],
     [ets:new(T, [named_table, public]) || T <- Tabs],
     try Fun()
     after
-        os:putenv("PLUTO_SMARTSTREAMS_HOME", Old),
+        os:putenv("PLUTO_SMARTTASKS_HOME", Old),
         [ets:delete(T) || T <- Tabs]
     end.
 

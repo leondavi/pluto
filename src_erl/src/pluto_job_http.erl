@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc pluto_job_http — POST /jobs/* for PlutoSmartStreams.
+%%% @doc pluto_job_http — POST /jobs/* for PlutoSmartTasks.
 %%%
 %%% These routes run commands, so unlike the rest of the HTTP API they
 %%% need the per-user key (Authorization: Bearer), accept loopback peers
@@ -41,7 +41,7 @@ dispatch(Op, R) ->
         error:{badkey, K} when is_binary(K) ->
             {400, err(<<"missing_field_", K/binary>>)};
         Class:E:St ->
-            ?LOG_ERROR("smartstreams ~s failed: ~p ~p", [Op, {Class, E}, St]),
+            ?LOG_ERROR("smarttasks ~s failed: ~p ~p", [Op, {Class, E}, St]),
             {500, err(?ERR_INTERNAL_ERROR)}
     end.
 
@@ -53,7 +53,7 @@ code(?ERR_UNKNOWN_STREAM)   -> 404;
 code(?ERR_NOT_OWNER)        -> 403;
 code(<<"internal_error">>)  -> 500;
 code(<<"disk_error_", _/binary>>)   -> 503;
-code(<<"smartstreams_", _/binary>>) -> 503;
+code(<<"smarttasks_", _/binary>>) -> 503;
 code(_) -> 400.
 
 err(W) -> #{<<"status">> => ?STATUS_ERROR, <<"reason">> => W}.
@@ -82,7 +82,7 @@ authorize(Headers, Sock) ->
     end.
 
 peer_allowed(Sock) ->
-    case pluto_config:get(smartstreams_allow_remote, false) of
+    case pluto_config:get(smarttasks_allow_remote, false) of
         true -> true;
         _ ->
             case inet:peername(Sock) of

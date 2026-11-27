@@ -1,0 +1,704 @@
+# Experiment: PlutoSmartTasks vs native Claude Code (protocol v3)
+
+Status: E1 to E3 were pre-registered as protocol v2. v3 adds experiments E4 and E5, the
+arm `native_sub` and call classes; E4, E5 and H4 to H8 were written before any agent
+run of E4, E5 or `native_sub`. E1 to E3 tasks, graders and the prompts of their two
+arms are unchanged. Rows carry `protocol_version` 3 and are not pooled with v2.
+
+**History.** v1 (git a9eab16) is the previous protocol. v2 was designed after
+seeing the v1 pilot and partial v1 main results, so it is not blind to them:
+scores were at the ceiling in both conditions (0.97 to 1.0 in the pilot, 0.92 to
+1.0 in main), A's score was about B's, and A cost about 1.7 to 3 times as much as
+B and returned more tool-result text. v1 gave an agent only 2 to 4 streams. v1
+rows have no `protocol_version`; v2 rows have 2, and the two are never mixed.
+
+**Name.** The product was renamed from SmartStreams to SmartTasks on 27 Nov 2026, and data
+recorded earlier uses the old labels (the analysis scripts map them to the new names on load).
+
+**Independence of E4 and E5.** The product was changed after pilot 1 (see Threats).
+Features for log analysis and watching are being added by other people while E4 and E5
+are written; their design was unknown to the author of E4 and E5, who had read the product
+guide, its tool list and the v2 pilot. E4 and E5 are held-out tests for those features, once only:
+changing the product after seeing their results makes later results tuned.
+
+Four Claude Sonnet agents solve one task in a shared directory. Each agent is a
+headless `claude -p` process.
+
+| | A `smarttasks` | B `native` (C `native_sub`: below) |
+|---|---|---|
+| Tools | B's tools plus the 15 `job_*` MCP tools | Bash (with `run_in_background`), BashOutput, Monitor, Read, Grep, Glob, Write, Edit, ... |
+| Task, model, budget, timeout, workspace, agent-to-agent channel (files) | same | same |
+| Prompt | same core, one tools paragraph | same core, one tools paragraph |
+
+A's paragraph mentions that `job_wait` and `job_grep` take a `job_ids` list. B's
+mentions detaching, saving exit codes, and shell loops/xargs over many logs. A
+may use everything B uses, so A is "native plus SmartTasks".
+
+Permissions: `--permission-mode dontAsk`, explicit `--allowedTools`,
+`--strict-mcp-config`; web, skills and messaging are denied in all arms, sub-agents in A and B.
+Session variables of an enclosing Claude Code process are stripped from agents,
+server and jobs; authentication variables stay.
+
+## Tasks
+
+Every agent owns and needs at least 8 streams at once. The row records each
+agent's peak from the launch ledger (`peak_streams`) and sets
+`low_parallelism` if any agent stays below 8.
+
+**E1 shard_fleet** (w1..w4, 48 shards, 12 per worker). Real persistent AVL maps,
+~2 MB each over ~200 s. Find the first occurrence of every violated invariant
+(seven kinds, 0 to 2 per shard), trace six corrupted cells across workers, and
+terminate livelocked shards within 90 s while the fleet runs.
+
+**E2 tuning_tournament** (12 variants x 4 sizes x 8 tunings = 384 combinations,
+96 per worker, at most 16 running per worker, launches allowed for 600 s). Cost
+is unimodal in the tuning, so results decide what to launch next. Dominated and
+hanging runs should be stopped. Two variants have different defects.
+
+**E3 fleet_relay** (24 eight-minute jobs). p1, p2 launch 12 each and end by 240 s;
+q1, q2 take over 12 each, crossed. Crashes, stalls, nonzero exits, probe-limit
+changes, leaks, node groups found by correlating spikes over all jobs, and live
+checkpoint requests with a 75 s deadline.
+
+| Feature | How native does it | How SmartTasks does it |
+|---|---|---|
+| 12 simultaneous launches (barrier in E1) | one Bash loop with `nohup ... &` | one job_start call per stream |
+| Livelock / stall / hang detection | loop over logs: last line, mtime or size | job_wait until=pattern/idle, job_status, or the same loop |
+| Terminate one stream | `kill` with the saved pid | job_control |
+| Checkpoint acknowledgement | write a file | write a file (same Bash call) |
+| Result-driven queue, early stop | driver script or Bash calls | driver script or job tools |
+| Arithmetic and stateful checks, joins | Python over logs | Python in a job pipeline or over the output |
+| Surviving the shift change | nohup/detached | jobs are server-owned |
+| Exit code after the shift change | wrapper writes `$?` to a file | job_status |
+
+No feature needs an ability that only one condition has.
+
+**E4 crash_recovery** (w1..w4, 40 jobs, 10 per agent, ~4 min each). Fenwick-tree sweeps
+with line checksums. Per agent: three clean jobs, and seven that crash, hang or go corrupt
+(two of them twice); seven jobs write checkpoints, three do not; a checkpoint may be torn or
+already corrupt. The prompt warns all arms that programs, sessions and services may be killed.
+The harness kills, at seeded times identical in all arms:
+
+1. three agent sessions, at 95-115, 165-190 and 235-260 s, with `kill -9` of the process
+   tree (`pst_procs.crash_tree`): the CLI, its process group and its live descendants.
+   A process whose launching shell has exited has left the tree (nohup in a foreground
+   Bash call); a `run_in_background` task has not. 5 s later a new session starts with
+   the same prompt, the same agent id, the time that is left, and "you replace an agent that
+   crashed", without a transcript.
+2. the Pluto server (A only), `kill -9` at 130-150 s, restarted after 5 s with the same
+   home and ports: a fault that B and C do not have.
+
+A full reboot cannot be simulated here: detached processes, page cache, /tmp and clocks survive.
+The native arms are told their tools for this: nohup, a wrapper that saves pid and exit code,
+pid files, `ps -o pid,lstart,command`, `kill`. A is told that jobs, output and exit codes
+outlive sessions and server, how to list them, and that kill in Bash always works.
+
+*Known before the runs:* a replacement adapter that registers with the id of a session killed
+less than 10 minutes ago is renamed by the server, sees no jobs of its own and does not own the
+old ones (`job_list scope=all` shows them, output is readable, `job_control` says `not_owner` before and
+after a server restart, Bash `kill` works; measured with the real adapter). This is how the
+product behaves; it is not worked around, and it counts against A.
+
+**E5 unpredictable_output** (w1..w4, 48 streams, 12 per agent, 300 s, 0.8 to 1.9 MB
+each). Two interleaved writers per stream, each operating one of eight real data structures, in eight
+output styles (kv, JSON, CSV, tables, multi-line blocks, three prose forms) with random
+field names, which all change once midway; ANSI codes, time stamps, progress bars with carriage returns, harmless
+ERROR lines and tracebacks. The docs explain the structures' rules and no format. About 160
+anomalies of eleven kinds (rule violations, counter gaps and silent restarts, one-off messages
+about lost guarantees among look-alikes), six root causes, 28 questions to answer within 90 s and
+decoys. All needed facts are in the output.
+
+Scripted results for E5, seed 1 (privileged = knows the styles, reads only the output):
+privileged 1.000; grep for error/fatal/fail/warn .002; rare line shapes (<=3) .034, unique shapes .068;
+counter jumps .019; a claim every 100 lines .025; upper bounds of perfect one-trick detectors: counters only .26,
+messages only .28. Privileged is 1.0 on 12 seeds (2 at full size).
+
+**E6 release_trains** (w1..w4, 40 lanes, 10 per agent, 5 to 9 minutes, about 1.3 MB each). Added after
+E1 to E5 as a further held-out task. Its author is an LLM agent that read this directory (including this README
+and the tools paragraphs in `pst_prompts.py`) and the tests, but no product code, product guide, article
+notes or result files. A lane bakes four candidate builds in turn, each followed by a gate that waits 70 s for promote or
+rollback. Outages must be rolled back within 60 s. The verdict follows documented rules (error rate, p95, memory, checksum,
+with exclusions and limits that change during a bake). Each agent has 18 bad and 22 good builds. Five guilty
+component versions are found by comparing manifests over all lanes. Decisions do not change bake lines, so the truth depends
+on the seed only; wall time depends on how fast decisions come. The format is fully documented and regular: one streaming
+script can decide everything, so E6 mainly tests whether it is ready in time (first gate after about 70 s; preparation
+before launching is allowed). A ceiling is possible. No LLM has run it yet.
+
+Scripted results for E6, seed 12345, `verify_e6.py`: rules followed with an independent reader 1.000 (301 s);
+promote at every gate, ignore outages .144; error rates over all lines, ignore outages .056 (both 376 s). Program CPU is
+0.02 of a core per 12 streams.
+
+**E8 phase_transitions** (w1..w4, 48 nodes, 12 per agent, launches for 420 s, runs of 90 s, about 0.27 MB
+each). Added as a further held-out task by an LLM agent that read E1 to E5, the runner, the prompts (including the tools
+paragraphs in `pst_prompts.py`), parts of this README and the tests, but no product code, product guide, article notes, results, E6
+or E7 sources. No LLM has run it yet.
+
+*The physics.* The Ising model is a lattice of magnets that point up or down and prefer to agree with
+their neighbours; in the q-state Potts model each site has one of q colours. Below a critical temperature T_c
+the lattice orders. Ising and q = 3 change continuously: fluctuations and correlation times diverge, and their growth with
+the lattice size is described by exponents (1/nu = 1 and 6/5). For q > 4 the transition is of first order: two phases coexist,
+the energy jumps by the latent heat, and runs stay in the wrong phase (hysteresis). An external field removes the
+transition. Finite lattices have no sharp transition, so T_c is found by finite-size scaling, for example where
+the Binder cumulants of two sizes cross. Exact results serve as truth: Onsager's sinh(2 Jx/T) sinh(2 Jy/T) = 1 (2/ln(1 + sqrt 2) for
+equal couplings), T_c = J/ln(1 + sqrt q), and Baxter's latent heat. Couplings, q and field are hidden and drawn from the seed.
+
+*The task.* Each agent has two samples and twelve nodes and chooses sizes and temperatures. Runs are real Metropolis
+simulations (eight replicas in one Python integer per spin bit, own PRNG per run, output a function of arguments, launch number and
+the agent's answers). 16 of the 48 nodes are faulty in one of four ways, visible only in comparison with other nodes, in
+fluctuations or in correlations. While they run, programs ask for replica-exchange decisions (the run waits up to
+60 s) and single replicas get stuck and have to be reset within 60 s. The wrong reactions cost points. The formats are
+documented and regular; preparation before the first launch is allowed.
+
+Tolerances follow repeated reference simulation at run length: Binder crossings of L = 8/16 to 16/32 were within 0.1 to 0.9 % of
+T_c (one of six 16/32 pairs 1.2 %), specific-heat peaks of L = 8, 16 extrapolate within 0.6 %, phase energies at L = 16, 24 give the latent heat within 5 %; the
+local 1/nu from cumulant slopes scatters by about 0.1 for q = 3. Hence T_c full within 1 %, zero at 4 %.
+Scripted results (`verify_e8.py`, reads only program output): reference 0.997 (seed 12345, 369 s)
+and 0.997 (seed 777, 369 s), lazy 0.199 (184 s); 12 streams per agent, 48 in total, 46 MB, programs 1.2 cores on average
+(machine 25 %, short peaks 74 % include the solver's own analysis), largest lag 0.05 s (lazy 0.10 s).
+
+**E7 zeta_campaign** (w1..w4, 48 windows, 12 per agent, 5 to 8 minutes, about 1 MB each). Held-out task whose author
+is an LLM agent that read E1 to E5, the runner, `ss_*.py`, `verify_solvers.py`, `verify_e45.py`, the tests and
+the task and scoring parts of this README, but no product code, product guide, article notes or results, and no E6
+source. Incidental exposure: the E6 entries of this README (task and scoring), some tool paragraphs of `pst_prompts.py`
+(the sub-agent paragraph) and `exp4_crash.py` (`TOOLS_EXTRA`), and the jobs-arm client classes in `verify_solvers.py`
+and `verify_e45.py`. No LLM has run it yet.
+
+*Domain.* The Riemann hypothesis says that all non-trivial zeros of zeta lie on the line 1/2 + it. Up to a finite height it
+can be verified: Hardy's Z(t) is real with |Z(t)| = |zeta(1/2 + it)|, so every sign change is a zero on the line,
+and the Riemann-Siegel formula evaluates Z with about sqrt(t / 2pi) terms. Gram points g_n (theta(g_n) = n pi)
+predict where signs alternate. Gram's law, (-1)^n Z(g_n) > 0, fails at 10 to 15% of them; between two good points
+(a Gram block) Rosser's rule gives the exact number of zeros. The rule is known to hold below n = 13 999 525, and all
+windows lie below. It is the completeness test here (for larger n one needs Turing's bound on the integral of S).
+A coarse grid misses close pairs of zeros; the most famous is Lehmer's, at 7005.0629 and 7005.1006. The
+spacings follow GUE statistics (Montgomery, Odlyzko).
+
+*Task.* Eight bands (g_n with n from 5e3 to 1.13e7, t up to 5.7e6), each cut into six windows that belong to different
+agents. The programs compute everything they print. Blocks short of zeros must be refined
+(control file, 75 s), evaluators that go wrong must be stopped and repaired (`--safe --from N`, 120 s). Five kinds of trouble exist;
+they are real changes of the arithmetic, visible only through the values. Afterwards: counts, the trouble and
+its onset per window; closest pairs, spacing variance, Gram blocks and S(g_n) per joined band; campaign statistics.
+
+*Truth.* `zeta_ref.py` shares no code with the programs (remainder up to C3 by Cauchy's integral, adaptive grid, every block certified
+by Rosser's rule). Tests compare it with Euler-Maclaurin summation (1e-8), the first zeros, N(100) = 29,
+N(1000) = 649, N(10000) = 10142, the 10000th zero, the bad Gram points below 400 and Lehmer's pair. Truth takes about 50 s of CPU.
+
+Scripted results for E7 at full size: not yet measured (`verify_e7.py`, policies wise and lazy). The post-run analysis of `verify_e7.py` alone, on unpaced scans of 300 intervals, gets full marks in counts, bands and campaign.
+
+**Arm C `native_sub`.** B's tools, prompt and limits plus Claude Code's Agent/Task tool. Its
+paragraph is B's plus a neutral offer (foreground or background, at most four at a time). Rules: the same
+Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`), depth 1 and 4 in parallel
+(`..._MAX_SUBAGENT_SPAWN_DEPTH`, `..._MAX_CONCURRENT_SUBAGENTS`), the same workspace, wall time and
+`--max-budget-usd`, no worktree or remote isolation, all other denials as in B. Sub-agent
+messages carry `parent_tool_use_id`; their turns, calls, result bytes and tool inputs (leak
+checks, one working directory per sub-agent) are counted and kept apart in `sub`. A sub-agent's prompt
+is not matched against leak patterns (it may repeat the rules).
+
+## Scoring (max 1.0)
+
+* E1: shards 0.50 (per violated kind: kind 0.3, op 0.4, key 0.3, divided by the
+  larger of true and claimed kinds; a clean shard needs an empty report), cells
+  0.25, livelock reactions 0.25 (stops in time minus false kills, over 8).
+* E2: podium 0.50, defects 0.30, efficiency 0.20 (times podium accuracy; 1 up to
+  1.25 times the reference unimodal search, 0 at exhaustive enumeration).
+* E3: 0.9 x mean over jobs (run id 0.05, outcome 0.15, exit code or timely
+  termination 0.10, violation 0.20, leak 0.10, digest or last epoch 0.10,
+  continuity 0.10, checkpoints in time 0.20) + 0.1 x node-group pairwise F1.
+
+* E4: results 0.30 (digest .6, peak .4 per job), failure history 0.15, economy 0.20 (units executed
+  beyond those that the best checkpoints require, relative to the job, 6% free plus 45 units per
+  corruption), no unneeded relaunch 0.10 (a launch while a healthy one runs or after a valid
+  result), recovery within 120 s 0.20 (36 faults), no process left at the end 0.05. Economy, relaunch and
+  orphans count only for finished jobs. Raw figures: `grade.process`.
+* E5: 0.75 x micro F1 over all claims (location .5, or .25 at 9 to 60 lines; kind .5; one claim per
+  anomaly), 0.15 x (questions answered in time minus wrong codes), 0.10 x pairwise F1 of the cause groups.
+* E6: decisions in time 0.50 (right +1, wrong -1, none 0, good and bad builds weighted equally, floor 0; first
+  launch of a lane only), build reports 0.40 (reason .4, p95 .3, errors .3; outages reason only), culprits 0.10.
+* E8: samples 0.50 (order .30, T_c .35, honest error bar .10, 1/nu or latent heat .25 each; without a transition order .6, null
+  T_c .4), faulty nodes 0.25 (F1, kind counts half), exchange answers 0.10 (right minus wrong, of 96), resets 0.15 (right
+  minus wrong, of 48).
+
+* E7: refinement F1 0.25 (a short block asked for in time .7, with a grid fine enough .3), repairs 0.25 (credit
+  minus unneeded interventions, over the jobs with trouble), diagnosis F1 0.15 (kind .6, onset .4), counts per window
+  0.15, bands 0.15, campaign 0.05. Reactions are thus half of the score; a window that was never launched earns nothing.
+
+Largest single item: E4 .0075, E5 about .005 (v2: up to .058).
+Missing shards or jobs in `final.json` fall back to the per-shard/job file.
+
+## Hypotheses (fresh for v2) and decision rule
+
+At least 5 pairs per experiment; differences are paired (A minus B, same seed). A
+score difference is material if its mean is at least 0.05 in absolute value with
+the same sign in at least 4 of 5 pairs. Cost, tool-result bytes and wall time are
+material at 15% of B's mean with the same sign condition. Otherwise: tie. Report
+all runs, then without tainted ones. Runs with `low_parallelism` are kept and
+reported; a sensitivity analysis drops them. Do not pool experiments.
+
+* **H1 (E1): tie on score, B cheaper.** The analysis is script work and the
+  reactions are possible with one watcher loop.
+  Falsified if the score difference is material, or A is not at least 15% dearer.
+* **H2 (E2): tie on score, and A does not use fewer benchmark seconds.** A driver
+  script serves both conditions.
+  Falsified if the score difference is material, or program seconds differ by 15%
+  with a consistent sign.
+* **H3 (E3): A scores higher,** through exit codes, continuity and stall/checkpoint
+  reactions right after the shift change.
+  Falsified if the score difference is not material or is negative. This is
+  realistic: v1 gave A no clear score advantage.
+
+The same rule applies to each pair of arms. Metrics whose B mean is 0 are material if every
+condition on the sign holds. `summarize.py` prints the verdict ("a>b", "a<b", "tie").
+
+* **H4 (E4): A loses less to crashes.** A has fewer recomputed program seconds
+  (`recomputed_program_s`) AND fewer unneeded relaunches AND fewer orphans than B, each
+  material, and no materially lower score. Supported if all three and the score clause hold; partly
+  supported if at least one of the three holds and none is materially worse; refuted if
+  any of the three is materially larger for A, or the A score is materially lower; otherwise null.
+  *Honest expectation:* null or partly supported. All arms are warned, nohup survives these crashes,
+  and the native wrapper recipe is in the prompt; A pays for the server fault and for lost ownership.
+* **H5 (E5): A scores no lower and reads fewer tool-result bytes.** Supported if the score difference
+  A - B is not materially negative and A's bytes are materially smaller. Refuted if the score is
+  materially lower or the bytes are materially larger. Otherwise null on bytes.
+  *Honest expectation:* score tie, bytes refuted (A larger). Finding anomalies is script work over
+  files, A offers native tools plus more round trips, and in the v2 pilot A returned 2.1 to 3.0 times B's
+  bytes. Product changes since then may alter this.
+* **H6 (E4, E5): cost.** A's `cost_est_usd` is materially higher than B's. Falsified by a tie or a lower cost.
+* **H7 (C against B, all experiments): no score difference, higher cost, no shorter wall time.** Per
+  experiment: falsified if the score difference C - B is material, or the cost (`cost_est_usd`) is not
+  materially higher, or wall time is materially shorter. *Expectation:* few sub-agents are started;
+  with fewer than one per run on average H7 says nothing about sub-agents, and is reported as
+  "not used".
+* **H8 (A against C): descriptive**, no prediction.
+
+**Power, n = 5.** The rule needs the same sign in 4 of 5 pairs. With no true effect the sign part alone holds
+by chance in 12 of 32 cases (38%); the size part is what limits false alarms. By simulation (normal
+differences), a true score difference of 0 / .05 / .10 is called material in 2 / 48 / 99% of cases with a
+paired sd of .05, and in 20 / 41 / 78% with sd .10 (the v2 pilot suggests .05 to .15): a false alarm is likely if scores vary
+much, so the observed sd is reported with every verdict. Cost sd between runs of one arm is 10 to 25%, so 15% differences are at the edge. Dozens of metrics times
+three pairs times five experiments produce chance verdicts: only H1 to H7 are confirmatory. A null
+result is "tie" on the primary metrics of a hypothesis. It means "no difference of this size seen",
+not equivalence. E4 raw counts near zero in every arm (a ceiling) are also null. Errors cluster by agent (four
+per run), so many small items give finer resolution, not more independent data.
+
+## Secrecy and isolation
+
+* One seed per (experiment, rep), shared by all arms; arm order shuffled per
+  block, experiments shuffled per rep.
+* No truth file exists; the grader recomputes truth from a seed that stays in the
+  runner's memory until the pair ends (`PST_EXP_SEED`/`--seed` are visible to `ps`).
+* Workspaces hold compiled programs and opaque images only, in
+  `OUT/runs/<random id>/ws`. A finished run's directory is mode 000 while the
+  others of its block run. After a hard kill of the runner: `chmod 700 OUT/runs/*`.
+* Tool inputs are scanned for reads of harness, other runs, program internals,
+  decompilers and transcripts; `bin/` is hashed. Hits mark the run `tainted`.
+  This detects, it does not prevent.
+* In A each run has its own Pluto server (`tests/smart_tasks_server.py`) with
+  `max_running=96, max_per_agent=32`. The server's defaults are 16 running and 8 per
+  agent: with them these tasks would queue, so results hold for a raised limit.
+* Cleanup kills only tracked descendants (pid + start time) and tty-less processes
+  started after the run began whose command line or cwd is in the workspace.
+
+## Metrics per run
+
+v1's metrics plus `protocol_version`, `peak_streams`, `peak_streams_total`,
+`low_parallelism`, per-agent `timed_out`, `cpu_share_mean/max` (whole machine, from
+`ps`), `program_cpu_s` and `max_pacing_lag_s` (worst delay of any program behind its
+own schedule; small values mean that load did not distort timing). Agent limits
+are equal in all arms: 1200 s (E1, E2, E3 shift 2, E5), 240 s (E3 shift 1), 1100 s (E4).
+
+Measured with the scripted solvers (10 cores, 24 GB, no LLM), score 1.0 in every
+cell. E2 is seed 4242, E1 and E3 seed 777; values are plain / jobs style.
+
+| | Wall s | Output MB | Launches | Peak per agent | Peak total | Program CPU s | Machine CPU mean; max | Max lag s |
+|---|---|---|---|---|---|---|---|---|
+| E1 | 221 / 222 | 93 / 93 | 48 | 12 | 48 | 28 / 43 | 0.14; 0.38 / 0.09; 0.29 | 0.03 / 0.03 |
+| E2 | 409 / 408 | 113 / 113 | 226 | 15 / 16 | 60 / 62 | 48 / 53 | 0.07; 0.54 / 0.09; 0.38 | 0.25 / 0.13 |
+| E3 | 510 / 510 | 57 / 57 | 24 | 12 | 24 | 16 / 33 | 0.13; 0.49 / 0.07; 0.31 | 0.02 / 0.02 |
+
+Maxima are single samples, and include everything else on the machine.
+
+E4 and E5 with the scripted solvers (real crash schedule and runner code; another agent's tests were running
+on the machine). E4 wall times bound a fast team; agents need longer, limits 1100 and 1200 s.
+
+| | Score | Wall s | Launches | Peak per agent | Max lag s |
+|---|---|---|---|---|---|
+| E4 plain, seed 777 (3 agent crashes) | 1.0 | 397 | 76 | 10 | 0.02 |
+| E4 jobs, seed 778 (3 agent crashes, 1 server crash) | 1.0 | 404 | 76 | 10 to 11 | 0.02 |
+| E5 plain, seed 777 | 1.0 | 311 | 48 | 12 | 0.12 |
+| E5 jobs, seed 4242 | 1.0 | 314 | 48 | 12 | 0.02 |
+| E4 plain, seed 777, policy naive | 0.8465 (6212 s recomputed) | 715 | 103 | 10 | 0.02 |
+
+The first E4 plain run scored 0.9968: the solver relaunched a program in the moment between its exit and the
+wrapper writing the exit code (a race that native agents can meet too). Only the solver was
+changed. E5 found and fixed two generator defects before any agent run (a LEVEL plant without violation, a line number
+off by one after a table header). The jobs solver calls the HTTP API under the crashed agent's id, so it does
+not meet the lost-ownership problem described above.
+
+**Cost.** `cost_usd` is the reported total. A killed session (E3 shift 1, E4 crashes) has no result event; `cost_est_usd`
+then uses list prices, which reproduce the reported cost of all 24 v2-pilot sessions, with input and
+cache tokens from the messages (equal to the final totals in all 24) and output tokens estimated
+(leave-one-out error of the cost: median 1.4%, worst 7.7%, on whole sessions; an interrupted message is
+undercounted). E4 uses `cost_est_usd` as its cost metric.
+
+**Sub-agent accounting: what is and is not verified.** From the 78 transcripts at hand: every message has
+`parent_tool_use_id` (always null there, as no sub-agent ran), result events have `subagent_stats`, and
+message usage adds up to `modelUsage` (24 checked). From the installed CLI's text (2.1.319, not run): sub-agent messages
+carry the id of the Agent call; the environment variables above exist; `--forward-subagent-text`
+also streams their text. NOT verified, needs one run: that `modelUsage`/`total_cost_usd` and
+`--max-budget-usd` include sub-agents, that the variables act in `-p` mode, that denials reach sub-agents.
+Guards: if messages show more cache-read tokens than `modelUsage` the run is flagged `subagent_usage_missing` and the
+estimate adds them; `subagent_model`, `subagent_nested`, `subagent_call` (in A or B), leaks `forbidden_tool` and
+`isolation`. Check these flags on the first C run before spending more. Sub-agents that run in the background
+may end silently with their parent.
+
+**What calls are for** (`categories`, `pst_classify.py`, all arms and sub-agents): argument bytes, turns
+and estimated output tokens per class: process handling, output analysis, coordination, answer writing, other. The
+rules are in its docstring. A manual check of 40 random v2-pilot calls (one rater, rule output
+hidden, held out) found 4 errors: 10% (95% CI 4 to 23%), on mixed Bash calls and scripts whose
+file name does not tell what they do. Differences of a few percent between arms mean nothing. Exploratory.
+
+## Threats to validity
+
+* E4 warns agents of crashes, so it measures recovery by prepared teams. Unprepared native agents would
+  lose more. Crash times follow the wall clock and hit agents at different stages of their work; an agent that is
+  faster has finished more. A crash that finds its agent finished is recorded as missed (`chaos`).
+  A server crash needs the agent to survive it; there is one per run only.
+* E4 and E5 have the same author as the harness, who knows the product guide. E4's themes
+  (durable output, exit codes) are the product's selling points, E5's theme is not.
+* E5's structure mix, number formats and English messages are synthetic. Its root cause is one lane number.
+* C differs from B by more than the offer if the Agent tool's description changes behaviour by itself.
+
+* The SmartTasks implementation changed between the v1 runs and v2: compact
+  results (after the v1 pilot), fixes from two code reviews, and list arguments
+  (`commands`, `job_ids`, once-only `job_wait` events) added after the v2
+  stress test and before any v2 agent run. v1 and v2 numbers must not be pooled.
+* After v2 pilot 1 (one rep; excluded from the main results and reported as
+  "before") the implementation changed to reduce agent cost: short ids, group
+  handles, `each` templates, `wait_s`, the output path, the last line on exit,
+  fewer wakeups, smaller schemas and results, longer waits, and a connection
+  retry fix. Prompts, tasks, graders and hypotheses did not change. These are
+  general features, but they were chosen after seeing agents on these tasks, so
+  the cost result after them is partly tuned and needs other tasks to confirm.
+  A new pilot precedes the main run.
+* The leak detector then changed too: all four pilot-1 flags were false alarms, all
+  in native runs (`pgrep` on a program name; `../..` inside the workspace). It now
+  resolves `..` and matches within a line. It does not catch `pkill -f` patterns
+  that reach a teammate's program, which happened once (native, E2, no score
+  effect). `duration_ms` and MCP `tool_errors` were undercounted and are fixed.
+* Then came `job_analyze` and `job_watch` (built by an agent that did not see the
+  experiments), a smaller default tool set, the `pst` shell command, per-job grep
+  limits, and crash-safe agent identity: building E4 showed that a replacement agent
+  was renamed and did not own its predecessor's jobs. That is fixed in the product
+  before any E4 agent run, so E4 was not blind to this defect. The SmartTasks prompt paragraph
+  now names means instead of one tool per step.
+* In pilot 2, three SmartTasks variants (MCP `pst_mcp`, shell `pst_cli`, both `smarttasks`) were
+  compared on E1-E3 in pilot 2, one rep each, and the cheapest whose mean score is
+  within 0.05 of the best is frozen. E1-E3 cost results are therefore tuned;
+  E4 and E5 are run by no agent before the main run.
+* Pilot 2 go/no-go against pilot 1 (fixed in advance): total PST cost on E1-E3
+  at least 25 % lower, turns at least 25 % lower, mean score at most .05 lower,
+  no protocol failure, every peak at least 8, the new means used.
+* **v4.** Pilot 2 was stopped by its owner after ten runs (E1, E3). It showed agents writing
+  watchers, id tables, wait loops and per-job collectors by hand in every arm, and never using
+  `analyze` or `watch` from the shell. The product then got rules that act, names, `each`,
+  `report`, `brief` and terse listings. They were designed from E1 and E3 transcripts, so
+  E1-E3 are *tuned for A*, E3 most. E6 was written by an author who saw neither the plan nor
+  the product code, and was not opened by the implementer before the product was frozen.
+  The arm `smarttasks` is now `pst` without MCP tools, as shipped; `pst_mcp` and `pst_both`
+  remain as variants.
+* Pilot 3 pass mark, fixed before the code: E3 + E6 together cost less than same-day native with
+  a mean score at most .05 lower, and E1 + E2 cost at most 1.25 times native with no lower score.
+* The pilot 2 detector flagged agents that read raw output of their own run's jobs, which the
+  product points them to, and `cd` inside here-documents. Both are fixed; the transcripts of a
+  run's agents are now matched explicitly.
+* **v5.** Pilot 3 was stopped after eight runs. In its E6 run of A one agent typed `pkill -f judge.py -P 1`,
+  which matched every command line with a "1": a teammate's session, the Pluto server, running programs,
+  and programs of the machine's owner. The run counts as it is (score .2); the runner now contains all
+  arms alike (`pst_contain.py`). Reading that transcript ended the implementer's blindness to E6, and
+  showed a missing means: a replaceable program on live output. `follow` was added for it, so E6 is
+  tuned for A from here on. E7 and E8 were written before and are unread.
+* Pilot 3's E2 run of B scored 0 by the same hazard: `pkill -f "tune 2.*" -n` matched the `-n` in the command lines of three
+  teammates' sessions, which ended in the same second. Agents of every arm had signalled
+  programs by pattern, sometimes a teammate's.
+* Pilot 1's E3 PST run overlapped other work on the machine (pacing lag up to .62 s
+  against .02 s for native).
+* Scores are coarse: one E2 podium entry is .058 and one E1 livelock .031, against
+  the .05 materiality threshold, and errors cluster by agent. In pilot 1 each score
+  gap came from one mistake by one native agent.
+* v2 was shaped after v1 results (see History), in order to lift tasks off the
+  ceiling, not toward a condition; the ceiling may return, as Sonnet scripts well.
+* Small n, one model, one machine. Defects are planted in trace emission; AVL and
+  shortest paths are real, the E3 map and E2 costs are simulated.
+* Reaction windows (75 to 150 s) interact with model latency. API slowness hits
+  both conditions, at different moments.
+* E3 shift-1 agents that hit the cutoff have unknown cost (`cost_complete` false).
+  The deadline of a request issued shortly before the shift change may pass
+  between shifts in both conditions. Early requests come at 55 to 120 s of job time.
+* A's tool descriptions add context; ToolSearch may defer MCP tools. Prompt
+  paragraphs cannot be proven equivalent.
+* `job_start` runs outside Claude Code's Bash handling; Bash background and Monitor
+  behaviour depend on the CLI version.
+* Secrecy relies on prompt rules plus detection; agents share the OS user.
+
+## E10 colouring_campaign (v0.6.0, written blind)
+
+**Domain.** The chromatic number chi(G) is the least number of colours in a proper
+vertex colouring. A clique of size omega forces omega <= chi; a proper colouring with k
+colours shows chi <= k. Where omega < chi, only an exhaustive search (here DSATUR branch
+and bound) proves the lower bound, and that search prunes only as well as its best known
+colouring, which local search (TabuCol, simulated annealing) usually finds much sooner.
+Campaigns therefore race exact solvers against heuristics, feed the heuristics'
+colourings to the exact runs as upper bounds, give up on searches whose trees cannot be
+closed in time, and accept nothing without a checkable certificate.
+
+**Task** (w1..w4, 32 seeded graphs in DIMACS format, 8 per agent, at most 16 running solvers
+per agent, launches allowed for 420 s, exact runs stop after 480 s). `bin/gcol --graph G
+--method exact|tabu|anneal [--seed S]`. Per agent two graphs of each of four kinds:
+planted (chi = omega, by construction), random graphs that the exact solver closes on its
+own, random graphs that it closes in time only with a shared colouring, and dense random
+graphs whose search tree cannot be closed (gap between omega and the best colouring). All
+search is genuine and paced (fixed nodes or moves per second per graph). The exact solver
+reads `bounds/G.ub` about once a second, prints the share of its tree that is closed, and
+stops by itself at ub = lb or when the tree is exhausted. Some runs print wrong
+certificates; reruns with another seed are unaffected. Results are deterministic given the
+seed and, for exact runs, the hints and when they arrived.
+
+**Truth.** Planted graphs: chi = k by the planted colouring and clique. Other closable
+graphs: chi from an independent exact computation (`exp10_truth.py`: Bron-Kerbosch for
+omega, bitset colour-class backtracking for k-colourability), cross-checked against the
+plan's branch and bound. Hopeless graphs: lb = omega (independent), ub target = the best
+proper colouring of the documented heuristic runs; any proper colouring at least as good
+counts. The plan rejects candidates until each graph has its kind's property (measured by
+running the solvers offline), so building a seed takes about 35 s.
+
+**Score.** Graphs .55 (per graph: lb .35, ub .40 if backed by a proper colouring, clique of
+size omega .25), rejected runs .15 (F1 over graph and method), bound sharing .15 (a new best
+proper colouring found while an exact run of that graph had a worse incumbent must be
+adopted by that run within 45 s; per graph that is not hopeless), cut-offs .15 (exact runs
+on hopeless graphs: full credit if stopped within 150 s of start, none at 330 s).
+
+Scripted solvers (`verify_e10.py`, plain processes, no LLM): full size, M4, other load present.
+
+| | Score | Wall s | Output MB | Launches | Peak per agent / total | Program CPU s | Machine CPU mean; max | Max lag s |
+|---|---|---|---|---|---|---|---|---|
+| ref, seed 1 | 1.000 | 280 | 24.6 | 98 | 16 / 64 | 78 | 0.09; 0.41 | 0.00 |
+| ref, seed 2 | 1.000 | 329 | 24.7 | 98 | 16 / 64 | 57 | 0.09; 0.37 | 0.06 |
+| lazy, seed 1 | 0.552 | 481 | 39.5 | 96 | 16 / 64 | 148 | 0.08; 0.16 | 0.00 |
+
+Lazy parts: graphs .875, rejected 0, sharing .47 (exact runs find some colourings themselves),
+cut-offs 0. Wall time excludes the ~35 s build. Hopeless graphs are chosen so that even
+with the best colouring at the start less than 3% of the tree is closed after 1.5 time limits.
+
+**What the author read.** Only `docs/research/experiments/smart_tasks` (exp1-5, wl_*,
+run.py, ss_*.py, verify_*.py, README apart from the tool descriptions) and the tests
+`tests/test_experiment_smart_tasks*.py` (e1-5) for conventions, at commit cf75cd6. No
+product code or guide, no other branch or worktree, no results or notes, no other new
+experiment. The task shape was chosen to differ from E1-E5 (and from E2's shortest-path
+search). The task does not favour any tool: everything is files, processes and logs.
+
+## Commands
+
+    PY=<python with the mcp package>; H=docs/research/experiments/smart_tasks
+    (cd src_erl && rebar3 compile)
+    $PY -m pytest tests/test_experiment_smart_tasks.py tests/test_experiment_smart_tasks_e45.py \
+        tests/test_experiment_smart_tasks_e6.py tests/test_experiment_smart_tasks_e8.py
+
+        tests/test_experiment_smart_tasks_e6.py tests/test_experiment_smart_tasks_e7.py
+    $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style plain     # full size, no LLM
+    $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style jobs      # real server and client
+    $PY $H/verify_e45.py SCRATCH --exp 4,5 --style plain|jobs [--policy naive]
+    $PY $H/verify_e6.py SCRATCH [--policy wise|lazy|errors]
+    $PY $H/verify_e8.py SCRATCH [--policy wise|lazy]
+
+    $PY $H/verify_e7.py SCRATCH [--policy wise|lazy]
+
+        tests/test_experiment_smart_tasks_e10.py
+    $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style plain     # full size, no LLM
+    $PY $H/verify_solvers.py SCRATCH --exp 1,2,3 --style jobs      # real server and client
+    $PY $H/verify_e45.py SCRATCH --exp 4,5 --style plain|jobs [--policy naive]
+    $PY $H/verify_e10.py SCRATCH --policy ref|lazy [--seed N] [--speed X]
+    $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --dry-run
+    $PY $H/run.py --out ~/Workspace/ss-experiments/v3 --reps 5 --budget-usd 5 \
+        [--exp 4,5] [--conditions smarttasks,native,native_sub]
+    $PY $H/summarize.py ~/Workspace/ss-experiments/v3 [--exclude-tainted]
+    $PY $H/pst_classify.py ~/Workspace/ss-experiments/v3 [--sample 40 --seed N --hide]
+
+`--out` must be outside git. `--http-port N` (with `--pluto-host` and
+`--smarttasks-home`) uses a running server instead of private ones.
+
+## Confirmatory run, protocol 5 (fixed 26 Nov 2026, before its first run)
+
+* **Blind tasks only.** E1-E6 are excluded: E1-E3 shaped v4, E6 shaped `follow`, and E4/E5 were written
+  alongside the product. The study uses E7 (mathematics), E8 (physics), E9 (computational biology),
+  E10 (graph theory) and E11 (numerical weather prediction), each written by an author who saw neither the
+  product code nor the plan, on a commit older than the product under test, and not opened by the implementer.
+  E9-E11 are written after the product was frozen; E7 and E8 had two pilot pairs each, not pooled.
+* Code: the commit recorded in `v5main.commit`; no product or harness change during the run. A harness
+  fault (a run that cannot be graded, or an agent ended from outside its arm) stops the run; it is fixed,
+  disclosed and the affected pairs are repeated, never dropped silently.
+* Model: every agent is Claude Sonnet (`--model sonnet`); a run in which any other model appears is a
+  protocol failure (`wrong_model`).
+* Arms: native and smarttasks (pst, no MCP tools). native_sub is not run: no agent used a sub-agent in
+  the pilots, so the arm is reported as "not used", not as evidence about sub-agents.
+* 8 pairs per task (one seed per pair, order random), 80 runs, budget 5 USD per agent.
+* **Primary decision, pooled over the 40 pairs:** SmartTasks is better if the mean paired cost difference
+  (A - B) / B has a one-sided 95% bootstrap bound below 0, AND the mean paired score difference A - B has its
+  one-sided 95% bound above -0.05 (resampling pairs within tasks). Worse if the cost bound is above 0 or the score bound
+  is below -0.05. Otherwise inconclusive.
+* Load: every pair records peak machine CPU share and the largest pacing lag. A sensitivity analysis repeats the
+  primary decision without pairs whose lag exceeds 0.25 s in either run; if the two analyses disagree, both are
+  reported and the conclusion is "load-dependent".
+* Secondary, per task: the same two quantities with 95% intervals, wall time, turns, tool-result bytes, feature adoption.
+* Planning figures from the pilots: paired cost sd about 15%, score sd about 0.07. 8 pairs detect about
+  15% / 0.07 per task; 40 pairs about 6.6% / 0.031 pooled (80% power, two-sided 5%).
+
+## Confirmatory run, protocol 6 (fixed 26 Nov 2026, before its first run)
+
+* Protocol 5 was stopped early (70 of 80 runs in `v5main`) and is not pooled with this run. Protocol 6 is
+  protocol 5 with exactly three differences; every other rule above (blind tasks E7-E11, Sonnet only, arms
+  native and smarttasks, 8 pairs per task, 80 runs, 5 USD per agent, primary decision, load sensitivity,
+  secondary measures, harness-fault handling) applies unchanged.
+* Code: the commit recorded in `v6main.commit`. It adds job admission (`pst run --slot NAME:N`, `--after JOBS`,
+  `--after-ok`, `--lock RES[:read]`), runner-fed followers, news lines, and accepts more agent habits (`head`,
+  `grep -A/-B/-c`, comma-separated names). No product or harness change during the run.
+* Output: `v6main` (log `v6main.log`).
+* Prompt: unchanged from protocol 5. Agents learn the new options only from `pst help`; adoption of each new
+  option is reported as a secondary measure.
+* Deviation, decided 27 Nov 2026 after 8 of 80 runs: in E7 pair 1, smarttasks agent w1 had one Bash
+  command refused by `dontAsk` mode (a `python3 - <<EOF` edit of its own script) and ended after 72 s, leaving
+  its jobs unwatched (score 0.505 vs native 0.857). This is not a harness fault under the rules above, so the
+  run is not stopped and the pair stays in the primary analysis. As a sensitivity analysis, every pair in
+  which an agent of **either** arm had a permission denial gets one fresh pair of the same task (rep 9 and
+  up, new seed) after `v6main` ends, in `v6rerun` (plan in `v6rerun.plan`). Results are reported as run, and
+  with each affected pair replaced by its rerun. The trigger is chosen by arm-blind rule, not by score.
+* Stopped 27 Nov 2026 after 20 of 80 runs (`v6main` is kept and not pooled), because it measured a known
+  product fault: four agents in one workspace all called their batch `z`, and a name meant every agent's
+  jobs of that name in the directory. `pst follow z` of one agent attached monitors to the other agents'
+  jobs, which wrote repair requests into their control files (E7 pair 2), and `--after tb` waited for the
+  other agents' `tb` (E10, 2 runs). The fault predates protocol 6; protocol 5 had it too.
+
+## Confirmatory run, protocol 7 (fixed 27 Nov 2026, before its first run)
+
+* Protocol 6 with these differences only; every other rule (blind tasks E7-E11, Sonnet only, arms native
+  and smarttasks, 8 pairs per task, 80 runs, 5 USD per agent, primary decision, load sensitivity,
+  secondary measures, harness-fault handling) applies unchanged.
+* Code: the commit in `v7main.commit`; rows say `protocol_version: 7`. Product changes since protocol 6:
+  * A name means the agent's own jobs; others' (shared directory) only for reading, with a note on
+    stderr; `follow` and `--after` take others' jobs by id only.
+  * `--after 'tb/{k}'` with `-e`: each job waits for its own; comma lists keep their group (`l2/7,8`).
+  * A name grows only with rounds of the same parameters; a round with other parameters replaces it.
+  * A follower ends when the followed job is lost or removed (it waited forever).
+  * Admission keeps order per lock resource and per slot (no writer or small-slot starvation); a slot's
+    limit is the strictest `slot_max`; a spawning job keeps its lock.
+  * News: cancels by `--after-ok` are reported; a command marks seen only the jobs it showed.
+* Output: `v7main` (log `v7main.log`).
+* Prompt: unchanged. Agents learn the new options only from `pst help`.
+* Permission denials (fixed now, not after the fact): `dontAsk` mode refuses some Bash commands in both
+  arms; protocol 5 had 5 in 70 runs, 4 native. Every pair in which an agent of either arm had a permission
+  denial gets one fresh pair of the same task (rep 9 and up, new seed) after `v7main` ends, in `v7rerun`
+  (plan in `v7rerun.plan`). Primary analysis: as run. Sensitivity: each affected pair replaced by its rerun.
+* Cross-agent check: after every smarttasks run, `pst_crossjobs.py` lists jobs whose `follows` or
+  `after_jobs` name a job opened by another agent; a watcher stops the run at the first one. If the
+  agent asked for it by id (a deliberate link), it is reported, not a fault, and the run resumes with
+  the pairs not yet run. Otherwise it is a product fault: fixed, disclosed, and restarted as a new
+  protocol.
+
+## E9 sequencing_cohort (written blind, after protocol v3)
+
+**Domain.** A sequencing core runs a 48-sample cohort on a targeted SNP panel (480 unlinked
+SNPs on a 48 kb panel reference with one segmental duplication). Each run is a real simulation:
+the program builds the sample's diploid haplotypes from a simulated population with families,
+draws library molecules (PCR duplicates, short inserts with adapter read-through, junk, and for
+some libraries another person's DNA), sequences them with a base-quality model (some flowcells
+degrade part way) and aligns every read to the reference with a seeded ungapped local aligner,
+printing SAM records (15000 reads, ~1.2 MB per run in 300 s). What a bioinformatician would do is
+needed: pileups with read and base filters, genotype likelihoods, contamination estimates
+(mixture models), sample identity against genotyping-array fingerprints, kinship/IBS0 for
+relatives and cohort allele frequencies. Quality control runs while the data come in: some runs
+must be stopped by a deadline and partly or wholly re-sequenced (`--library 2`, `--flowcell 2
+--from K`), and needless stops or re-runs cost. The cohort questions need every agent's
+genotypes, so agents share them through board/. Truth comes from the simulation (`truth(seed)`
+recomputes it from the seed, never from program output); results do not depend on scheduling.
+
+Files: `exp9_cohort.py` (plan, truth, build, grader), `exp9_text.py` (prompt, workspace docs),
+`wl_seq.py` (the program), `e9_analysis.py` + `verify_e9.py` (scripted solvers),
+`tests/test_experiment_smart_tasks_e9.py`. Registered as `--exp 9`; `--exp all` still means 1-5.
+
+Scoring: genotype calls at 16 reportable sites 0.25, identity 0.15, contamination (estimate,
+source, clean samples) 0.15, degradation onset 0.05, relatives (pairwise F1, wrong relation half)
+0.15, allele frequencies 0.10, QC reactions 0.15 (stopped in time .6 + re-run started .4 per QC
+sample, minus .5 per healthy run stopped or needless re-run). Partial credit with tolerances.
+
+    $PY -m pytest tests/test_experiment_smart_tasks_e9.py
+    $PY $H/verify_e9.py SCRATCH --seed N [--policy reference|lazy]   # full size, no LLM
+
+Scripted results (full size, plain processes, Apple M4, shared machine): reference 1.000 (seed 1)
+and 0.996 (seed 2, one contamination estimate half right), wall 309-310 s; lazy 0.497 (seed 1).
+Every agent's peak is 12 streams (48 at once); program CPU 54-136 s per run of the fleet (2-5% of
+the 10 cores), largest pacing lag 0.23 s, output about 61 MB per run (1.2 MB per stream).
+
+**What the author read.** Only this directory's experiment code (exp1-5, `wl_*`, `run.py`,
+`ss_*.py`, `verify_*.py`), this README except the descriptions of the tools under test, and the
+tests of this directory. Not read: product code, product docs, other branches or worktrees,
+article notes, results, and anything of experiments 6-8. The task was designed to be
+tool-neutral and not shaped for or against any tool.
+
+## E11 surge_ensemble (added after v3, not pre-registered)
+
+Run only on request (`--exp 11`; `--exp all` stays E1 to E5). Files: `exp11_surge.py` (entry),
+`exp11_plan.py` (plan, agent docs), `exp11_score.py` (parsing, products, truth, grader),
+`wl_swm.py` (the model), `verify_e11.py` (scripted solvers), `tests/test_experiment_smart_tasks_e11.py`.
+
+**Domain.** Ensemble prediction of a storm surge. Each member integrates the 1-D nonlinear
+shallow-water equations on a closed periodic channel (100 cells of 10 km, about 20 m deep, bottom
+ridges) driven by a moving storm's wind stress: Arakawa C-grid, flux-form continuity (mass is
+conserved to rounding), vector-invariant momentum, leapfrog with a Robert-Asselin filter, linear
+drag and lagged viscosity. Members perturb the initial state, mean depth, drag and the storm's
+strength, speed (near-resonant with the shallow-water wave speed, so the surge grows), track and
+timing; a nature run is the verifying truth of the hindcast. The step's stability number is the
+exact von Neumann bound of leapfrog C-grid gravity waves Doppler-shifted by the local current; it
+grows with the surge, so a member whose configured step is too long goes unstable in mid-forecast
+and its fields turn to nan within a few model hours, while the program carries on. Some members
+use a positivity floor that silently adds water when set-down deepens (a classic wetting-and-drying
+fault); they are only visible as mass drift. All of it is genuine stdlib floating point.
+
+**Task** (w1..w4, 48 members, 12 per agent, plus the nature run for w1; 150 s per run whatever
+the step; 600 s sessions). Per agent: three members go unstable at 27 to 40 h of the 72 h
+forecast (57 to 85 s into the run); two are non-conservative (relative drift 1e-7 to 1e-3, onset
+when set-down is deepest); one stays just below the stability limit (peak 0.95 to 0.995, a
+trap for a loose threshold); six are clean. A run must be stopped within 40 s of its first unstable
+step and the member rerun with `--substeps 2`; every valid run must finish within 400 s of the
+session start (the issue time). Products over the 40 valid members: rmse and spread at six lead
+times, a rank histogram over 16 stations x 72 hourly times, an exceedance probability, a median
+peak time, the member closest to nature, and a mean flooded-cell count from the field dumps.
+Output is 0.3 to 0.7 MB per run, 25 to 27 MB in total; all programs together used about 7 % of the machine.
+Results are a pure function of (member, substeps), so they do not depend on scheduling.
+
+**Scoring.** members .25 (status; onset step of unstable members within .01 h; drift of
+non-conservative ones within 5 %), operations .20 (per member a valid run by the issue time; for
+unstable members half for stopping the configured run within 40 s of its onset and half for the
+rerun; -.02 per unneeded launch), skill .20 (12 values, full within 1 %, half within 5 %), rank
+histogram .10 (1 - L1 / cases), questions .25 (four, partial credit). Truth integrates every member
+again (`wl_swm.trace`) and reads the printed values, as an agent does; the plan's own
+integrations only choose the configuration and are cross-checked in the tests.
+
+**Scripted results** (`verify_e11.py`, plain processes, full size, M4 shared with other work):
+
+| Solver | Score | Wall s | Peak per agent | Total peak | CPU share mean / max | Max lag | MB |
+|---|---|---|---|---|---|---|---|
+| ref, seed 1 | 1.000 | 221 | 13/12/12/12 | 49 | .074 / .18 | .02 s | 25.1 |
+| ref, seed 2 | 1.000 | 238 | 13/12/12/12 | 49 | .075 / .19 | .06 s | 25.8 |
+| lazy, seed 1 | .674 | 309 | 13/12/12/12 | 49 | .070 / .36 | .01 s | 27.1 |
+
+Lazy waits for all runs and reruns those whose output went nan: no stop within 40 s, onsets read
+off the first nan, non-conservative members kept (members .76, operations .88, skill .33, rank .55,
+questions .75). The plan (about 15 s CPU, cached per process) and truth (about 7 s) were checked on
+seeds 1 to 8: every member behaves as planned and the ensemble has 40 valid members.
+
+**What the author read.** Written blind, on a commit older than the product under test: E1 to E5
+sources (`exp3_relay.py`, `exp5_probe.py` and the parts of `exp1_shards.py` that grade reactions
+in full, the others in part), `wl_common.py`, `wl_soak.py`, `pst_build.py`, `pst_prompts.py`,
+`run.py`, `pst_procs.py` (process tracking), `verify_solvers.py`, the head of `verify_e45.py`,
+the offline tests of E1 to E5, and this README's task, scoring and commands sections. Those files
+contain the tool paragraphs of the prompt and the E1 to E3 feature table, which were therefore
+seen; no product code, guide, other branch, result or later experiment was read. The task was not
+designed for or against any tool.

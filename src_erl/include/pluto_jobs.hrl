@@ -1,5 +1,5 @@
 %%% ==========================================================================
-%%% pluto_jobs.hrl — Definitions for PlutoSmartStreams job packages.
+%%% pluto_jobs.hrl — Definitions for PlutoSmartTasks job packages.
 %%%
 %%% Enumerated values, file names, limits and field lists only; plain JSON
 %%% map keys stay literal, as elsewhere in Pluto. Included by pluto.hrl.
@@ -90,7 +90,7 @@
 -define(JOB_FILE_ABORT,    "abort").            %% server: do not start any more
 -define(JOB_DIR_CONTROL,   "control").
 -define(JOB_DIR_STREAMS,   "streams").
-%% Beside jobs/ in the SmartStreams home:
+%% Beside jobs/ in the SmartTasks home:
 -define(HOME_DIR_JOBS,     "jobs").
 -define(HOME_DIR_STAGING,  "staging").
 -define(HOME_DIR_EXPORTS,  "exports").
@@ -120,7 +120,7 @@
 -define(JOB_KEY_BYTES,    32).
 -define(JOB_KEY_MIN,      32).                  %% shortest key accepted
 
-%% ── Configurable defaults (pluto_config.json "smartstreams") ────────────────
+%% ── Configurable defaults (pluto_config.json "smarttasks") ────────────────
 -define(DEFAULT_JOB_MAX_RUNNING,    128).
 -define(DEFAULT_JOB_MAX_PER_AGENT,  32).
 -define(DEFAULT_JOB_IDLE_AFTER_MS,  30000).

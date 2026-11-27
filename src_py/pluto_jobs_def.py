@@ -1,4 +1,4 @@
-"""Definitions for PlutoSmartStreams clients (no logic here).
+"""Definitions for PlutoSmartTasks clients (no logic here).
 
 Counterparts: src_erl/include/pluto_jobs.hrl (server) and
 src_erl/priv/pluto_job_defs.py (runner, package helper); kept in step by
@@ -6,10 +6,10 @@ tests/test_job_definitions.py.
 """
 
 # ── Storage ───────────────────────────────────────────────────────────────────
-HOME_ENV = "PLUTO_SMARTSTREAMS_HOME"
+HOME_ENV = "PLUTO_SMARTTASKS_HOME"
 CONFIG_ENV = "PLUTO_CONFIG"
-CONFIG_SECTION = "smartstreams"
-DEFAULT_HOME_PARTS = (".pluto", "smartstreams")
+CONFIG_SECTION = "smarttasks"
+DEFAULT_HOME_PARTS = (".pluto", "smarttasks")
 KEY_FILE = "key"
 
 # ── Ids ──────────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ ERR_BAD_KEY = "bad_key"
 ERR_NOT_RUNNING = "job_is_not_running"
 ERR_FINISHED = "job_already_finished"
 ERR_UNKNOWN_ROUTE = "unknown_route"
-CAPABILITY = "smartstreams"
+CAPABILITY = "smarttasks"
 
 # ── Limits ────────────────────────────────────────────────────────────────────
 READ_DEFAULT = 8192
@@ -52,5 +52,5 @@ ANALYZE_TIMEOUT_S = 60            # server: queueing, scan, slack
 #: Environment a job needs to behave like the agent's own shell. The values
 #: are stored in the package on this host, so nothing secret goes here.
 BASE_ENV = ("PATH", "HOME", "SHELL", "LANG", "LC_ALL", "USER", "LOGNAME",
-            "PSS_AGENT", "PSS_HOST",
-            "PSS_PORT", "PLUTO_SMARTSTREAMS_HOME", "TMPDIR", "VIRTUAL_ENV", "CONDA_PREFIX", "JAVA_HOME", "GOPATH")
+            "PST_AGENT", "PST_HOST",
+            "PST_PORT", "PLUTO_SMARTTASKS_HOME", "TMPDIR", "VIRTUAL_ENV", "CONDA_PREFIX", "JAVA_HOME", "GOPATH")

@@ -1,4 +1,4 @@
-"""PlutoSmartStreams runner: no Pluto server needed."""
+"""PlutoSmartTasks runner: no Pluto server needed."""
 
 import hashlib
 import json

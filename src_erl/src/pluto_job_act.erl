@@ -127,7 +127,7 @@ attempt(Id, T, Q, S) ->
 transient(<<"job_is_not_running">>)      -> true;
 transient(<<"stdin_full">>)              -> true;
 transient(<<"control_write_failed">>)    -> true;
-transient(<<"smartstreams_", _/binary>>) -> true;
+transient(<<"smarttasks_", _/binary>>) -> true;
 transient(_)                             -> false.
 
 failed(Id, #task{tries = N, act = #{<<"a">> := A}} = T, _Why, true, Q,
@@ -182,7 +182,7 @@ helper(#state{port = none} = S) ->
                    binary, {packet, 4}, exit_status, use_stdio, hide]) of
         Port -> S#state{port = Port}
     catch error:R ->
-        ?LOG_ERROR("smartstreams: action helper: ~p", [R]),
+        ?LOG_ERROR("smarttasks: action helper: ~p", [R]),
         S
     end;
 helper(S) -> S.

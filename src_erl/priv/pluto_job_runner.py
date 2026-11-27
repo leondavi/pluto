@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Detached supervisor for one PlutoSmartStreams job (stdlib only).
+"""Detached supervisor for one PlutoSmartTasks job (stdlib only).
 
     pluto_job_runner.py run <job_dir>       spec JSON on stdin, prints "ready"
     pluto_job_runner.py ident <pid>         prints a process identity string

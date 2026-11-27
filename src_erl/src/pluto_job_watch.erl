@@ -106,7 +106,7 @@ specs(Id) -> [Spec || #{<<"spec">> := Spec} <- maps:get(<<"rules">>, doc(Id), []
 
 call(Req) ->
     try gen_server:call(?MODULE, Req, ?JOB_CALL_MS)
-    catch exit:_ -> {error, <<"smartstreams_unavailable">>}
+    catch exit:_ -> {error, <<"smarttasks_unavailable">>}
     end.
 
 %% @doc Hits of a job after sequence number Mark, oldest first.
@@ -366,7 +366,7 @@ save_and_deliver(Id, D, #state{unsaved = U} = S) ->
             deliver(Id, hand_over(Id, D, S#state{unsaved = maps:remove(Id, U)}));
         {error, R} ->
             %% The helper moved on, so keep what it said and try again.
-            maps:is_key(Id, U) orelse ?LOG_ERROR("smartstreams: watch not saved: ~p", [R]),
+            maps:is_key(Id, U) orelse ?LOG_ERROR("smarttasks: watch not saved: ~p", [R]),
             ets:insert(?ETS_JOB_WATCH, {Id, D}),
             S#state{unsaved = U#{Id => true}}
     end.
@@ -485,7 +485,7 @@ start_helper(S) ->
             [tell_set(Id, all, S1) || Id <- open_docs()],
             S1
     catch error:R ->
-        ?LOG_ERROR("smartstreams: watch helper: ~p", [R]),
+        ?LOG_ERROR("smarttasks: watch helper: ~p", [R]),
         S#state{not_before = now_ms() + ?WATCH_BACKOFF_MS}
     end.
 
@@ -499,11 +499,11 @@ helper_died(Guilty, #state{fails = F, suspect = Last} = S) ->
         {ok, <<Tag:128/binary, _/binary>>} ->
             case string:lexemes(string:trim(Tag), " ") of
                 [Id, Rid] when Guilty; Last =:= {Id, Rid} ->
-                    ?LOG_WARN("smartstreams: watch helper died in ~s ~s", [Id, Rid]),
+                    ?LOG_WARN("smarttasks: watch helper died in ~s ~s", [Id, Rid]),
                     disable(Id, Rid, S1#state{suspect = none});
                 [Id, Rid] -> S1#state{suspect = {Id, Rid}};
                 _ ->
-                    ?LOG_WARN("smartstreams: watch helper died", []),
+                    ?LOG_WARN("smarttasks: watch helper died", []),
                     S1
             end;
         _ -> S1

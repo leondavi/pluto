@@ -1,0 +1,4 @@
+#!/bin/sh
+# Shell front end of PlutoSmartTasks; see `pst help`.
+here=$(cd "$(dirname "$0")" && pwd)
+exec python3 "$here/../src_py/agent_smart_tasks/cli.py" "$@"

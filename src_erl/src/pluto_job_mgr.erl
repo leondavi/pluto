@@ -96,7 +96,7 @@ prune(BeforeMs, Dry) -> call({prune, BeforeMs, Dry}, ?JOB_PACKAGE_MS).
 call(Req) -> call(Req, ?JOB_CALL_MS).
 call(Req, Timeout) ->
     try gen_server:call(?MODULE, Req, Timeout)
-    catch exit:_ -> {error, <<"smartstreams_unavailable">>}
+    catch exit:_ -> {error, <<"smarttasks_unavailable">>}
     end.
 
 %%====================================================================
@@ -112,7 +112,7 @@ init([]) ->
     S = case filelib:is_dir(pluto_job_store:jobs_dir()) of
             true ->
                 {R, S0} = do_activate(#state{}),
-                R =:= ok orelse ?LOG_WARN("smartstreams inactive: ~p", [R]),
+                R =:= ok orelse ?LOG_WARN("smarttasks inactive: ~p", [R]),
                 S0;
             false -> #state{}
         end,
@@ -123,7 +123,7 @@ handle_call(activate, _From, S) ->
     {R, S1} = do_activate(S),
     {reply, R, S1};
 handle_call(_Req, _From, #state{active = false} = S) ->
-    {reply, {error, <<"smartstreams_inactive">>}, S};
+    {reply, {error, <<"smarttasks_inactive">>}, S};
 handle_call(Req, _From, S) ->
     {Reply, S1} = guard(fun() -> handle(Req, S) end, S),
     {reply, Reply, S1}.
@@ -153,10 +153,10 @@ guard(Fun, S) ->
     try Fun()
     catch
         throw:{io, R} ->
-            ?LOG_ERROR("smartstreams: disk error ~p", [R]),
+            ?LOG_ERROR("smarttasks: disk error ~p", [R]),
             {{error, <<"disk_error_", (atom_to_binary(R))/binary>>}, S};
         C:R:St ->
-            ?LOG_ERROR("smartstreams: ~p:~p ~p", [C, R, St]),
+            ?LOG_ERROR("smarttasks: ~p:~p ~p", [C, R, St]),
             {{error, <<"internal_error">>}, S}
     end.
 
@@ -216,7 +216,7 @@ do_activate(S) ->
     catch
         throw:{inactive, R} -> {{error, R}, S};
         C:R:St ->
-            ?LOG_ERROR("smartstreams activation: ~p:~p ~p", [C, R, St]),
+            ?LOG_ERROR("smarttasks activation: ~p:~p ~p", [C, R, St]),
             {{error, activation_failed}, S}
     end.
 
@@ -278,8 +278,8 @@ schedule(S) ->
     Ready = [P || #{<<"id">> := Id} = P <- pluto_job_registry:live(),
                   maps:get(<<"sched">>, P) =/= ?SCHED_QUEUED orelse not backing_off(Id, S)],
     {Chosen, Cancel} = pluto_job_admit:select(Ready, #{
-        max => pluto_config:get(smartstreams_max_running, ?DEFAULT_JOB_MAX_RUNNING),
-        per_agent => pluto_config:get(smartstreams_max_per_agent, ?DEFAULT_JOB_MAX_PER_AGENT),
+        max => pluto_config:get(smarttasks_max_running, ?DEFAULT_JOB_MAX_RUNNING),
+        per_agent => pluto_config:get(smarttasks_max_per_agent, ?DEFAULT_JOB_MAX_PER_AGENT),
         ended => fun ended/1, lock => fun pluto_job_lock:take/1}),
     S1 = lists:foldl(fun({#{<<"id">> := Id} = P, Why}, Acc) ->
         isolate(Id, fun() ->

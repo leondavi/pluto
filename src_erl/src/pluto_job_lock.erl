@@ -21,7 +21,7 @@
 -spec take(pkg()) -> {ok, pkg()} | busy.
 take(#{<<"lock">> := Raw} = P) ->
     {ok, Res} = pluto_resource:normalize(Raw),      %% check/1 let it in
-    Opts = #{ttl_ms => ?JOB_LOCK_TTL_MS, session_id => <<"smartstreams">>},
+    Opts = #{ttl_ms => ?JOB_LOCK_TTL_MS, session_id => <<"smarttasks">>},
     try pluto_lock_mgr:try_acquire(Res, mode(P), holder(P), Opts) of
         {ok, Ref, Token} -> {ok, P#{<<"lock_ref">> => Ref, <<"lock_token">> => Token}};
         _                -> busy

@@ -23,7 +23,7 @@ follower(_) -> #{}.
 launch(#{<<"id">> := Id} = P, Env, ReplyTo) ->
     Spec = (maps:merge(maps:with(?JOB_LAUNCH_KEYS, P), follower(P)))
            #{<<"env">> => Env,
-             <<"min_free_bytes">> => pluto_config:get(smartstreams_min_free_bytes,
+             <<"min_free_bytes">> => pluto_config:get(smarttasks_min_free_bytes,
                                                       ?DEFAULT_JOB_MIN_FREE_BYTES)},
     Line = pluto_protocol_json:encode_line(
              maps:filter(fun(_, V) -> V =/= null end, Spec)),

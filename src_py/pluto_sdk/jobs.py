@@ -1,4 +1,4 @@
-"""Client for PlutoSmartStreams jobs (``POST /jobs/*``).
+"""Client for PlutoSmartTasks jobs (``POST /jobs/*``).
 
 Job calls authenticate with the per-user key file rather than a session
 token, so they keep working across server restarts. The server creates
@@ -21,7 +21,7 @@ _REPO_CONFIG = os.path.normpath(os.path.join(
     "pluto_config.json"))
 
 
-def smartstreams_home() -> str:
+def smarttasks_home() -> str:
     """Resolved as the server does: environment, config file, default."""
     env = os.environ.get(defs.HOME_ENV)
     if env:
@@ -50,7 +50,7 @@ class PlutoJobsClient:
         self._key: Optional[str] = None
 
     def _read_key(self) -> str:
-        path = os.path.join(smartstreams_home(), defs.KEY_FILE)
+        path = os.path.join(smarttasks_home(), defs.KEY_FILE)
         try:
             with open(path, encoding="ascii") as f:
                 return f.read().strip()
@@ -78,7 +78,7 @@ class PlutoJobsClient:
         if resp.get("status") != "ok":
             reason = resp.get("reason", "no response")
             if reason == defs.ERR_UNKNOWN_ROUTE:
-                reason = ("this Pluto server has no SmartStreams; restart it "
+                reason = ("this Pluto server has no SmartTasks; restart it "
                           "from v0.6.0 or newer")
             raise PlutoError(reason)
         resp.pop("status")

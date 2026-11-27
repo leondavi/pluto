@@ -44,7 +44,7 @@ notify(Agent, Event, #{<<"id">> := Id} = P, St, Extra, Board) ->
     catch pluto_msg_hub:push_event_to_agent(
             Agent, (maps:with([<<"watch">>, <<"h">>], Extra))
                    #{<<"event">> => Event, <<"job_id">> => Id,
-                     <<"state">> => St, <<"from">> => <<"smartstreams">>}),
+                     <<"state">> => St, <<"from">> => <<"smarttasks">>}),
     put_notice(N, Board).
 
 put_notice(#{<<"agent">> := A} = N, Board) ->
@@ -136,7 +136,7 @@ path() -> filename:join(pluto_job_store:home(), ?HOME_FILE_NOTICES).
 append(M) ->
     case pluto_job_store:append_jsonl(path(), M) of
         ok -> ok;
-        {error, R} -> ?LOG_ERROR("smartstreams: notice not saved: ~p", [R])
+        {error, R} -> ?LOG_ERROR("smarttasks: notice not saved: ~p", [R])
     end.
 
 %% @doc Append one line to the history, which survives pruning.
@@ -147,7 +147,7 @@ history(Kind, P, Extra) ->
                        #{<<"kind">> => Kind, <<"at">> => pluto_job_store:now_ms()},
                        Extra)) of
         ok -> ok;
-        {error, R} -> ?LOG_ERROR("smartstreams: history not saved: ~p", [R])
+        {error, R} -> ?LOG_ERROR("smarttasks: history not saved: ~p", [R])
     end.
 
 %% @doc Newest first.

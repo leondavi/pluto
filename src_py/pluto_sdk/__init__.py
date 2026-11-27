@@ -5,7 +5,7 @@ Modules:
                     pushed events delivered to handler callbacks.
     http_client     :class:`PlutoHttpClient` — token-authenticated HTTP
                     session; messages are fetched by poll/peek.
-    jobs            :class:`PlutoJobsClient` — SmartStreams job packages.
+    jobs            :class:`PlutoJobsClient` — SmartTasks job packages.
     http_pool       :class:`HTTPConnectionPool` — keep-alive sockets
                     shared by one HTTP client.
     errors          :class:`PlutoError`.

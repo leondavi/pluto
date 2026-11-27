@@ -185,7 +185,7 @@ load_all() ->
         case pluto_job_store:valid_id(Id) of
             true ->
                 try load_one(Id, Host)
-                catch _:R -> ?LOG_ERROR("smartstreams: cannot load ~s: ~p", [Id, R])
+                catch _:R -> ?LOG_ERROR("smarttasks: cannot load ~s: ~p", [Id, R])
                 end;
             false -> ok
         end

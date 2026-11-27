@@ -50,8 +50,8 @@ jobs:
       - name: Run the Python test suite
         run: python -m pytest tests/ -v
 
-  smart-streams-live:
-    name: SmartStreams live tests
+  smart-tasks-live:
+    name: SmartTasks live tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +69,7 @@ jobs:
       - name: Private-server tests
         env:
           PLUTO_LIVE_TESTS: '1'
-        run: python -m pytest tests/test_smart_streams_live.py tests/test_smart_streams_output_live.py tests/test_smart_streams_cli.py tests/test_smart_streams_actions_live.py tests/test_smart_streams_admit_live.py -v
+        run: python -m pytest tests/test_smart_tasks_live.py tests/test_smart_tasks_output_live.py tests/test_smart_tasks_cli.py tests/test_smart_tasks_actions_live.py tests/test_smart_tasks_admit_live.py -v
 
   python-lint:
     name: Python Lint
@@ -84,4 +84,4 @@ jobs:
 
       - name: Check syntax
         working-directory: src_py
-        run: python -m compileall -q pluto_client.py pluto_client_def.py pluto_jobs_def.py pluto_sdk agent_smart_streams ../src_erl/priv
+        run: python -m compileall -q pluto_client.py pluto_client_def.py pluto_jobs_def.py pluto_sdk agent_smart_tasks ../src_erl/priv

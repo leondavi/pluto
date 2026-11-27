@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc pluto_job_sup — Isolates SmartStreams from the rest of Pluto.
+%%% @doc pluto_job_sup — Isolates SmartTasks from the rest of Pluto.
 %%%
 %%% pluto_sup starts this supervisor as `temporary': if jobs fail again
 %%% and again it gives up alone, and locks and messaging keep working.

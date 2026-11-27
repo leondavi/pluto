@@ -82,7 +82,7 @@ in_slot(Name, Slots, Fun) ->
     receive
         {'DOWN', Ref, process, Pid, {done, R}} -> R;
         {'DOWN', Ref, process, Pid, Why} ->
-            ?LOG_ERROR("smartstreams analyze: ~p", [Why]),
+            ?LOG_ERROR("smarttasks analyze: ~p", [Why]),
             {error, <<"analyze_failed">>}
     end.
 
@@ -115,7 +115,7 @@ run(Args, Req) ->
                         ?ANALYZE_DEADLINE_MS + ?ANALYZE_SLACK_MS,
                     result(collect(Port, [], 0, Stop))
             catch error:R ->
-                ?LOG_ERROR("smartstreams analyze: ~p", [R]),
+                ?LOG_ERROR("smarttasks analyze: ~p", [R]),
                 {error, <<"analyze_failed">>}
             end
     end.

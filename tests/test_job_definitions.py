@@ -1,4 +1,4 @@
-"""The three SmartStreams definition files must agree."""
+"""The three SmartTasks definition files must agree."""
 
 import os
 import re
@@ -84,7 +84,7 @@ def test_enumerations():
     assert text("EVT_JOB_TRANSFERRED") == client.EVENT_TRANSFERRED
     assert text("EVT_JOB_WATCH") == client.EVENT_WATCH
     assert text("ERR_BAD_KEY") == client.ERR_BAD_KEY
-    assert text("CAP_SMARTSTREAMS") == client.CAPABILITY
+    assert text("CAP_SMARTTASKS") == client.CAPABILITY
 
 
 def test_watch_fields():
@@ -95,11 +95,11 @@ def test_watch_fields():
 
 
 def test_mcp_config_shapes():
-    from agent_smart_streams import mcp_config
+    from agent_smart_tasks import mcp_config
     kw = dict(python="py", entry="e", agent_id="a", host="h", port="1")
     one = mcp_config.build(framework="claude", **kw)["mcpServers"]
-    assert set(one) == {"smartstreams"} and "--attach" not in one["smartstreams"]["args"]
+    assert set(one) == {"smarttasks"} and "--attach" not in one["smarttasks"]["args"]
     two = mcp_config.build(framework="copilot", pluto_entry="p", home="/x", **kw)["mcpServers"]
-    assert set(two) == {"smartstreams", "pluto"}
-    assert two["smartstreams"]["type"] == "local" and "--attach" in two["smartstreams"]["args"]
-    assert two["smartstreams"]["env"] == {"PLUTO_SMARTSTREAMS_HOME": "/x"}
+    assert set(two) == {"smarttasks", "pluto"}
+    assert two["smarttasks"]["type"] == "local" and "--attach" in two["smarttasks"]["args"]
+    assert two["smarttasks"]["env"] == {"PLUTO_SMARTTASKS_HOME": "/x"}

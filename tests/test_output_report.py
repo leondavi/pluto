@@ -1,4 +1,4 @@
-"""pss report without a server: columns over all jobs in one pass."""
+"""pst report without a server: columns over all jobs in one pass."""
 
 import json
 import os

@@ -16,7 +16,7 @@
 card(#{<<"id">> := Id} = P, Agent) ->
     try card(P, pluto_job_registry:state(P), pluto_job_cursor:position(Id, Agent))
     catch _:R ->
-        ?LOG_ERROR("smartstreams: cannot describe ~s: ~p", [Id, R]),
+        ?LOG_ERROR("smarttasks: cannot describe ~s: ~p", [Id, R]),
         #{<<"job_id">> => Id, <<"state">> => <<"unreadable">>, <<"size">> => 0,
           <<"cursor">> => 0, <<"unread">> => 0, <<"elapsed_ms">> => 0,
           <<"queued_ms">> => 0}
@@ -53,7 +53,7 @@ size(Id, St) ->
     end.
 
 activity(#{<<"state">> := S} = St, Now) when S =:= ?JOB_RUNNING; S =:= ?JOB_ORPHANED ->
-    Idle = pluto_config:get(smartstreams_idle_after_ms, ?DEFAULT_JOB_IDLE_AFTER_MS),
+    Idle = pluto_config:get(smarttasks_idle_after_ms, ?DEFAULT_JOB_IDLE_AFTER_MS),
     case opt(<<"last_output_at">>, St, 0) of
         T when Now - T =< Idle -> <<"active">>;
         _ -> <<"idle">>

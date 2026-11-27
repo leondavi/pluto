@@ -304,7 +304,7 @@ route('OPTIONS', _Path, _Body, _Sock) ->
 route('GET', <<"/health">>, _Body, _Sock) ->
     {200, #{<<"status">> => <<"ok">>,
             <<"version">> => list_to_binary(?VERSION),
-            <<"capabilities">> => [?CAP_SMARTSTREAMS],
+            <<"capabilities">> => [?CAP_SMARTTASKS],
             <<"server_epoch">> => pluto_app:server_epoch()}};
 
 route('GET', <<"/ping">>, _Body, _Sock) ->
@@ -1278,7 +1278,7 @@ known_routes() ->
         <<"GET  /admin/deadlock_graph">>,
         <<"POST /admin/force_release">>,
         <<"POST /selftest">>,
-        <<"POST /jobs/<op>  (PlutoSmartStreams; needs the user key)">>
+        <<"POST /jobs/<op>  (PlutoSmartTasks; needs the user key)">>
     ].
 
 %% @private Format reclaimed locks for an HTTP register response.

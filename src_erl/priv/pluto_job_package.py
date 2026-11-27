@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Portable .pjob archives for PlutoSmartStreams (stdlib only).
+"""Portable .pjob archives for PlutoSmartTasks (stdlib only).
 
     pluto_job_package.py export <job_dir> <package.json> <dest.pjob>
     pluto_job_package.py import <src.pjob> <staging_dir>

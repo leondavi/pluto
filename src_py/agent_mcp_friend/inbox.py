@@ -28,7 +28,7 @@ logger = logging.getLogger("pluto_mcp_friend.inbox")
 
 # Mirror agent_friend.pluto_connection: events the agent must never see.
 _NOISE_PAYLOAD_EVENTS = {"delivery_ack", "status_update", "heartbeat"}
-# JOB_EVENTS: a PlutoSmartStreams job this agent owns changed.
+# JOB_EVENTS: a PlutoSmartTasks job this agent owns changed.
 _ACTIONABLE_EVENTS = {"message", "broadcast", "task_assigned", "topic_message",
                       "lock_granted", "wait_timeout", *JOB_EVENTS}
 

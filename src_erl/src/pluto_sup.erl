@@ -107,7 +107,7 @@ init([]) ->
             type     => worker,
             modules  => [pluto_msg_hub]
         },
-        %% 6) SmartStreams jobs — needs the message hub. Temporary: its
+        %% 6) SmartTasks jobs — needs the message hub. Temporary: its
         %%    failure must not take locks and messaging down.
         #{
             id       => pluto_job_sup,

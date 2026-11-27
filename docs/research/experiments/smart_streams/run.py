@@ -28,7 +28,7 @@ import ss_prompts  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(HERE, *[".."] * 4))
 ADAPTER = os.path.join(REPO, "src_py", "agent_smart_streams", "smart_streams.py")
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 7
 MIN_PEAK = 8
 CONDITIONS = ("smartstreams", "native", "native_sub")      # the arms
 VARIANTS = ("ss_mcp", "ss_both")                          # only to choose the SS design

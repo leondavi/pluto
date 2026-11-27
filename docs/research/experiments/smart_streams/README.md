@@ -567,6 +567,37 @@ search). The task does not favour any tool: everything is files, processes and l
   which an agent of **either** arm had a permission denial gets one fresh pair of the same task (rep 9 and
   up, new seed) after `v6main` ends, in `v6rerun` (plan in `v6rerun.plan`). Results are reported as run, and
   with each affected pair replaced by its rerun. The trigger is chosen by arm-blind rule, not by score.
+* Stopped 27 Nov 2026 after 20 of 80 runs (`v6main` is kept and not pooled), because it measured a known
+  product fault: four agents in one workspace all called their batch `z`, and a name meant every agent's
+  jobs of that name in the directory. `pss follow z` of one agent attached monitors to the other agents'
+  jobs, which wrote repair requests into their control files (E7 pair 2), and `--after tb` waited for the
+  other agents' `tb` (E10, 2 runs). The fault predates protocol 6; protocol 5 had it too.
+
+## Confirmatory run, protocol 7 (fixed 27 Nov 2026, before its first run)
+
+* Protocol 6 with these differences only; every other rule (blind tasks E7-E11, Sonnet only, arms native
+  and smartstreams, 8 pairs per task, 80 runs, 5 USD per agent, primary decision, load sensitivity,
+  secondary measures, harness-fault handling) applies unchanged.
+* Code: the commit in `v7main.commit`; rows say `protocol_version: 7`. Product changes since protocol 6:
+  * A name means the agent's own jobs; others' (shared directory) only for reading, with a note on
+    stderr; `follow` and `--after` take others' jobs by id only.
+  * `--after 'tb/{k}'` with `-e`: each job waits for its own; comma lists keep their group (`l2/7,8`).
+  * A name grows only with rounds of the same parameters; a round with other parameters replaces it.
+  * A follower ends when the followed job is lost or removed (it waited forever).
+  * Admission keeps order per lock resource and per slot (no writer or small-slot starvation); a slot's
+    limit is the strictest `slot_max`; a spawning job keeps its lock.
+  * News: cancels by `--after-ok` are reported; a command marks seen only the jobs it showed.
+* Output: `v7main` (log `v7main.log`).
+* Prompt: unchanged. Agents learn the new options only from `pss help`.
+* Permission denials (fixed now, not after the fact): `dontAsk` mode refuses some Bash commands in both
+  arms; protocol 5 had 5 in 70 runs, 4 native. Every pair in which an agent of either arm had a permission
+  denial gets one fresh pair of the same task (rep 9 and up, new seed) after `v7main` ends, in `v7rerun`
+  (plan in `v7rerun.plan`). Primary analysis: as run. Sensitivity: each affected pair replaced by its rerun.
+* Cross-agent check: after every smartstreams run, `ss_crossjobs.py` lists jobs whose `follows` or
+  `after_jobs` name a job opened by another agent; a watcher stops the run at the first one. If the
+  agent asked for it by id (a deliberate link), it is reported, not a fault, and the run resumes with
+  the pairs not yet run. Otherwise it is a product fault: fixed, disclosed, and restarted as a new
+  protocol.
 
 ## E9 sequencing_cohort (written blind, after protocol v3)
 

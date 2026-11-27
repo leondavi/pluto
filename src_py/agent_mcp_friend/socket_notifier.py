@@ -74,6 +74,9 @@ class SocketNotifier:
     # transient failure can't strand buffered messages wake-less.
     RETRY_BACKOFF_S = 5.0
 
+    #: Tool named in the wakeup; adapters without pluto_recv override it.
+    drain_tool = "pluto_recv"
+
     def __init__(
         self,
         socket_path: Optional[str],
@@ -222,6 +225,14 @@ class SocketNotifier:
 
     # ── Internals ─────────────────────────────────────────────────────────
 
+    def _wake_text(self, count: int, senders: list[str]) -> str:
+        """Metadata only; adapters may name what happened."""
+        return (
+            f"[pluto:{self._agent_id}] {count} new Pluto message(s) waiting"
+            f"{' from ' + ', '.join(senders) if senders else ''}."
+            f" Call {self.drain_tool} to read them."
+        )
+
     def _restore_pending(self, count: int, senders: list[str]) -> None:
         self._pending_count += count
         for s in senders:
@@ -257,11 +268,7 @@ class SocketNotifier:
                 self._restore_pending(count, senders)
                 self._schedule_flush(self.RETRY_COOLDOWN_S - since_fail)
                 return
-        text = (
-            f"[pluto:{self._agent_id}] {count} new Pluto message(s) waiting"
-            f"{' from ' + ', '.join(senders) if senders else ''}."
-            " Call pluto_recv to read them."
-        )
+        text = self._wake_text(count, senders)
         drain_gen = self._drain_gen
         try:
             await self._send(text)

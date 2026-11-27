@@ -1,0 +1,27 @@
+[exp3 rep1 pst_mcp] score=1.000 wall=727.4s cost=$0.80 result_bytes=62066 failures=0 tainted=True
+[exp3 rep1 smarttasks] score=1.000 wall=572.1s cost=$0.46 result_bytes=45723 failures=0 tainted=False
+[exp3 rep1 native] score=1.000 wall=556.4s cost=$0.35 result_bytes=41974 failures=0 tainted=False
+[exp3 rep1 pst_cli] score=1.000 wall=842.6s cost=$0.50 result_bytes=38397 failures=0 tainted=False
+[exp3 rep1 native_sub] score=1.000 wall=586.7s cost=$0.46 result_bytes=37732 failures=0 tainted=False
+[exp1 rep1 native] score=0.755 wall=331.6s cost=$0.61 result_bytes=41478 failures=0 tainted=False
+[exp1 rep1 smarttasks] score=1.000 wall=302.3s cost=$0.84 result_bytes=58671 failures=0 tainted=False
+[exp1 rep1 pst_cli] score=0.927 wall=423.3s cost=$0.71 result_bytes=52771 failures=0 tainted=True
+[exp1 rep1 pst_mcp] score=0.976 wall=316.2s cost=$0.96 result_bytes=88625 failures=0 tainted=True
+[exp1 rep1 native_sub] score=0.865 wall=398.2s cost=$0.59 result_bytes=44458 failures=0 tainted=False
+Traceback (most recent call last):
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/run.py", line 374, in <module>
+    main()
+    ~~~~^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/run.py", line 370, in main
+    run_block(exp, rep, conds, master, args)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/run.py", line 291, in run_block
+    row, d = run_one(exp, c, rep, run_seed(master, exp, rep), args)
+             ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/run.py", line 232, in run_one
+    status.update(pst_procs.run_phase(agents, cutoff if short else timeout, short, chaos))
+                  ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0-review/docs/research/experiments/smart_tasks/pst_procs.py", line 260, in run_phase
+    time.sleep(0.2)
+    ~~~~~~~~~~^^^^^
+KeyboardInterrupt

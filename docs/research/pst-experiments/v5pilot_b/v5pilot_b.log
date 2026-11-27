@@ -1,0 +1,6 @@
+[exp8 rep1 smarttasks] score=0.802 wall=497.3s cost=$1.28 result_bytes=74962 failures=0 tainted=False
+[exp8 rep1 native] score=0.844 wall=670.7s cost=$1.70 result_bytes=92958 failures=0 tainted=False
+[exp8 rep2 native] score=0.742 wall=555.1s cost=$1.42 result_bytes=85800 failures=0 tainted=False
+[exp8 rep2 smarttasks] score=0.727 wall=652.1s cost=$1.44 result_bytes=92413 failures=0 tainted=False
+[exp3 rep1 smarttasks] score=1.000 wall=576.2s cost=$0.32 result_bytes=36858 failures=0 tainted=False
+[exp3 rep1 native] score=1.000 wall=577.3s cost=$0.36 result_bytes=33507 failures=0 tainted=False

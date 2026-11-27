@@ -35,6 +35,10 @@ import pytest
 LIVE_SERVER_MODULES = {
     "test_404_hints.py",
     "test_http_keepalive.py",
+    "test_smart_tasks_live.py",
+    "test_smart_tasks_cli.py", "test_smart_tasks_output_live.py",
+    "test_smart_tasks_actions_live.py",
+    "test_smart_tasks_admit_live.py",
     "test_v021_http_sessions.py",
     "test_v023_features.py",
 }

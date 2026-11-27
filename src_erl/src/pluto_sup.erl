@@ -107,7 +107,17 @@ init([]) ->
             type     => worker,
             modules  => [pluto_msg_hub]
         },
-        %% 5) Heartbeat sweeper — checks liveness on a timer
+        %% 6) SmartTasks jobs — needs the message hub. Temporary: its
+        %%    failure must not take locks and messaging down.
+        #{
+            id       => pluto_job_sup,
+            start    => {pluto_job_sup, start_link, []},
+            restart  => temporary,
+            shutdown => infinity,
+            type     => supervisor,
+            modules  => [pluto_job_sup]
+        },
+        %% 7) Heartbeat sweeper — checks liveness on a timer
         #{
             id       => pluto_heartbeat,
             start    => {pluto_heartbeat, start_link, []},
@@ -116,7 +126,7 @@ init([]) ->
             type     => worker,
             modules  => [pluto_heartbeat]
         },
-        %% 6) Listener supervisor — manages TCP listener children
+        %% 8) Listener supervisor — manages TCP listener children
         #{
             id       => pluto_listener_sup,
             start    => {pluto_listener_sup, start_link, []},

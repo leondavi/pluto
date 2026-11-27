@@ -1,0 +1,24 @@
+[exp2 rep1 native] score=0.942 wall=451.1s cost=$0.29 result_bytes=18830 failures=0 tainted=False
+[exp2 rep1 smarttasks] score=0.980 wall=680.2s cost=$0.92 result_bytes=59190 failures=0 tainted=False
+[exp3 rep1 native] score=0.975 wall=928.4s cost=$0.29 result_bytes=26794 failures=1 tainted=False
+[exp3 rep1 smarttasks] score=1.000 wall=328.4s cost=$0.48 result_bytes=28204 failures=0 tainted=False
+[exp1 rep1 smarttasks] score=0.915 wall=226.8s cost=$0.49 result_bytes=30470 failures=0 tainted=False
+Traceback (most recent call last):
+  File "/Users/ddleon/Workspace/pluto-v0.6.0/docs/research/experiments/smart_tasks/run.py", line 307, in <module>
+    main()
+    ~~~~^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0/docs/research/experiments/smart_tasks/run.py", line 303, in main
+    run_block(exp, rep, conds, master, args)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0/docs/research/experiments/smart_tasks/run.py", line 227, in run_block
+    row, d = run_one(exp, c, rep, run_seed(master, exp, rep), args)
+             ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0/docs/research/experiments/smart_tasks/run.py", line 186, in run_one
+    status.update(pst_procs.run_phase(agents, cutoff if short else timeout, short))
+                  ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0/docs/research/experiments/smart_tasks/pst_procs.py", line 193, in run_phase
+    time.sleep(0.2)
+    ~~~~~~~~~~^^^^^
+  File "/Users/ddleon/Workspace/pluto-v0.6.0/docs/research/experiments/smart_tasks/run.py", line 300, in on_term
+    raise KeyboardInterrupt
+KeyboardInterrupt

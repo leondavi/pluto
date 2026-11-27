@@ -80,7 +80,8 @@ class PlutoHttpClient:
         )
 
     def _request(self, method: str, path: str, body: Optional[dict] = None,
-                 *, timeout: Optional[float] = None) -> dict:
+                 *, timeout: Optional[float] = None,
+                 extra_headers: Optional[Dict[str, str]] = None) -> dict:
         """Send one HTTP request over a pooled keep-alive connection.
 
         ``timeout`` overrides the pool's default for this call only
@@ -92,6 +93,8 @@ class PlutoHttpClient:
             "Connection": "keep-alive",
             "Accept-Encoding": "identity",
         }
+        if extra_headers:
+            headers.update(extra_headers)
         if body is not None:
             data: Optional[bytes] = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -100,7 +103,8 @@ class PlutoHttpClient:
         last_exc: Optional[BaseException] = None
         for attempt in (1, 2):
             try:
-                with self._pool.acquire(read_timeout=timeout) as conn:
+                with self._pool.acquire(read_timeout=timeout,
+                                        fresh=attempt > 1) as conn:
                     conn.request(method, path, body=data, headers=headers)
                     resp = conn.getresponse()
                     raw = resp.read()  # must drain to make the socket reusable
@@ -117,6 +121,15 @@ class PlutoHttpClient:
                 continue
         # Unreachable — the loop either returns or raises.
         raise last_exc if last_exc is not None else RuntimeError("unreachable")
+
+    def request(self, method: str, path: str, body: Optional[dict] = None, *,
+                timeout: Optional[float] = None,
+                extra_headers: Optional[Dict[str, str]] = None) -> dict:
+        """One raw call, for API layers built on this client. A dropped
+        keep-alive connection is retried once, so non-idempotent calls must
+        carry their own request id."""
+        return self._request(method, path, body, timeout=timeout,
+                             extra_headers=extra_headers)
 
     def _require_token(self) -> str:
         """Return the session token, or raise if :meth:`register` has not

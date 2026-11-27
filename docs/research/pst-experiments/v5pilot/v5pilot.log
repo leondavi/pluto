@@ -1,0 +1,4 @@
+[exp6 rep1 native] score=1.000 wall=572.4s cost=$0.41 result_bytes=30515 failures=0 tainted=False
+[exp6 rep1 smarttasks] score=1.000 wall=332.3s cost=$0.45 result_bytes=35775 failures=0 tainted=False
+[exp6 rep2 smarttasks] score=0.925 wall=409.4s cost=$0.66 result_bytes=40527 failures=0 tainted=False
+[exp6 rep2 native] score=0.768 wall=618.9s cost=$0.76 result_bytes=54114 failures=0 tainted=False

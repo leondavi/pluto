@@ -73,6 +73,7 @@ the [Installation guide](docs/guide/installation.md).
 | [Installation](docs/guide/installation.md) | Prerequisites, install paths, verification, troubleshooting | Everyone, first time |
 | [Usage guide index](docs/guide/index.md) | Map of every way to talk to Pluto | Quick orientation |
 | [PlutoMCPFriend](docs/guide/pluto-mcp-friend.md) | Pluto operations as native MCP tools — **recommended for Claude Code** | Claude Code users |
+| [PlutoSmartTasks](docs/guide/pluto-smart-tasks.md) | Durable job packages: byte cursors, server-side grep, handoff between agents and hosts | Long or noisy commands |
 | [PlutoAgentFriend](docs/guide/pluto-agent-friend.md) | PTY wrapper that injects messages into any TUI agent | Cursor / Aider / generic CLI |
 | [PlutoClient](docs/guide/pluto-client.md) | Inspection CLI and Python client library | Anyone scripting against Pluto |
 | [PlutoServer](docs/guide/pluto-server.md) | Build, daemon, console, and lifecycle management | Operators |

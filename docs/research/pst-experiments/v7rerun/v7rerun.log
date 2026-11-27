@@ -1,0 +1,14 @@
+[exp10 rep9 smarttasks] score=1.000 wall=324.5s cost=$0.69 result_bytes=42526 failures=0 tainted=False
+[exp10 rep9 native] score=0.938 wall=470.5s cost=$0.75 result_bytes=41985 failures=0 tainted=False
+[exp11 rep9 smarttasks] score=1.000 wall=379.9s cost=$0.46 result_bytes=45692 failures=0 tainted=False
+[exp11 rep9 native] score=0.994 wall=283.4s cost=$0.33 result_bytes=29982 failures=0 tainted=False
+[exp11 rep10 smarttasks] score=1.000 wall=377.0s cost=$0.50 result_bytes=46336 failures=0 tainted=False
+[exp11 rep10 native] score=1.000 wall=287.6s cost=$0.33 result_bytes=30252 failures=0 tainted=False
+[exp11 rep11 smarttasks] score=1.000 wall=336.0s cost=$0.50 result_bytes=50311 failures=0 tainted=False
+[exp11 rep11 native] score=1.000 wall=284.5s cost=$0.34 result_bytes=28797 failures=0 tainted=False
+[exp7 rep9 smarttasks] score=0.527 wall=637.1s cost=$1.32 result_bytes=67601 failures=1 tainted=False
+[exp7 rep9 native] score=0.527 wall=792.5s cost=$2.43 result_bytes=100759 failures=0 tainted=False
+[exp8 rep9 native] score=0.808 wall=597.6s cost=$1.54 result_bytes=86685 failures=0 tainted=False
+[exp8 rep9 smarttasks] score=0.546 wall=539.3s cost=$1.01 result_bytes=67663 failures=0 tainted=False
+[exp8 rep10 native] score=0.723 wall=556.6s cost=$1.37 result_bytes=82598 failures=0 tainted=False
+[exp8 rep10 smarttasks] score=0.599 wall=475.0s cost=$1.05 result_bytes=75955 failures=0 tainted=False

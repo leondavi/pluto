@@ -5,6 +5,7 @@ Modules:
                     pushed events delivered to handler callbacks.
     http_client     :class:`PlutoHttpClient` — token-authenticated HTTP
                     session; messages are fetched by poll/peek.
+    jobs            :class:`PlutoJobsClient` — SmartTasks job packages.
     http_pool       :class:`HTTPConnectionPool` — keep-alive sockets
                     shared by one HTTP client.
     errors          :class:`PlutoError`.
@@ -21,6 +22,7 @@ from pluto_sdk.errors import PlutoError
 from pluto_sdk.guide import generate_agent_guide
 from pluto_sdk.http_client import PlutoHttpClient
 from pluto_sdk.http_pool import HTTPConnectionPool
+from pluto_sdk.jobs import PlutoJobsClient
 from pluto_sdk.snapshot_files import write_snapshot_files
 from pluto_sdk.tcp_client import PlutoClient
 
@@ -29,6 +31,7 @@ __all__ = [
     "PlutoClient",
     "PlutoError",
     "PlutoHttpClient",
+    "PlutoJobsClient",
     "generate_agent_guide",
     "write_snapshot_files",
 ]

@@ -113,6 +113,7 @@ json_decode(Bin) ->
 
 %% @private Apply recognised keys from the JSON map to the app env.
 apply_json_config(Map) ->
+    apply_smarttasks(Map),
     case maps:find(<<"pluto_server">>, Map) of
         {ok, ServerMap} when is_map(ServerMap) ->
             KeyMap = #{
@@ -132,6 +133,24 @@ apply_json_config(Map) ->
         _ ->
             ok
     end.
+
+%% @private Optional "smarttasks" section.
+apply_smarttasks(#{<<"smarttasks">> := M}) when is_map(M) ->
+    Keys = #{<<"home">>           => smarttasks_home,
+             <<"python">>         => smarttasks_python,
+             <<"max_running">>    => smarttasks_max_running,
+             <<"max_per_agent">>  => smarttasks_max_per_agent,
+             <<"idle_after_ms">>  => smarttasks_idle_after_ms,
+             <<"min_free_bytes">> => smarttasks_min_free_bytes,
+             <<"allow_remote">>   => smarttasks_allow_remote},
+    maps:foreach(fun(JsonKey, AppKey) ->
+        case M of
+            #{JsonKey := V} -> application:set_env(?APP, AppKey, convert_value(AppKey, V));
+            _ -> ok
+        end
+    end, Keys);
+apply_smarttasks(_) ->
+    ok.
 
 convert_value(_Key, Value) when is_integer(Value) -> Value;
 convert_value(_Key, Value) when is_binary(Value)  -> binary_to_list(Value);

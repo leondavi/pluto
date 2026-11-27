@@ -20,12 +20,12 @@ from pluto_jobs_def import ERR_FINISHED, FINAL_STATES, GREP_MATCHES, WAIT_MAX_S
 from pluto_sdk import PlutoError, PlutoJobsClient
 
 
-def ids_of(jobs: PlutoJobsClient, job_id, job_ids) -> list[str]:
+def ids_of(jobs: PlutoJobsClient, job_id, job_ids, own: bool = False) -> list[str]:
     """The distinct ids a call names, groups expanded; raises when none."""
     ids = list(dict.fromkeys(job_ids or ([job_id] if job_id else [])))
     if not ids:
         raise PlutoError("give job_id or job_ids")
-    return members(jobs, ids)
+    return members(jobs, ids, own=own)
 
 
 def each(fn, keys: list) -> dict:

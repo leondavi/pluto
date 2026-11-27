@@ -24,7 +24,8 @@ replaces its keys.
   run [-n NAME] [-e k=1-12].. [RULES] [-w S] [--timeout S] CMD
         {k} in CMD (and in rules) is the value; several -e: every combination
         --slot NAME:N   at most N running jobs of this slot, all agents together
-        --after JOBS    start once they ended (--after-ok: and succeeded)
+        --after JOBS    start once they ended (--after-ok: and succeeded);
+                        per job: -e k=1-8 --after 'tb/{k}'
         --lock RES[:read]  hold a Pluto lock while running ($PLUTO_LOCK_TOKEN)
   RULES  a condition, then actions (several allowed):
         --on 'text {field}' | --where 'field > 3' | --idle S | --absent S
@@ -63,7 +64,8 @@ Several -x: the first that matches a line. Without -o the records are printed.""
         [--tag T] [--parent JOB] [--stdin] [-q] CMD
 Several -e give every combination (soak/1:a). RULES in order: a condition, then
 its actions; {field} is what --on captured, or a parameter. --once: first time
-only. -w S waits like pss wait. A slot is a semaphore, --after a barrier, a
+only. -w S waits like pss wait. A slot is a semaphore, --after a barrier ({k}
+in it: each job waits for its own), a
 lock is Pluto's (agents can hold it too: GET /locks shows the holder).""",
 }
 

@@ -9,6 +9,12 @@
 %%%     semaphore, shared by every agent of the server);
 %%%   - its Pluto lock is granted, which is tried last, as it is taken.
 %%%
+%%% Per lock resource and per slot the order is kept: once an older job
+%%% that wants R is held back, younger ones that want R wait too, so readers
+%%% coming one after another cannot starve a writer, nor an agent with a big
+%%% slot_max one with a small. A slot's limit is the strictest slot_max
+%%% among its running jobs and the one to start.
+%%%
 %%% Followers (jobs with follows) are counted apart: one only reads the
 %%% output of another job, and queueing it behind real work would leave
 %%% that job unwatched exactly when the server is busy.
@@ -35,20 +41,31 @@ select(Live, Limits) ->
     Running = [P || #{<<"sched">> := S} = P <- Live, S =/= ?SCHED_QUEUED],
     Queued = lists:sort(fun(A, B) -> opened(A) =< opened(B) end,
                         [P || #{<<"sched">> := ?SCHED_QUEUED} = P <- Live]),
-    pick(Queued, Running, Limits, [], []).
+    pick(Queued, Running, Limits#{held => #{}}, [], []).
 
 pick([], _, _, Go, Cancel) ->
     {lists:reverse(Go), lists:reverse(Cancel)};
-pick([P | T], Running, #{ended := Ended, lock := Lock} = L, Go, Cancel) ->
+pick([P | T], Running, #{ended := Ended, lock := Lock, held := Held} = L, Go, Cancel) ->
     case after_jobs(P, Ended) of
-        wait -> pick(T, Running, L, Go, Cancel);
         {cancel, Why} -> pick(T, Running, L, Go, [{P, Why} | Cancel]);
+        wait -> pick(T, Running, L, Go, Cancel);      %% may wait long: holds nothing
         go ->
-            case room(P, Running, L) andalso slot_free(P, Running) andalso Lock(P) of
-                {ok, P1} -> pick(T, [P1 | Running], L, [P1 | Go], Cancel);
-                _        -> pick(T, Running, L, Go, Cancel)
+            Free = not lists:any(fun(K) -> is_map_key(K, Held) end, keys(P)),
+            case room(P, Running, L) of
+                false -> pick(T, Running, L, Go, Cancel);   %% its owner's limit
+                true ->
+                    case Free andalso slot_free(P, Running) andalso Lock(P) of
+                        {ok, P1} -> pick(T, [P1 | Running], L, [P1 | Go], Cancel);
+                        _        -> pick(T, Running, hold(P, L), Go, Cancel)
+                    end
             end
     end.
+
+%% A job held back keeps its lock resource and its slot for itself in this
+%% pass: younger jobs that want them wait behind it.
+hold(P, #{held := H} = L) -> L#{held := maps:merge(H, maps:from_keys(keys(P), true))}.
+
+keys(P) -> [{K, V} || K <- [<<"lock">>, <<"slot">>], {ok, V} <- [maps:find(K, P)]].
 
 after_jobs(P, Ended) ->
     States = [Ended(Id) || Id <- maps:get(<<"after_jobs">>, P, [])],
@@ -67,8 +84,8 @@ room(P, Running, #{max := Max, per_agent := Per}) ->
     length(Alike) < Max andalso length([O || O <- Alike, O =:= Owner]) < Per.
 
 slot_free(#{<<"slot">> := Slot} = P, Running) ->
-    length([X || #{<<"slot">> := S} = X <- Running, S =:= Slot])
-        < maps:get(<<"slot_max">>, P, 1);
+    In = [X || #{<<"slot">> := S} = X <- Running, S =:= Slot],
+    length(In) < lists:min([maps:get(<<"slot_max">>, X, 1) || X <- [P | In]]);
 slot_free(_, _) -> true.
 
 is_follower(P) -> is_map_key(<<"follows">>, P).

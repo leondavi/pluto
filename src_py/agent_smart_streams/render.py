@@ -59,7 +59,7 @@ def waits_for(card: dict) -> str:
     if card.get("slot"):
         why.append(f"slot {card['slot']}/{card.get('slot_max', 1)}")
     if card.get("lock"):
-        why.append(f"lock {card['lock']}")
+        why.append(f"lock {card['lock']}" + (":read" if card.get("lock_mode") == "read" else ""))
     return " (" + ", ".join(why) + ")" if why else ""
 
 

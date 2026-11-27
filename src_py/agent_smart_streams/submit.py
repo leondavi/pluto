@@ -36,15 +36,22 @@ def expand(template: str, each: dict) -> list[dict]:
     if missing and len(combos) > 1:
         raise PlutoError(f"command has no {{{'}, {'.join(missing)}}}, so all "
                          f"{len(combos)} jobs would be the same")
-    pattern = re.compile("|".join(re.escape("{%s}" % k) for k in each))
     out = []
     for combo in combos:
         params = dict(zip(each, combo))
-        command = pattern.sub(lambda m: params[m[0][1:-1]], template)
-        out.append({"name": ":".join(combo), "command": command, "params": params})
+        out.append({"name": ":".join(combo), "command": fill(template, params),
+                    "params": params})
     if not out:
         raise PlutoError("each has a parameter without values")
     return out
+
+
+def fill(template: str, params: dict) -> str:
+    """{key} of the given keys replaced; other braces stay."""
+    if not params:
+        return template
+    pattern = re.compile("|".join(re.escape("{%s}" % k) for k in params))
+    return pattern.sub(lambda m: params[m[0][1:-1]], template)
 
 
 def start_all(jobs: PlutoJobsClient, batch: list[dict], spec: dict,

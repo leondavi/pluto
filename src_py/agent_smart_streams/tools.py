@@ -108,7 +108,7 @@ def register_tools(mcp: FastMCP, jobs: PlutoJobsClient, piggyback=None,
 
         def work():
             if after_jobs:                      # names and groups too
-                spec["after_jobs"] = fleet.ids_of(jobs, None, after_jobs)
+                spec["after_jobs"] = fleet.ids_of(jobs, None, after_jobs, own=True)
             if each or commands:
                 out = submit.start_all(jobs, batch(), spec, name if each else None)
                 handle = out["group"]

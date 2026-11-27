@@ -106,8 +106,11 @@ def test_a_name_means_the_newest_job_of_each_key_here():
     far = [card(30, "9", cwd="/elsewhere", opener="p3", owner="p3", tags=["=soak", "g00000d"])]
     got = names.cards(Listing(*old, *new, *peer, *far), ["soak"])
     # A key run again is replaced; one not run again stays (names grow).
+    # A peer's soak in the same directory is not mine while I have a soak.
     assert sorted((c["name"], c["opened_at"]) for c in got) == [
-        ("1", 11), ("2", 12), ("3", 3), ("7", 5)]
+        ("1", 11), ("2", 12), ("3", 3)]
+    # With none of my own, the name reads the peers' jobs here.
+    assert [c["name"] for c in names.cards(Listing(*peer, *far), ["soak"])] == ["7"]
     assert [c["opened_at"] for c in names.cards(Listing(*old, *new), ["soak/3"])] == [3]
     with pytest.raises(PlutoError, match="has no 4"):
         names.cards(Listing(*old, *new), ["soak/4"])
@@ -117,6 +120,20 @@ def test_a_name_means_the_newest_job_of_each_key_here():
     assert names.cards(Listing(*far), ["soak"])          # looking is harmless
     # Jobs handed over keep their name for the new owner elsewhere.
     assert names.cards(Listing(card(30, "9", cwd="/elsewhere")), ["soak/9"])
+
+
+def test_agents_sharing_a_directory_and_a_name_keep_to_their_own_jobs():
+    """E7, protocol 6: four agents in one workspace all called their batch z,
+    and `pss follow z` of one of them attached 48 monitors, 36 to the jobs
+    of the other three."""
+    team = [card(10 * a + k, str(10 * a + k), tags=["=z", f"g0000{a}0"],
+                 owner=f"w{a}", opener=f"w{a}") for a in (1, 2, 3, 4) for k in (1, 2, 3)]
+    w2 = Listing(*team)
+    w2.agent_id = "w2"
+    assert [c["name"] for c in names.cards(w2, ["z"])] == ["21", "22", "23"]
+    with pytest.raises(PlutoError, match="z has no 11"):
+        names.cards(w2, ["z/11"])
+    assert names.cards(w2, [team[0]["job_id"]])[0]["owner"] == "w1"   # by id, still
 
 
 def test_an_incomplete_listing_is_refused(monkeypatch):

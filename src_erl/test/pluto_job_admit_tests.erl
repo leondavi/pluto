@@ -65,3 +65,30 @@ a_busy_lock_keeps_the_job_queued_without_using_room_test() ->
     Taken = (limits(9, 9))#{lock := fun(P) -> {ok, P#{<<"lock_ref">> => r}} end},
     {[First | _], []} = pluto_job_admit:select(Live, Taken),
     ?assertEqual(r, maps:get(<<"lock_ref">>, First)).
+
+readers_do_not_starve_an_older_writer_test() ->
+    R = fun(M) -> #{<<"lock">> => <<"db">>, <<"lock_mode">> => M} end,
+    Live = [job(1, a, ?SCHED_SPAWNED, R(<<"read">>)), job(2, b, ?SCHED_QUEUED, R(<<"write">>)),
+            job(3, c, ?SCHED_QUEUED, R(<<"read">>)), job(4, c, ?SCHED_QUEUED)],
+    %% A reader runs, so the writer is busy; the younger reader would get in.
+    L = (limits(9, 9))#{lock := fun(#{<<"lock_mode">> := <<"write">>}) -> busy;
+                                   (P) -> {ok, P} end},
+    ?assertEqual([4], ids(pluto_job_admit:select(Live, L))),
+    %% A writer still waiting for its after_jobs holds nothing back.
+    W = job(2, b, ?SCHED_QUEUED, (R(<<"write">>))#{<<"after_jobs">> => [9]}),
+    ?assertEqual([3, 4], ids(pluto_job_admit:select([W | tl(tl(Live))], L))).
+
+the_strictest_slot_max_counts_test() ->
+    G = fun(N) -> #{<<"slot">> => <<"cpu">>, <<"slot_max">> => N} end,
+    Live = [job(1, a, ?SCHED_SPAWNED, G(8)), job(2, a, ?SCHED_SPAWNED, G(8)),
+            job(3, b, ?SCHED_QUEUED, G(2)), job(4, a, ?SCHED_QUEUED, G(8))],
+    %% b allows 2 at once: 2 run, so neither b's job nor (in this pass) a's.
+    ?assertEqual([], ids(pluto_job_admit:select(Live, limits(9, 9)))),
+    ?assertEqual([3], ids(pluto_job_admit:select([job(1, a, ?SCHED_SPAWNED, G(8)),
+                                                   job(3, b, ?SCHED_QUEUED, G(2))],
+                                                  limits(9, 9)))).
+
+a_job_held_by_its_own_limit_keeps_no_place_test() ->
+    G = #{<<"slot">> => <<"cpu">>, <<"slot_max">> => 4},
+    Live = [job(1, a, ?SCHED_SPAWNED), job(2, a, ?SCHED_QUEUED, G), job(3, b, ?SCHED_QUEUED, G)],
+    ?assertEqual([3], ids(pluto_job_admit:select(Live, limits(9, 1)))).

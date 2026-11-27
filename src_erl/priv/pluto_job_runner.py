@@ -201,8 +201,15 @@ class Feed:
         state = read_json(os.path.join(self.dir, d.FILE_STATE))
         if "final_size" in state:
             self.final = state["final_size"]
-        elif self.src is None and read_json(os.path.join(self.dir, d.FILE_PACKAGE)).get("done"):
-            self.final = 0                       # it ended without running
+            return True
+        package = read_json(os.path.join(self.dir, d.FILE_PACKAGE))
+        if package.get("done") or not (state or package):
+            # Ended without running, or lost (runner gone, no final size),
+            # or removed: what was written is all there is.
+            try:
+                self.final = os.fstat(self.src.fileno()).st_size if self.src else 0
+            except OSError:
+                self.final = self.pos
         return self.final is not None
 
 

@@ -356,7 +356,7 @@ check(#{<<"id">> := Id, <<"sched">> := Sched} = P, S) ->
                 ?SCHED_START_FAILED -> finish(P, St, S);
                 ?SCHED_SPAWNING when Pid ->
                     save(P#{<<"sched">> := ?SCHED_SPAWNED}), S;
-                ?SCHED_SPAWNING -> overdue(P, S);
+                ?SCHED_SPAWNING -> overdue(P, keep_lock(P, S));
                 _ -> maybe_probe(P, St, keep_lock(P, S))
             end
     end.
@@ -460,7 +460,11 @@ finish(#{<<"id">> := Id, <<"owner">> := O} = P0, St, S) ->
           <<"ended_at">> => opt(<<"ended_at">>, Final, null),
           <<"size">> => filelib:file_size(pluto_job_store:file(Id, ?JOB_FILE_OUTPUT))}),
     pluto_job_notice:event(job_finished, P1, Name),
-    S#state{board = pluto_job_notice:notify(O, ?EVT_JOB_FINISHED, P1, Name,
+    Why = case opt(<<"sched_reason">>, P1, null) of
+              null -> #{};
+              R    -> #{<<"reason">> => R}
+          end,
+    S#state{board = pluto_job_notice:notify(O, ?EVT_JOB_FINISHED, P1, Name, Why,
                                             S#state.board),
             retry = maps:remove(Id, S#state.retry),
             renewed = maps:remove(Id, S#state.renewed),

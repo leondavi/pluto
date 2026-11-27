@@ -69,7 +69,13 @@ def admission(jobs, a) -> dict:
             raise PlutoError(f"--slot {a.slot!r}: use NAME:N, N at least 1")
         out.update(slot=slot, slot_max=int(n))
     if a.after:
-        out["after_jobs"] = [c["job_id"] for c in names.cards(jobs, a.after)]
+        if any("{" in h for h in a.after):       # per job: an/{k} after tb/{k}
+            if not a.each:
+                raise PlutoError("--after with {key} needs -e key=...")
+            out["after_each"] = a.after
+        else:
+            out["after_jobs"] = [c["job_id"] for c in names.cards(
+                jobs, a.after, own=not jobs.as_user)]
         out["after_ok"] = a.after_ok or None
     elif a.after_ok:
         raise PlutoError("--after-ok needs --after JOBS")
@@ -87,7 +93,13 @@ def do_run(jobs, a, waiter):
                 watch=a.rules or None, **admission(jobs, a))
     if a.each:
         params = dict(e.partition("=")[::2] for e in a.each)
-        r = submit.start_all(jobs, submit.expand(a.command, params), spec, a.name)
+        batch = submit.expand(a.command, params)
+        for item in batch if spec.get("after_each") else ():
+            item["after_jobs"] = [c["job_id"] for c in names.cards(
+                jobs, [submit.fill(h, item["params"]) for h in spec["after_each"]],
+                own=not jobs.as_user)]
+        spec.pop("after_each", None)
+        r = submit.start_all(jobs, batch, spec, a.name)
         handle = a.name or r["group"]
         text = f"{handle}/{r['jobs']}: {r['n']} started{rules.said(a.rules)}" if a.name else \
             f"{handle} {r['n']} jobs: {r['jobs']}"
@@ -251,7 +263,7 @@ def do_log(jobs, a, _w):
 
 
 def do_follow(jobs, a, _w):
-    cards = names.cards(jobs, a.ids)
+    cards = names.cards(jobs, a.ids, own=not jobs.as_user)
     name = a.name or "follow-" + (names.group_of(cards[0]) or compact.short(cards[0]["job_id"]))
     r = live.start(jobs, cards, a.command, name, os.getcwd())
     print(f"{name}: {r['n']} started" + (f", {r['replaced']} replaced" if r["replaced"] else ""))
@@ -344,7 +356,9 @@ def main(argv=None) -> int:
         jobs = connect()
         code = DO[a.op](jobs, a, fleet.Waiter(jobs)) or 0
         sys.stdout.flush()
-        meanwhile.tell(jobs, quiet=a.op in _SHOWS_JOBS)
+        # What the command showed is no news; a bare ps showed all.
+        shown = None if a.op == "ps" and not getattr(a, "ids", None) else names.NAMED
+        meanwhile.tell(jobs, shown=shown if a.op in _SHOWS_JOBS else set())
         return code
     except BrokenPipeError:
         # The reader (head, grep -q) has seen enough.

@@ -123,6 +123,13 @@ def test_the_shell_names_it_all(srv, tmp_path):
               "echo post", cwd=tmp_path, agent="c1")
     assert out.startswith("post")
     assert "succeeded" in pss(srv, "wait", "pre,post", "-t", "30", cwd=tmp_path, agent="c1")
+    # Per job: an/k waits for tb/k only.
+    pss(srv, "run", "-q", "-n", "tb", "-e", "k=1-2", "sleep $((({k}-1)*5)); echo tb{k} >> per",
+        cwd=tmp_path, agent="c1")
+    pss(srv, "run", "-q", "-n", "an", "-e", "k=1-2", "--after", "tb/{k}", "echo an{k} >> per",
+        cwd=tmp_path, agent="c1")
+    pss(srv, "wait", "an", "-t", "30", cwd=tmp_path, agent="c1")
+    assert (tmp_path / "per").read_text().split() == ["tb1", "an1", "tb2", "an2"]
     pss(srv, "run", "-q", "-n", "src", "for i in 1 2 3; do echo v=$i; sleep 0.3; done",
         cwd=tmp_path, agent="c1")
     pss(srv, "follow", "src", "grep -c v= > counted", cwd=tmp_path, agent="c1")
